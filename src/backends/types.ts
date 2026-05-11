@@ -1,5 +1,3 @@
-import type { BackendKind } from '../schema.ts'
-
 export type PrdSpec = {
 	title: string
 	slug: string
@@ -21,7 +19,7 @@ export type Slice = {
 }
 
 export interface Backend {
-	kind: BackendKind
+	name: string
 	// identifier helpers
 	proposeIdentifier(title: string): string
 	branchFor(id: string): string

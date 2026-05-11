@@ -10,7 +10,7 @@ function notImplemented(commandName: string, reason: string): never {
 }
 
 export async function start(opts: { prd?: string; backend?: string }): Promise<void> {
-	notImplemented('start', `Requires a backend implementation (markdown, draft-pr, or issue). Backends are deferred to per-backend grilling. Opts: ${JSON.stringify(opts)}`)
+	notImplemented('start', `Requires a backend implementation. Backends are deferred to per-backend grilling. Opts: ${JSON.stringify(opts)}`)
 }
 
 export async function work(prdId: string, opts: { backend?: string }): Promise<void> {

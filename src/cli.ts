@@ -13,7 +13,7 @@ export function run(): void {
 		.command('start')
 		.description('Start a new PRD: grill, create artifacts, branch, slice')
 		.option('--prd <id>', 'Resume an existing PRD by id')
-		.option('--backend <kind>', 'Override project backend (markdown | draft-pr | issue)')
+		.option('--backend <kind>', 'Override project backend')
 		.action(async (opts) => {
 			await stubs.start(opts)
 		})

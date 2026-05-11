@@ -1,10 +1,10 @@
 import { v, type DeepPartial, type PipeOutput } from 'valleyed'
 
-export type BackendKind = 'markdown' | 'draft-pr' | 'issue'
+import { backendRegistry } from './backends/registry'
 
 export const partialConfigPipe = () =>
 	v.object({
-		backend: v.optional(v.in(['markdown', 'draft-pr', 'issue'] as const)),
+		backend: v.optional(v.in(Object.keys(backendRegistry))),
 		branchPrefix: v.optional(v.string()),
 		baseBranch: v.optional(v.string()),
 		docs: v.optional(
@@ -73,7 +73,7 @@ export const partialConfigPipe = () =>
 export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
-	backend: BackendKind
+	backend: string
 	branchPrefix: string
 	baseBranch: string
 	docs: {
@@ -130,7 +130,7 @@ export type InitableLayer = Exclude<ConfigLayer, 'default'>
 
 // Hard-coded defaults — the 'default' layer. Every field present.
 export const defaultConfig: Config = {
-	backend: 'markdown',
+	backend: 'not-yet-implemented',
 	branchPrefix: 'prd/',
 	baseBranch: 'main',
 	docs: {
@@ -201,4 +201,78 @@ function deepMerge<T extends Record<string, unknown>>(a: T, b: DeepPartial<T>): 
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {
 	return typeof x === 'object' && x !== null && !Array.isArray(x)
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest
+
+	describe('defaultConfig', () => {
+		test('uses not-yet-implemented as the default backend', () => {
+			expect(defaultConfig.backend).toBe('not-yet-implemented')
+		})
+
+		test('every preconditions check is on by default', () => {
+			expect(defaultConfig.preconditions.requireCleanTree).toBe(true)
+			expect(defaultConfig.preconditions.requireGitRoot).toBe(true)
+			expect(defaultConfig.preconditions.requireGhAuth).toBe(true)
+		})
+	})
+
+	describe('mergePartial', () => {
+		test('returns the base unchanged when partial is undefined', () => {
+			const result = mergePartial(defaultConfig, undefined)
+			expect(result).toEqual(defaultConfig)
+		})
+
+		test('overrides a primitive value at the top level', () => {
+			const result = mergePartial(defaultConfig, { backend: 'issue' })
+			expect(result.backend).toBe('issue')
+			expect(result.baseBranch).toBe(defaultConfig.baseBranch)
+		})
+
+		test('deep-merges nested objects per-key', () => {
+			const result = mergePartial(defaultConfig, { agent: { model: 'sonnet' } })
+			expect(result.agent.model).toBe('sonnet')
+			expect(result.agent.command).toBe(defaultConfig.agent.command)
+			expect(result.agent.args).toEqual(defaultConfig.agent.args)
+		})
+
+		test('replaces arrays whole (no element merging)', () => {
+			const result = mergePartial(defaultConfig, { agent: { args: ['--foo', '--bar'] } })
+			expect(result.agent.args).toEqual(['--foo', '--bar'])
+		})
+
+		test('ignores undefined values inside a partial', () => {
+			const result = mergePartial(defaultConfig, { agent: { model: undefined } })
+			expect(result.agent.model).toBe(defaultConfig.agent.model)
+		})
+
+		test('does not mutate the base', () => {
+			const baseSnapshot = JSON.parse(JSON.stringify(defaultConfig))
+			mergePartial(defaultConfig, { backend: 'issue', agent: { model: 'sonnet' } })
+			expect(defaultConfig).toEqual(baseSnapshot)
+		})
+	})
+
+	describe('partialConfigPipe', () => {
+		test('accepts an empty object (every field optional)', () => {
+			const result = v.validate(partialConfigPipe(), {})
+			expect(result.valid).toBe(true)
+		})
+
+		test('accepts a partial with only one nested key set', () => {
+			const result = v.validate(partialConfigPipe(), { agent: { model: 'sonnet' } })
+			expect(result.valid).toBe(true)
+		})
+
+		test('rejects an unknown backend value', () => {
+			const result = v.validate(partialConfigPipe(), { backend: 'mongo' })
+			expect(result.valid).toBe(false)
+		})
+
+		test('rejects a non-string branchPrefix', () => {
+			const result = v.validate(partialConfigPipe(), { branchPrefix: 42 })
+			expect(result.valid).toBe(false)
+		})
+	})
 }
