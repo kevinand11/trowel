@@ -1,2 +1,12 @@
-#!/usr/bin/env -S npx tsx
-import('../src/cli.ts').then((m) => m.run())
+#!/usr/bin/env bash
+# Resolve the real script path through any symlinks (portable; macOS bash 3.2).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+	LINK="$(readlink "$SOURCE")"
+	case "$LINK" in
+		/*) SOURCE="$LINK" ;;
+		*) SOURCE="$(cd "$(dirname "$SOURCE")" && pwd)/$LINK" ;;
+	esac
+done
+TROWEL_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+exec "$TROWEL_DIR/node_modules/.bin/tsx" "$TROWEL_DIR/src/main.ts" "$@"

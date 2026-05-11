@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export type Role = 'implement' | 'review' | 'address'
 export type BackendKind = 'issue' | 'file'
