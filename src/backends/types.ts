@@ -1,3 +1,4 @@
+import type { Bucket } from '../utils/bucket.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
 
 export type PrdSpec = {
@@ -11,6 +12,15 @@ export type PrdSummary = {
 	branch: string
 }
 
+export type PrdState = 'OPEN' | 'CLOSED'
+
+export type PrdRecord = {
+	id: string
+	branch: string
+	title: string
+	state: PrdState
+}
+
 export type Slice = {
 	id: string
 	title: string
@@ -18,6 +28,8 @@ export type Slice = {
 	state: 'OPEN' | 'CLOSED'
 	readyForAgent: boolean
 	needsRevision: boolean
+	/** Lifecycle bucket computed by the backend at findSlices time. See ADR `backend-owns-slice-bucket-classification`. */
+	bucket: Bucket
 }
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state'>>
@@ -48,6 +60,7 @@ export interface Backend {
 	// PRD lifecycle
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
 	branchForExisting(id: string): Promise<string>
+	findPrd(id: string): Promise<PrdRecord | null>
 	listOpen(): Promise<PrdSummary[]>
 	close(id: string): Promise<void>
 

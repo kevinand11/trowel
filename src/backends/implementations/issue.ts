@@ -1,7 +1,8 @@
+import { classify } from '../../utils/bucket.ts'
+import { parseDeps } from '../../utils/deps.ts'
 import type { GhResult, GhRunner } from '../../utils/gh-runner.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import { applyBranchDeletePolicy } from '../branch-policy.ts'
-import type { Backend, BackendDeps, BackendFactory, PrdSpec, PrdSummary, Slice, SlicePatch } from '../types.ts'
+import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = ''
 
@@ -58,14 +59,14 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 
 	async function findSlices(prdId: string): Promise<Slice[]> {
 		const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${prdId}/sub_issues`])
-		const raw = JSON.parse(out) as Array<{
+		const rawIssues = JSON.parse(out) as Array<{
 			number: number
 			title: string
 			body: string
 			state: string
 			labels: Array<{ name: string }>
 		}>
-		return raw.map((s) => ({
+		const rawSlices: Array<Omit<Slice, 'bucket'>> = rawIssues.map((s) => ({
 			id: String(s.number),
 			title: s.title,
 			body: stripBodyTrailer(s.body, prdId),
@@ -73,6 +74,25 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 			readyForAgent: s.labels.some((l) => l.name === deps.labels.readyForAgent),
 			needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
 		}))
+
+		// Bulk-query open PRs once. Build a set of head branches that have open PRs.
+		// Used to mark slices as `in-flight` when their derived branch is among them.
+		let openPrBranches = new Set<string>()
+		if (rawSlices.some((s) => s.state === 'OPEN')) {
+			const prListOut = await ghOrThrow(['pr', 'list', '--state', 'open', '--json', 'headRefName'])
+			const prs = JSON.parse(prListOut) as Array<{ headRefName: string }>
+			openPrBranches = new Set(prs.map((p) => p.headRefName))
+		}
+
+		const doneIds = new Set(rawSlices.filter((r) => r.state === 'CLOSED').map((r) => r.id))
+		return rawSlices.map((r) => {
+			const expectedBranch = `${prefix}${r.id}-${slugify(r.title)}`
+			const hasOpenPr = openPrBranches.has(expectedBranch)
+			const sliceDeps = parseDeps(r.body)
+			const unmetDepIds = sliceDeps.filter((d) => !doneIds.has(d))
+			const bucket = classify(r, { hasOpenPr, unmetDepIds })
+			return { ...r, bucket }
+		})
 	}
 
 	async function createSlice(prdId: string, spec: PrdSpec): Promise<Slice> {
@@ -89,29 +109,33 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 			state: 'OPEN',
 			readyForAgent: false,
 			needsRevision: false,
+			bucket: 'draft',
 		}
 	}
 
 	async function close(id: string): Promise<void> {
-		const branch = await branchForExisting(id)
-
-		// Refuse to close if an open PR has this branch as head.
-		const prListOut = await ghOrThrow(['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,url'])
-		const prs = JSON.parse(prListOut) as Array<{ number: number; url: string }>
-		if (prs.length > 0) {
-			throw new Error(`refusing to close: open PR(s) for branch '${branch}': ${prs.map((p) => p.url).join(', ')}`)
+		// Idempotent: if the issue is already closed, no-op.
+		const viewResult = await gh(['issue', 'view', id, '--json', 'state'])
+		if (viewResult.ok) {
+			const parsed = JSON.parse(viewResult.stdout) as { state: string }
+			if (parsed.state.toUpperCase() === 'CLOSED') return
 		}
-
-		await applyBranchDeletePolicy(branch, {
-			repoRoot: deps.repoRoot,
-			baseBranch: deps.baseBranch,
-			deleteBranch: deps.closeOptions.deleteBranch,
-			confirm: deps.confirm,
-		})
-
 		const closeArgs = ['issue', 'close', id]
 		if (deps.closeOptions.comment !== null) closeArgs.push('--comment', deps.closeOptions.comment)
 		await ghOrThrow(closeArgs)
+	}
+
+	async function findPrd(id: string): Promise<PrdRecord | null> {
+		const viewResult = await gh(['issue', 'view', id, '--json', 'number,title,state'])
+		if (!viewResult.ok) return null
+		const parsed = JSON.parse(viewResult.stdout) as { number: number; title: string; state: string }
+		const branch = await branchForExisting(id)
+		return {
+			id: String(parsed.number),
+			branch,
+			title: parsed.title,
+			state: parsed.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
+		}
 	}
 
 	async function listOpen(): Promise<PrdSummary[]> {
@@ -131,6 +155,7 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
 		createPrd,
 		branchForExisting,
+		findPrd,
 		listOpen,
 		close,
 		createSlice,
@@ -329,6 +354,7 @@ if (import.meta.vitest) {
 				state: 'OPEN',
 				readyForAgent: false,
 				needsRevision: false,
+				bucket: 'draft',
 			})
 			// create issue with composed body
 			expect(calls[0]).toEqual(['issue', 'create', '--title', 'Implement Tab Parser', '--body', 'the slice spec\n\nPart of #42'])
@@ -367,13 +393,14 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
 			])
 			const backend = createIssueBackend(deps)
 			const slices = await backend.findSlices('42')
 			expect(calls[0]).toEqual(['api', '--paginate', 'repos/{owner}/{repo}/issues/42/sub_issues'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready' },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done' },
 			])
 		})
 
@@ -396,6 +423,7 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
 			])
 			deps.labels.readyForAgent = 'CUSTOM-ready'
 			deps.labels.needsRevision = 'CUSTOM-needs'
@@ -403,6 +431,149 @@ if (import.meta.vitest) {
 			const [slice] = await backend.findSlices('42')
 			expect(slice!.readyForAgent).toBe(true)
 			expect(slice!.needsRevision).toBe(true)
+		})
+	})
+
+	describe('issue backend: findSlices computes bucket', () => {
+		test('open slice with matching open-PR head branch → in-flight', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'api' && a.includes('--paginate'),
+					respond: {
+						ok: true,
+						stdout: JSON.stringify([
+							{ id: 1, number: 57, title: 'Implement Parser', body: 'b', state: 'open', labels: [{ name: 'ready-for-agent' }] },
+						]),
+						stderr: '',
+					},
+				},
+				{
+					match: (a) => a[0] === 'pr' && a[1] === 'list',
+					respond: { ok: true, stdout: JSON.stringify([{ headRefName: '57-implement-parser' }]), stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			const [s] = await backend.findSlices('42')
+			expect(s!.bucket).toBe('in-flight')
+		})
+
+		test('open slice with no matching open PR + readyForAgent → ready', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'api' && a.includes('--paginate'),
+					respond: {
+						ok: true,
+						stdout: JSON.stringify([
+							{ id: 1, number: 57, title: 'Implement Parser', body: 'b', state: 'open', labels: [{ name: 'ready-for-agent' }] },
+						]),
+						stderr: '',
+					},
+				},
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const [s] = await backend.findSlices('42')
+			expect(s!.bucket).toBe('ready')
+		})
+
+		test('open slice with needsRevision → needs-revision (takes priority over in-flight)', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'api' && a.includes('--paginate'),
+					respond: {
+						ok: true,
+						stdout: JSON.stringify([
+							{ id: 1, number: 57, title: 'P', body: 'b', state: 'open', labels: [{ name: 'needs-revision' }] },
+						]),
+						stderr: '',
+					},
+				},
+				{
+					match: (a) => a[0] === 'pr' && a[1] === 'list',
+					respond: { ok: true, stdout: JSON.stringify([{ headRefName: '57-p' }]), stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			const [s] = await backend.findSlices('42')
+			expect(s!.bucket).toBe('needs-revision')
+		})
+
+		test('open slice with unmet dep → blocked', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'api' && a.includes('--paginate'),
+					respond: {
+						ok: true,
+						stdout: JSON.stringify([
+							{ id: 1, number: 57, title: 'A', body: 'spec', state: 'open', labels: [] },
+							{ id: 2, number: 58, title: 'B', body: 'spec\n\nDepends-on: 57', state: 'open', labels: [{ name: 'ready-for-agent' }] },
+						]),
+						stderr: '',
+					},
+				},
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const slices = await backend.findSlices('42')
+			const b = slices.find((x) => x.id === '58')!
+			expect(b.bucket).toBe('blocked')
+		})
+
+		test('skips pr list query when no open slices', async () => {
+			const { deps, calls } = makeDeps([
+				{
+					match: (a) => a[0] === 'api' && a.includes('--paginate'),
+					respond: {
+						ok: true,
+						stdout: JSON.stringify([{ id: 1, number: 57, title: 'A', body: 'spec', state: 'closed', labels: [] }]),
+						stderr: '',
+					},
+				},
+			])
+			const backend = createIssueBackend(deps)
+			const [s] = await backend.findSlices('42')
+			expect(s!.bucket).toBe('done')
+			expect(calls.some((c) => c[0] === 'pr' && c[1] === 'list')).toBe(false)
+		})
+	})
+
+	describe('issue backend: findPrd', () => {
+		test('returns PrdRecord with branch and state for an existing issue', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'view',
+					respond: { ok: true, stdout: JSON.stringify({ number: 42, title: 'Fix Tabs', state: 'OPEN' }), stderr: '' },
+				},
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
+					respond: { ok: true, stdout: '42-fix-tabs\thttps://x\n', stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			expect(await backend.findPrd('42')).toEqual({ id: '42', branch: '42-fix-tabs', title: 'Fix Tabs', state: 'OPEN' })
+		})
+
+		test('maps "CLOSED" GitHub state to CLOSED', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'view',
+					respond: { ok: true, stdout: JSON.stringify({ number: 42, title: 'X', state: 'CLOSED' }), stderr: '' },
+				},
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
+					respond: { ok: true, stdout: '42-x\n', stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			expect((await backend.findPrd('42'))!.state).toBe('CLOSED')
+		})
+
+		test('returns null when gh issue view fails (issue not found)', async () => {
+			const { deps } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'view', respond: { ok: false, error: new Error('not found') } },
+			])
+			const backend = createIssueBackend(deps)
+			expect(await backend.findPrd('999999')).toBeNull()
 		})
 	})
 
@@ -463,32 +634,11 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue backend: close', () => {
-		test('refuses to close when an open PR has the branch as head', async () => {
+		test('runs gh issue close (no PR check, no branch ops — those are orchestrator-owned)', async () => {
 			const { deps, calls } = makeDeps([
 				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
-					respond: { ok: true, stdout: '42-fix-tabs\thttps://x\n', stderr: '' },
-				},
-				{
-					match: (a) => a[0] === 'pr' && a[1] === 'list',
-					respond: { ok: true, stdout: JSON.stringify([{ number: 99, url: 'https://github.com/o/r/pull/99' }]), stderr: '' },
-				},
-			])
-			const backend = createIssueBackend(deps)
-			await expect(backend.close('42')).rejects.toThrow(/open PR/i)
-			// Verify gh issue close was NOT invoked
-			expect(calls.find((c) => c[0] === 'issue' && c[1] === 'close')).toBeUndefined()
-		})
-
-		test('with deleteBranch=never, just runs gh issue close (no branch ops, no comment by default)', async () => {
-			const { deps, calls } = makeDeps([
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
-					respond: { ok: true, stdout: '42-fix-tabs\thttps://x\n', stderr: '' },
-				},
-				{
-					match: (a) => a[0] === 'pr' && a[1] === 'list',
-					respond: { ok: true, stdout: '[]', stderr: '' },
+					match: (a) => a[0] === 'issue' && a[1] === 'view',
+					respond: { ok: true, stdout: JSON.stringify({ state: 'OPEN' }), stderr: '' },
 				},
 				{
 					match: (a) => a[0] === 'issue' && a[1] === 'close',
@@ -498,22 +648,27 @@ if (import.meta.vitest) {
 			const backend = createIssueBackend(deps)
 			await backend.close('42')
 			expect(calls.find((c) => c[0] === 'issue' && c[1] === 'close')).toEqual(['issue', 'close', '42'])
-			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'list')).toEqual([
-				'pr',
-				'list',
-				'--head',
-				'42-fix-tabs',
-				'--state',
-				'open',
-				'--json',
-				'number,url',
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'list')).toBeUndefined()
+		})
+
+		test('idempotent: gh issue close not invoked if issue already CLOSED', async () => {
+			const { deps, calls } = makeDeps([
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'view',
+					respond: { ok: true, stdout: JSON.stringify({ state: 'CLOSED' }), stderr: '' },
+				},
 			])
+			const backend = createIssueBackend(deps)
+			await backend.close('42')
+			expect(calls.find((c) => c[0] === 'issue' && c[1] === 'close')).toBeUndefined()
 		})
 
 		test('passes --comment to gh issue close when config.close.comment is set', async () => {
 			const { deps, calls } = makeDeps([
-				{ match: (a) => a[1] === 'develop' && a.includes('--list'), respond: { ok: true, stdout: '42-x\n', stderr: '' } },
-				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'view',
+					respond: { ok: true, stdout: JSON.stringify({ state: 'OPEN' }), stderr: '' },
+				},
 				{ match: (a) => a[0] === 'issue' && a[1] === 'close', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			deps.closeOptions.comment = 'Closed via trowel'

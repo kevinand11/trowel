@@ -16,7 +16,7 @@ These decisions cross every pending session. Don't reopen unless you have a conc
 - **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
 - **PRD-host model.** A **PRD** is configurable per project across two **Backends**: `file`, `issue`. Slices are backend-managed: the `file` backend stores them locally alongside the PRD; the `issue` backend uses GitHub sub-issues (see ADR `slices-local-for-file-backend`). Doc changes (CONTEXT.md, ADRs) live on the **integration branch**, not on `main`.
 - **Every PRD has a unique id (see ADR `prd-unique-id-and-file-backend-layout`).** Cross-backend: issue number (`issue`) or 6-char base-36 random (`file`). The id is the argument trowel commands take.
-- **Backend interface shape (see ADR `backend-interface-composite-create` + `slices-local-for-file-backend`).** Creation collapses into a single `Backend.createPrd(spec) → { id, branch }`. Slices: `createSlice(prdId, spec) → Slice`, `findSlices(prdId)`, `updateSlice(prdId, sliceId, patch)`. PRD discovery: `branchForExisting`, `listOpen`, `close`. Each backend exposes `defaultBranchPrefix` (used when `config.branchPrefix` is null).
+- **Backend interface shape (see ADRs `backend-interface-composite-create`, `slices-local-for-file-backend`, `backend-owns-slice-bucket-classification`).** Creation collapses into a single `Backend.createPrd(spec) → { id, branch }`. Slices: `createSlice(prdId, spec) → Slice`, `findSlices(prdId) → Slice[]` (each `Slice` has `bucket` pre-computed by the backend), `updateSlice(prdId, sliceId, patch)`. PRD discovery: `findPrd(id) → { branch, state } | null`, `branchForExisting`, `listOpen`, `close`. Each backend exposes `defaultBranchPrefix` (used when `config.branchPrefix` is null).
 - **Config shape deltas (cross-cutting).** `config.branchPrefix: string | null` (was always-string; null means "use backend default"). `config.labels.prd: string` (was `string[]`), default `'prd'`. `config.labels.readyForAgent` / `config.labels.needsRevision` are used by the `issue` backend to translate GitHub labels ↔ `Slice` booleans; the `file` backend ignores them. New `config.close: { comment: string | null; deleteBranch: 'always' | 'never' | 'prompt' }`, defaults `'Closed via trowel'` / `'prompt'`. `config.close.comment` is a no-op for the `file` backend (no GitHub object to comment on).
 - **Per-layer path anchoring.** Path values in any config layer resolve relative to that layer's anchor (project layer → project root; private layer → `~/.trowel/projects/<mirror>/`; global layer → `~/.trowel/`; default → project root). Resolution happens at load time before deep-merge.
 - **Config discovery (named layers, β precedence — `project` wins outright).** Enum: `ConfigLayer = 'default' | 'global' | 'private' | 'project'`. `InitableLayer` excludes `'default'`.
@@ -233,25 +233,40 @@ $ trowel init global           # writes ~/.trowel/config.json
 $ trowel init private          # writes ~/.trowel/projects/<full-path>/config.json
 $ trowel init project          # writes <project root>/.trowel/config.json
 
-# After picking a layer, prompt for the most-used knobs:
+# After picking a layer, prompt for the most-used knobs (current values
+# from the existing file, if any, become the prompt defaults):
 Backend (file | issue) [file]:
 > issue
 
 Branch prefix [prds-issue-]:
 >
 
+About to write to /Users/mac/Desktop/code/packages/equipped/.trowel/config.json:
+
+  {
+    "backend": "issue",
+    "branchPrefix": "prds-issue-"
+  }
+
+Write? [Y/n]
+> y
+
 Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 ```
 
-**Locked.**
-- Prompts for layer, then a handful of common knobs (backend, branchPrefix). Most other knobs are omitted from the wizard — user edits the file directly for power use.
-- Refuses to overwrite an existing file at the chosen path; offers to re-run with `--force`.
+**Locked decisions** (from grilling session 2026-05-11):
 
-**Open questions to grill.**
-- **Which knobs to prompt for?** Default pick: `backend`, `branchPrefix`. Maybe `baseBranch` if not `main`.
-- **Use a library for interactive prompts?** Options: built-in `readline`, `@inquirer/prompts`, `prompts`. Default pick: `@inquirer/prompts` — battle-tested, small.
+- **Sparse writes.** Only the keys the user explicitly answered land in the file. Lower layers / defaults supply the rest. Rationale: `partialConfigPipe` is partial-by-design; a full snapshot would couple user files to defaults that change in trowel updates.
+- **Prompt set: `backend` always; `branchPrefix` conditional on `backend === 'issue'`.** All other knobs are skipped — power users edit JSON directly. The `file` backend's default branch prefix (`prd/`) is fine universally; the `issue` backend's default is `''`, which collides with feature branches, so we ask.
+- **Existing-file behavior: merge, don't refuse.** Parse the existing JSON, validate it, use current values as prompt defaults, then `{ ...existing, ...answers }`. No `--force` flag. Rationale: with sparse writes, force-overwrite would silently destroy hand-edited keys. Read-modify-write is safe to re-run.
+- **No project root → refuse for `project` and `private`.** Error message: "no project root found (no `.git/` or `.trowel/` walking up from cwd). Run `git init` first or `cd` into a git repo." `init global` works anywhere — no project root needed.
+- **Show resulting JSON + confirm `[Y/n]` before writing.** Closes the loop in merge mode where the user only sees their answers, not the existing keys being preserved. Default-yes (Enter to accept).
+- **Library: `@inquirer/prompts`.** Small, typed, supports default-value-in-prompt out of the box (which merge mode requires); `confirm()` covers the write-prompt.
+- **Parent dir auto-create.** `mkdir -p` on the target file's directory before writing (`~/.trowel/projects/<mirror>/` won't exist on first use).
+- **Abort path.** `n` at the confirm prompt → print "Aborted; nothing written." → exit 0.
+- **File format.** JSON, two-space indent, final newline. (Repo uses tabs in source but JSON convention is spaces — matches `gh`, `npm`, etc.)
 
-**Verification path.** Run from a scratch repo; verify file content and permissions.
+**Verification path.** Run from a scratch repo; verify file content, sparse-key contents, mkdir-p of `~/.trowel/projects/<mirror>/`, idempotent re-run (no changes → second run is a no-op accept), and merge-preservation of a hand-edited key.
 
 ---
 
@@ -259,19 +274,99 @@ Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 
 **Goal.** Wire the two read-only-ish commands to the backend.
 
-**`close <prd-id>` flow.**
-- Resolve backend; verify PRD exists (`backend.findSlices` returns ≥0 results or `backend.listOpen` includes it).
-- For file: set `closedAt` in store.json, commit; apply branch policy (resolved in §1 grill).
-- For issue: `gh issue close <id>`.
-- In all cases: optionally delete the integration branch locally + on origin (with confirmation prompt).
+**Files.** `src/commands/{close,status}.ts`. Also: extend `Backend` interface with `findPrd(id) → { branch, state: 'OPEN' | 'CLOSED' } | null`; add `Slice.bucket` field; port `.sandcastle/utils/deps.ts` → `src/utils/deps.ts`.
 
-**`status <prd-id>` flow.**
-- `findSlices(prdId)` → group by state (done / in-flight / ready / blocked-by-deps).
-- Print a table.
+---
 
-**Files.** `src/commands/{close,status}.ts`.
+### `close <prd-id>`
 
-**Open questions to grill.** Many — what "close" means per backend; whether status walks dep trailers (likely yes — port from `.sandcastle/utils/deps.ts`).
+**Locked decisions** (from grilling session 2026-05-11):
+
+- **Idempotent.** Every step probes state first; partial-completion re-runs pick up where the previous run stopped. Re-running on a fully-closed PRD prints what was already done and exits 0.
+- **Open slices: warn + auto-close.** Before any destructive action, list open slices and prompt `[y/N]`. On `y`, iterate `updateSlice(prdId, sliceId, { state: 'CLOSED' })` then proceed. On `n` or empty, exit 0 without changes. Rationale: PRDs are commonly abandoned mid-flight; forcing per-slice cleanup is bureaucracy. The default-no prompt protects against typo'd PRD ids.
+- **Open slice PRs: list + warn.** Between slice auto-close and branch delete, run `gh pr list --base <integrationBranch>` and print any open PRs. If `deleteBranch` policy will delete and PRs exist, prompt `[y/N]` once more. Don't auto-close the PRs — GitHub auto-marks them "Closed" when their base branch is deleted, and the PR thread is worth preserving as a record.
+- **Branch deletion: local + remote together, per policy.** `config.close.deleteBranch: 'always' | 'never' | 'prompt'` controls both. `'always'` deletes local + origin without prompting; `'never'` deletes neither; `'prompt'` asks once with `Delete integration branch '<name>' (local + origin)? [y/N]`.
+- **Unmerged-branch warning, not refuse.** If the integration branch is not an ancestor of `config.baseBranch`, warn separately (`Branch '<name>' contains commits not on '<baseBranch>' — delete anyway? [y/N]`) **in addition to** the policy prompt. PRDs are commonly closed *because* they're being abandoned — refusing would re-create the bureaucracy.
+- **BACK_TO escape for self-deletion.** Use the standard BACK_TO pattern (capture branch on entry, restore on exit). If the user is currently on the integration branch and the delete fires, switch to `config.baseBranch` first, delete, then restore BACK_TO only if BACK_TO still exists. If BACK_TO was the deleted branch, leave the user on `baseBranch` and print: `Switched to '<baseBranch>' (was on deleted branch '<name>')`.
+- **Comment behavior follows `config.close.comment`.** Issue backend posts the comment via `gh issue comment` before closing if `comment !== null`. File backend ignores (no GitHub object to comment on).
+- **No clean-tree precondition relaxation.** Close switches branches and runs git operations; the global `requireCleanTree: true` precondition stays in force.
+
+**Step ordering.**
+
+```
+1. preflight (clean tree, project root, gh auth)
+2. capture BACK_TO branch
+3. backend.findPrd(prdId) → exit if not found
+4. backend.findSlices(prdId) → if any OPEN: warn + confirm + auto-close
+5. if prd.state === 'OPEN':
+     if backend supports comments && config.close.comment: post comment
+     backend.close(prdId)
+   else: print "already closed in store"
+6. if integration branch exists:
+     a. if gh pr list --base <branch> nonempty AND policy will delete: warn + confirm
+     b. if not ancestor of baseBranch: warn + confirm
+     c. if currently on branch: switch to baseBranch
+     d. delete local + origin per policy
+7. restore BACK_TO (or stay on baseBranch if BACK_TO was deleted)
+```
+
+---
+
+### `status <prd-id>`
+
+**Locked decisions** (from grilling session 2026-05-11):
+
+- **Six-bucket taxonomy.** `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive. See ADR `backend-owns-slice-bucket-classification` for predicates.
+- **Backend owns classification.** Each backend computes `Slice.bucket` inside `findSlices`. `status` is pure presentation. Dep parsing lives in shared `src/utils/deps.ts`; both backends import it. The `in-flight` bucket is backend-conditional: the `file` backend never emits it.
+- **Output: PRD header + sectioned slices.** Header carries id, title, branch, state, and one-line summary counts. Body is one section per non-empty bucket; each section shows slice id + title + bucket-specific right-column metadata. Empty buckets are omitted (so `file`-backend output collapses cleanly with no `in-flight` heading).
+- **Right-column metadata per bucket.**
+  - `done` — merged PR link/number (issue backend) or `merged` indicator (file backend).
+  - `needs-revision` — open PR number (issue backend) or just the badge (file backend).
+  - `in-flight` — open PR number + review state (issue backend only).
+  - `blocked` — `deps: <id>[, <id>...]` listing unmet dep slice ids.
+  - `ready`, `draft` — no extra column.
+- **No `--json` mode in v0.** Add when there's a real scripting consumer.
+- **Closed PRDs work too.** Read-only / cheap; useful for retro lookups.
+
+**Example output.**
+
+```
+PRD ab12cd  Add SSO via Okta
+Branch:  prds-issue-142
+State:   OPEN          (3 done · 1 in-flight · 2 ready · 1 blocked · 1 draft)
+
+  done
+    142  Schema migration                                      #157 merged
+    143  Token issuer                                          #160 merged
+    144  Logout endpoint                                       #163 merged
+
+  in-flight
+    145  Session middleware                                    #168 review
+
+  blocked
+    146  SSO admin UI                                          deps: 145
+
+  ready
+    147  Audit log
+    148  Rate limiter
+
+  draft
+    149  Migration rollback runbook
+```
+
+**Step ordering.**
+
+```
+1. preflight (project root only; status is read-only — no clean-tree needed)
+2. backend.findPrd(prdId) → error if not found
+3. slices = backend.findSlices(prdId)   // returns Slice[] with .bucket pre-set
+4. group slices by bucket; compute summary counts
+5. render header + non-empty sections
+```
+
+---
+
+**Verification path.** Run both against a scratch PRD on the `file` backend with a handful of slices in different buckets; then against the `issue` backend with real GitHub state (open PR, merged PR, open sub-issue with `needs-revision` label).
 
 ---
 

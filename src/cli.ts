@@ -1,7 +1,10 @@
 import { Command } from 'commander'
 
+import { close } from './commands/close.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
+import { init } from './commands/init.ts'
+import { status } from './commands/status.ts'
 import * as stubs from './commands/stubs.ts'
 
 export function run(): void {
@@ -33,7 +36,7 @@ export function run(): void {
 		.argument('<prd-id>')
 		.option('--backend <kind>', 'Override project backend')
 		.action(async (prdId: string, opts) => {
-			await stubs.close(prdId, opts)
+			await close(prdId, opts)
 		})
 
 	program
@@ -42,7 +45,7 @@ export function run(): void {
 		.argument('<prd-id>')
 		.option('--backend <kind>', 'Override project backend')
 		.action(async (prdId: string, opts) => {
-			await stubs.status(prdId, opts)
+			await status(prdId, opts)
 		})
 
 	program
@@ -50,7 +53,7 @@ export function run(): void {
 		.description("Initialise a config file. Layer arg defaults to 'project'.")
 		.argument('[layer]', "Which layer to write: global | private | project", 'project')
 		.action(async (layer: string) => {
-			await stubs.init(layer)
+			await init(layer)
 		})
 
 	program

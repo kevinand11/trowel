@@ -1,11 +1,12 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+import { classify } from '../../utils/bucket.ts'
+import { parseDeps } from '../../utils/deps.ts'
 import { generateUniqueId } from '../../utils/id.ts'
 import { exec } from '../../utils/shell.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import { applyBranchDeletePolicy } from '../branch-policy.ts'
-import type { Backend, BackendDeps, BackendFactory, PrdSpec, PrdSummary, Slice, SlicePatch } from '../types.ts'
+import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = 'prd/'
 
@@ -144,24 +145,16 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		const dir = await findPrdDir(id)
 		const storePath = path.join(dir, 'store.json')
 		const store: PrdStore = JSON.parse(await readFile(storePath, 'utf8'))
+		if (store.closedAt !== null) return // idempotent: already closed in store
 		store.closedAt = new Date().toISOString()
 		await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
 
 		const relToRepo = path.relative(deps.repoRoot, dir)
 		const isInsideRepo = !relToRepo.startsWith('..') && !path.isAbsolute(relToRepo)
-		const branch = `${prefix}${store.id}-${store.slug}`
-
 		if (isInsideRepo) {
 			await exec('git', ['-C', deps.repoRoot, 'add', path.join(relToRepo, 'store.json')])
 			await exec('git', ['-C', deps.repoRoot, 'commit', '-q', '-m', `docs(prd-${id}): close`])
 		}
-
-		await applyBranchDeletePolicy(branch, {
-			repoRoot: deps.repoRoot,
-			baseBranch: deps.baseBranch,
-			deleteBranch: deps.closeOptions.deleteBranch,
-			confirm: deps.confirm,
-		})
 	}
 
 	async function createSlice(prdId: string, spec: PrdSpec): Promise<Slice> {
@@ -183,7 +176,8 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 		await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-		return sliceFromStore(store, spec.body)
+		const raw = sliceFromStore(store, spec.body)
+		return { ...raw, bucket: classify(raw, { hasOpenPr: false, unmetDepIds: [] }) }
 	}
 
 	async function findSlices(prdId: string): Promise<Slice[]> {
@@ -199,18 +193,24 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		} catch {
 			return []
 		}
-		const slices: Slice[] = []
+		const raw: Array<Omit<Slice, 'bucket'>> = []
 		for (const entry of entries) {
 			const dir = path.join(slicesPath, entry)
 			try {
 				const store: SliceStore = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
 				const body = await readFile(path.join(dir, 'README.md'), 'utf8')
-				slices.push(sliceFromStore(store, body))
+				raw.push(sliceFromStore(store, body))
 			} catch {
 				continue
 			}
 		}
-		return slices
+		const doneIds = new Set(raw.filter((r) => r.state === 'CLOSED').map((r) => r.id))
+		return raw.map((r) => {
+			const deps = parseDeps(r.body)
+			const unmetDepIds = deps.filter((d) => !doneIds.has(d))
+			const bucket = classify(r, { hasOpenPr: false, unmetDepIds })
+			return { ...r, bucket }
+		})
 	}
 
 	async function updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -226,7 +226,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
 	}
 
-	function sliceFromStore(store: SliceStore, body: string): Slice {
+	function sliceFromStore(store: SliceStore, body: string): Omit<Slice, 'bucket'> {
 		return {
 			id: store.id,
 			title: store.title,
@@ -237,11 +237,26 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 	}
 
+	async function findPrd(id: string): Promise<PrdRecord | null> {
+		try {
+			const store = await readPrdStore(id)
+			return {
+				id: store.id,
+				branch: `${prefix}${store.id}-${store.slug}`,
+				title: store.title,
+				state: store.closedAt === null ? 'OPEN' : 'CLOSED',
+			}
+		} catch {
+			return null
+		}
+	}
+
 	return {
 		name: 'file',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
 		createPrd,
 		branchForExisting,
+		findPrd,
 		listOpen,
 		close,
 		createSlice,
@@ -431,7 +446,7 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('sets closedAt in store.json and commits the change', async () => {
+		test('sets closedAt in store.json and commits the change (does not touch branches)', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
 			await backend.close(id)
@@ -440,48 +455,25 @@ if (import.meta.vitest) {
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 			const lastMsg = (await exec('git', ['-C', f.work, 'log', '-1', '--pretty=%s'])).stdout.trim()
 			expect(lastMsg).toBe(`docs(prd-${id}): close`)
+			// Branch must still exist — branch deletion is orchestrator's job.
 			const remoteRefs = (await exec('git', ['-C', f.work, 'ls-remote', '--heads', 'origin'])).stdout
 			expect(remoteRefs).toContain(`refs/heads/${branch}`)
-		})
-
-		test('deletes the integration branch local + origin when policy is "always"', async () => {
-			const deps: BackendDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'always' } }
-			const backend = createFileBackend(deps)
-			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
-			await backend.close(id)
-			const remoteRefs = (await exec('git', ['-C', f.work, 'ls-remote', '--heads', 'origin'])).stdout
-			expect(remoteRefs).not.toContain(`refs/heads/${branch}`)
 			const localRefs = (await exec('git', ['-C', f.work, 'branch', '--list', branch])).stdout
-			expect(localRefs.trim()).toBe('')
+			expect(localRefs.trim()).not.toBe('')
 		})
 
-		test('prompts for deletion when policy is "prompt"; respects confirm=false', async () => {
-			const calls: string[] = []
-			const deps: BackendDeps = {
-				...f.deps,
-				closeOptions: { comment: null, deleteBranch: 'prompt' },
-				confirm: async (msg: string) => {
-					calls.push(msg)
-					return false
-				},
-			}
-			const backend = createFileBackend(deps)
-			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
+		test('idempotent: re-running close on a closed PRD is a no-op', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id } = await backend.createPrd({ title: 'Alpha', body: 'a' })
 			await backend.close(id)
-			expect(calls).toHaveLength(1)
-			expect(calls[0]).toMatch(/delete/i)
-			const remoteRefs = (await exec('git', ['-C', f.work, 'ls-remote', '--heads', 'origin'])).stdout
-			expect(remoteRefs).toContain(`refs/heads/${branch}`)
-		})
-
-		test('tolerates origin branch already gone (delete step no-ops, close still succeeds)', async () => {
-			const deps: BackendDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'always' } }
-			const backend = createFileBackend(deps)
-			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
-			await exec('git', ['-C', f.work, 'push', '-q', 'origin', `:${branch}`])
-			await expect(backend.close(id)).resolves.toBeUndefined()
-			const localRefs = (await exec('git', ['-C', f.work, 'branch', '--list', branch])).stdout
-			expect(localRefs.trim()).toBe('')
+			const storePath = path.join(f.prdsDir, `${id}-alpha`, 'store.json')
+			const firstClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
+			const commitCountBefore = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
+			await backend.close(id)
+			const secondClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
+			expect(secondClosedAt).toBe(firstClosedAt)
+			const commitCountAfter = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
+			expect(commitCountAfter).toBe(commitCountBefore)
 		})
 	})
 
@@ -554,6 +546,112 @@ if (import.meta.vitest) {
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
 			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'OPEN', readyForAgent: false, needsRevision: false })
 			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'CLOSED', needsRevision: true })
+		})
+	})
+
+	describe('file backend: findSlices computes bucket', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('OPEN slice with no readiness flags → draft', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const [s] = await backend.findSlices(prdId)
+			expect(s!.bucket).toBe('draft')
+		})
+
+		test('readyForAgent and no deps → ready', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
+			const [updated] = await backend.findSlices(prdId)
+			expect(updated!.bucket).toBe('ready')
+		})
+
+		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			await backend.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: true })
+			const [updated] = await backend.findSlices(prdId)
+			expect(updated!.bucket).toBe('needs-revision')
+		})
+
+		test('CLOSED → done', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			await backend.updateSlice(prdId, s.id, { state: 'CLOSED' })
+			const [updated] = await backend.findSlices(prdId)
+			expect(updated!.bucket).toBe('done')
+		})
+
+		test('slice with Depends-on: pointing to a non-done slice → blocked', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const b = await backend.createSlice(prdId, { title: 'B', body: `b spec\n\nDepends-on: ${a.id}` })
+			await backend.updateSlice(prdId, b.id, { readyForAgent: true })
+			const slices = await backend.findSlices(prdId)
+			const bAfter = slices.find((s) => s.id === b.id)!
+			expect(bAfter.bucket).toBe('blocked')
+		})
+
+		test('slice with Depends-on: pointing to a done slice → ready (dep satisfied)', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const b = await backend.createSlice(prdId, { title: 'B', body: `b spec\n\nDepends-on: ${a.id}` })
+			await backend.updateSlice(prdId, a.id, { state: 'CLOSED' })
+			await backend.updateSlice(prdId, b.id, { readyForAgent: true })
+			const slices = await backend.findSlices(prdId)
+			const bAfter = slices.find((s) => s.id === b.id)!
+			expect(bAfter.bucket).toBe('ready')
+		})
+
+		test('file backend never returns in-flight (no PR concept)', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
+			const slices = await backend.findSlices(prdId)
+			expect(slices.every((x) => x.bucket !== 'in-flight')).toBe(true)
+		})
+	})
+
+	describe('file backend: findPrd', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('returns null when no PRD exists for id', async () => {
+			const backend = createFileBackend(f.deps)
+			expect(await backend.findPrd('zzzzzz')).toBeNull()
+		})
+
+		test('returns PrdRecord with state=OPEN for an open PRD', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
+			expect(await backend.findPrd(id)).toEqual({ id, branch, title: 'Alpha', state: 'OPEN' })
+		})
+
+		test('returns PrdRecord with state=CLOSED after close', async () => {
+			const deps: BackendDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'never' } }
+			const backend = createFileBackend(deps)
+			const { id, branch } = await backend.createPrd({ title: 'Beta', body: 'b' })
+			await backend.close(id)
+			expect(await backend.findPrd(id)).toEqual({ id, branch, title: 'Beta', state: 'CLOSED' })
 		})
 	})
 

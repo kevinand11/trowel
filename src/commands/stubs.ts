@@ -17,23 +17,6 @@ export async function work(prdId: string, opts: { backend?: string }): Promise<v
 	notImplemented('work', `Requires both a backend implementation and the sandcastle port. prdId=${prdId} opts=${JSON.stringify(opts)}`)
 }
 
-export async function close(prdId: string, opts: { backend?: string }): Promise<void> {
-	notImplemented('close', `Requires a backend implementation. prdId=${prdId} opts=${JSON.stringify(opts)}`)
-}
-
-export async function status(prdId: string, opts: { backend?: string }): Promise<void> {
-	notImplemented('status', `Requires a backend implementation. prdId=${prdId} opts=${JSON.stringify(opts)}`)
-}
-
-export async function init(layer: string): Promise<void> {
-	const allowed = ['global', 'private', 'project'] as const
-	if (!allowed.includes(layer as (typeof allowed)[number])) {
-		process.stderr.write(`trowel init: layer must be one of ${allowed.join(' | ')} (got: ${layer})\n`)
-		process.exit(1)
-	}
-	notImplemented('init', `Interactive wizard pending. Target layer: ${layer}`)
-}
-
 export async function diagnose(desc: string): Promise<void> {
 	notImplemented('diagnose', `Diagnostic workflow pending. Description: ${desc}`)
 }

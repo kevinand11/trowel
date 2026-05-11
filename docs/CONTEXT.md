@@ -19,8 +19,12 @@ The strategy that decides how a **PRD** is stored, identified, listed, and linke
 _Avoid_: Provider, adapter, driver.
 
 **Slice**:
-One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is backend-defined: the `file` backend stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` backend stores them as GitHub sub-issues. Either way, the *implementation* of a slice goes through a GitHub PR managed by the AFK loop.
+One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is backend-defined: the `file` backend stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` backend stores them as GitHub sub-issues. Slice implementation flow is backend-dependent too: the `issue` backend routes implementation through a GitHub PR managed by the AFK loop; the `file` backend has no PR concept (slices transition OPEN → CLOSED directly). Each `Slice` carries a **Bucket** describing its current lifecycle position.
 _Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature; sub-issues are only one storage mechanism), task, ticket.
+
+**Bucket**:
+The canonical lifecycle classification of a **Slice**. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive — every slice is in exactly one bucket. Assigned by the **Backend** inside `findSlices` (not by `trowel status`); see ADR `backend-owns-slice-bucket-classification` for the predicate table. The `in-flight` bucket only fires for backends that track PRs (`issue`); the `file` backend never emits it.
+_Avoid_: Status (overloaded with `Slice.state: OPEN | CLOSED`, which is a separate raw signal that feeds the bucket), phase, stage.
 
 **Integration branch**:
 The branch that holds the in-flight feature: doc commits from the **PRD** session, slice-implementation commits merged in from per-slice PRs, ready for one final merge to `main` when the feature ships. Naming pattern is backend-defined.
@@ -59,6 +63,7 @@ _Avoid_: Original branch, prior branch.
 - A **PRD** has zero or more **Slices**.
 - A **PRD** has exactly one **Integration branch** (named per **Backend**).
 - Every **Slice** carries a **Slice marker** referring to its **PRD**.
+- Every **Slice** is in exactly one **Bucket** at any time, assigned by its **Backend**.
 - The **Backend** is chosen per project; `trowel start`'s `--backend <kind>` flag overrides project config for one invocation.
 - Resolution of every config knob walks layers `default` → `global` → `private` → `project`, with later layers' present values overriding earlier ones.
 
