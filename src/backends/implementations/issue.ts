@@ -84,6 +84,10 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 					readyForAgent: s.labels.some((l) => l.name === deps.labels.readyForAgent),
 					needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
 					blockedBy,
+					// TODO: populate when AFK-loop wiring lands. Currently the bucket
+					// classifier still derives `hasOpenPr` from openPrBranches below.
+					prState: null,
+					branchAhead: false,
 				}
 			}),
 		)
@@ -130,6 +134,8 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 			needsRevision: false,
 			bucket: spec.blockedBy.length > 0 ? 'blocked' : 'draft',
 			blockedBy: [...spec.blockedBy],
+			prState: null,
+			branchAhead: false,
 		}
 	}
 
@@ -393,6 +399,8 @@ if (import.meta.vitest) {
 				needsRevision: false,
 				bucket: 'draft',
 				blockedBy: [],
+				prState: null,
+				branchAhead: false,
 			})
 			// create issue with composed body
 			expect(calls[0]).toEqual(['issue', 'create', '--title', 'Implement Tab Parser', '--body', 'the slice spec\n\nPart of #42'])
@@ -494,8 +502,8 @@ if (import.meta.vitest) {
 			const slices = await backend.findSlices('42')
 			expect(calls[0]).toEqual(['api', '--paginate', 'repos/{owner}/{repo}/issues/42/sub_issues'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready', blockedBy: [] },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done', blockedBy: [] },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready', blockedBy: [], prState: null, branchAhead: false },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done', blockedBy: [], prState: null, branchAhead: false },
 			])
 		})
 

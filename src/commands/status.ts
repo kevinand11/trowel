@@ -180,6 +180,8 @@ if (import.meta.vitest) {
 			readyForAgent: false,
 			needsRevision: false,
 			blockedBy: [],
+			prState: null,
+			branchAhead: false,
 			...overrides,
 		})
 

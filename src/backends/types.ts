@@ -27,6 +27,18 @@ export type PrdRecord = {
 	state: PrdState
 }
 
+/**
+ * The state of the slice's PR on the integration branch.
+ *
+ * - `'draft'`: an open draft PR exists (the reviewer phase fires).
+ * - `'ready'`: an open non-draft PR exists, awaiting merge.
+ * - `'merged'`: the PR is merged (the slice's `state` should also be `'CLOSED'` in most cases).
+ * - `null`: no PR exists, or the backend has no PR concept (file backend always emits `null`).
+ *
+ * Populated by `findSlices`. See ADR `afk-loop-asymmetric-across-backends`.
+ */
+export type SlicePrState = 'draft' | 'ready' | 'merged' | null
+
 export type Slice = {
 	id: string
 	title: string
@@ -38,6 +50,10 @@ export type Slice = {
 	bucket: Bucket
 	/** Ids of slices that block this one. See ADR `backend-native-blocker-storage`. */
 	blockedBy: string[]
+	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. */
+	prState: SlicePrState
+	/** True when the slice's local branch is ahead of the integration branch with no PR open (a self-heal case). Always false on the file backend. */
+	branchAhead: boolean
 }
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>

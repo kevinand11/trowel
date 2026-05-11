@@ -207,7 +207,13 @@ if (import.meta.vitest) {
 			},
 			findSlices: async () => {
 				calls.push('findSlices')
-				return state.slices.map((s) => ({ ...s, blockedBy: [], bucket: classify(s, { hasOpenPr: false, unmetDepIds: [] }) }))
+				return state.slices.map((s) => ({
+					...s,
+					blockedBy: [],
+					prState: null,
+					branchAhead: false,
+					bucket: classify(s, { hasOpenPr: false, unmetDepIds: [] }),
+				}))
 			},
 			updateSlice: async (_pid, sliceId, patch) => {
 				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)

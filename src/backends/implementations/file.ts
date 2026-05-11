@@ -235,6 +235,8 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 			readyForAgent: store.readyForAgent,
 			needsRevision: store.needsRevision,
 			blockedBy: store.blockedBy ?? [],
+			prState: null,
+			branchAhead: false,
 		}
 	}
 
@@ -532,6 +534,15 @@ if (import.meta.vitest) {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
 			expect(await backend.findSlices(prdId)).toEqual([])
+		})
+
+		test('returned slices have prState=null and branchAhead=false (file backend has no PR concept)', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const [s] = await backend.findSlices(prdId)
+			expect(s!.prState).toBeNull()
+			expect(s!.branchAhead).toBe(false)
 		})
 
 		test('returns one Slice per slice directory with body from README.md and state from closedAt', async () => {
