@@ -6,6 +6,12 @@ export type PrdSpec = {
 	body: string
 }
 
+export type SliceSpec = {
+	title: string
+	body: string
+	blockedBy: string[]
+}
+
 export type PrdSummary = {
 	id: string
 	title: string
@@ -30,9 +36,11 @@ export type Slice = {
 	needsRevision: boolean
 	/** Lifecycle bucket computed by the backend at findSlices time. See ADR `backend-owns-slice-bucket-classification`. */
 	bucket: Bucket
+	/** Ids of slices that block this one. See ADR `backend-native-blocker-storage`. */
+	blockedBy: string[]
 }
 
-export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state'>>
+export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
 
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 
@@ -65,7 +73,7 @@ export interface Backend {
 	close(id: string): Promise<void>
 
 	// Slice lifecycle
-	createSlice(prdId: string, spec: PrdSpec): Promise<Slice>
+	createSlice(prdId: string, spec: SliceSpec): Promise<Slice>
 	findSlices(prdId: string): Promise<Slice[]>
 	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
 }

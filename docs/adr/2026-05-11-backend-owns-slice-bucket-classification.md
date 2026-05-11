@@ -9,13 +9,13 @@ The six buckets, evaluated top-to-bottom (first match wins):
 | `done` | `state === 'CLOSED'` |
 | `needs-revision` | OPEN + `needsRevision` |
 | `in-flight` | OPEN + has an open PR targeting the integration branch (**`issue` backend only**) |
-| `blocked` | OPEN + at least one dep-trailer reference points at a non-`done` slice |
+| `blocked` | OPEN + at least one id in `Slice.blockedBy` points at a non-`done` slice |
 | `ready` | OPEN + `readyForAgent` + !in-flight + !blocked |
 | `draft` | OPEN + `!readyForAgent` |
 
 `in-flight` is the only bucket whose predicate depends on backend capabilities: the `file` backend has no PR concept (slices are local directories; their implementation does not flow through a GitHub PR), so `in-flight` never fires there. Putting the predicate inside each backend lets the `file` backend skip the bucket entirely without an `if (backend === 'issue')` branch in the orchestrator.
 
-The dep-trailer parser is a shared utility (`src/utils/deps.ts`, ported from `.sandcastle/utils/deps.ts`); both backends call it from inside `findSlices`. The classifier itself is also shared — both backends invoke the same `classify(slice, deps, caps) → bucket` function, varying only the `caps` argument (a small record describing what the backend can answer about a slice, e.g. `{ tracksPrs: boolean, hasOpenPr: boolean }`).
+Blocker ids come from `Slice.blockedBy` directly — each backend reads them from its native storage (issue: GitHub `dependencies/blocked_by` API; file: `store.json.blockedBy`). See ADR `backend-native-blocker-storage` for the storage details. The earlier `src/utils/deps.ts` body-trailer parser is gone; the classifier reads `slice.blockedBy.filter(id => !doneIds.has(id))` directly. The classifier itself is shared — both backends invoke the same `classify(slice, ctx) → bucket` function, varying only the `ctx` argument (a small record describing what the backend can answer about a slice, e.g. `{ hasOpenPr: boolean, unmetDepIds: string[] }`).
 
 ## Considered options
 

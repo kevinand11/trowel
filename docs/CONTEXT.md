@@ -19,12 +19,16 @@ The strategy that decides how a **PRD** is stored, identified, listed, and linke
 _Avoid_: Provider, adapter, driver.
 
 **Slice**:
-One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is backend-defined: the `file` backend stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` backend stores them as GitHub sub-issues. Slice implementation flow is backend-dependent too: the `issue` backend routes implementation through a GitHub PR managed by the AFK loop; the `file` backend has no PR concept (slices transition OPEN → CLOSED directly). Each `Slice` carries a **Bucket** describing its current lifecycle position.
+One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is backend-defined: the `file` backend stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` backend stores them as GitHub sub-issues. Slice implementation flow is backend-dependent too: the `issue` backend routes implementation through a GitHub PR managed by the AFK loop; the `file` backend has no PR concept (slices transition OPEN → CLOSED directly). Each `Slice` carries a **Bucket** describing its current lifecycle position, and a `blockedBy: string[]` of **Blocker** slice ids.
 _Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature; sub-issues are only one storage mechanism), task, ticket.
 
 **Bucket**:
 The canonical lifecycle classification of a **Slice**. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive — every slice is in exactly one bucket. Assigned by the **Backend** inside `findSlices` (not by `trowel status`); see ADR `backend-owns-slice-bucket-classification` for the predicate table. The `in-flight` bucket only fires for backends that track PRs (`issue`); the `file` backend never emits it.
 _Avoid_: Status (overloaded with `Slice.state: OPEN | CLOSED`, which is a separate raw signal that feeds the bucket), phase, stage.
+
+**Blocker**:
+A **Slice** referenced in another **Slice**'s `blockedBy` field. Slice X is blocked by Slice Y means Y must reach the `done` **Bucket** before X is considered unblocked. Storage is backend-native: the `issue` backend uses GitHub's `dependencies/blocked_by` REST API; the `file` backend stores `blockedBy: string[]` as a flat field on the slice's `store.json`. There is no shared body-trailer convention — see ADR `backend-native-blocker-storage`.
+_Avoid_: Dependency (ambiguous with build/package "dependencies"), parent (parent is a sub-issue concept, the inverse direction).
 
 **Integration branch**:
 The branch that holds the in-flight feature: doc commits from the **PRD** session, slice-implementation commits merged in from per-slice PRs, ready for one final merge to `main` when the feature ships. Naming pattern is backend-defined.
@@ -64,6 +68,7 @@ _Avoid_: Original branch, prior branch.
 - A **PRD** has exactly one **Integration branch** (named per **Backend**).
 - Every **Slice** carries a **Slice marker** referring to its **PRD**.
 - Every **Slice** is in exactly one **Bucket** at any time, assigned by its **Backend**.
+- A **Slice** may reference zero or more **Blockers** (other slices in the same **PRD**) via its `blockedBy` field; if any blocker is not yet `done`, the slice's bucket is `blocked`.
 - The **Backend** is chosen per project; `trowel start`'s `--backend <kind>` flag overrides project config for one invocation.
 - Resolution of every config knob walks layers `default` → `global` → `private` → `project`, with later layers' present values overriding earlier ones.
 

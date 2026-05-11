@@ -16,7 +16,7 @@ These decisions cross every pending session. Don't reopen unless you have a conc
 - **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
 - **PRD-host model.** A **PRD** is configurable per project across two **Backends**: `file`, `issue`. Slices are backend-managed: the `file` backend stores them locally alongside the PRD; the `issue` backend uses GitHub sub-issues (see ADR `slices-local-for-file-backend`). Doc changes (CONTEXT.md, ADRs) live on the **integration branch**, not on `main`.
 - **Every PRD has a unique id (see ADR `prd-unique-id-and-file-backend-layout`).** Cross-backend: issue number (`issue`) or 6-char base-36 random (`file`). The id is the argument trowel commands take.
-- **Backend interface shape (see ADRs `backend-interface-composite-create`, `slices-local-for-file-backend`, `backend-owns-slice-bucket-classification`).** Creation collapses into a single `Backend.createPrd(spec) → { id, branch }`. Slices: `createSlice(prdId, spec) → Slice`, `findSlices(prdId) → Slice[]` (each `Slice` has `bucket` pre-computed by the backend), `updateSlice(prdId, sliceId, patch)`. PRD discovery: `findPrd(id) → { branch, state } | null`, `branchForExisting`, `listOpen`, `close`. Each backend exposes `defaultBranchPrefix` (used when `config.branchPrefix` is null).
+- **Backend interface shape (see ADRs `backend-interface-composite-create`, `slices-local-for-file-backend`, `backend-owns-slice-bucket-classification`, `backend-native-blocker-storage`).** Creation: `Backend.createPrd(spec: PrdSpec) → { id, branch }` and `createSlice(prdId, spec: SliceSpec) → Slice`. `PrdSpec = { title, body }`; `SliceSpec = { title, body, blockedBy: string[] }` — split because PRDs have no blocker concept. Slices: `findSlices(prdId) → Slice[]` (each `Slice` has `bucket` and `blockedBy` populated by the backend), `updateSlice(prdId, sliceId, patch)` where `SlicePatch` accepts a full-array `blockedBy: string[]` replace. PRD discovery: `findPrd(id) → { branch, state } | null`, `branchForExisting`, `listOpen`, `close`. Each backend exposes `defaultBranchPrefix` (used when `config.branchPrefix` is null).
 - **Config shape deltas (cross-cutting).** `config.branchPrefix: string | null` (was always-string; null means "use backend default"). `config.labels.prd: string` (was `string[]`), default `'prd'`. `config.labels.readyForAgent` / `config.labels.needsRevision` are used by the `issue` backend to translate GitHub labels ↔ `Slice` booleans; the `file` backend ignores them. New `config.close: { comment: string | null; deleteBranch: 'always' | 'never' | 'prompt' }`, defaults `'Closed via trowel'` / `'prompt'`. `config.close.comment` is a no-op for the `file` backend (no GitHub object to comment on).
 - **Per-layer path anchoring.** Path values in any config layer resolve relative to that layer's anchor (project layer → project root; private layer → `~/.trowel/projects/<mirror>/`; global layer → `~/.trowel/`; default → project root). Resolution happens at load time before deep-merge.
 - **Config discovery (named layers, β precedence — `project` wins outright).** Enum: `ConfigLayer = 'default' | 'global' | 'private' | 'project'`. `InitableLayer` excludes `'default'`.
@@ -317,13 +317,13 @@ Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 **Locked decisions** (from grilling session 2026-05-11):
 
 - **Six-bucket taxonomy.** `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive. See ADR `backend-owns-slice-bucket-classification` for predicates.
-- **Backend owns classification.** Each backend computes `Slice.bucket` inside `findSlices`. `status` is pure presentation. Dep parsing lives in shared `src/utils/deps.ts`; both backends import it. The `in-flight` bucket is backend-conditional: the `file` backend never emits it.
+- **Backend owns classification.** Each backend computes `Slice.bucket` inside `findSlices`. `status` is pure presentation. Blocker ids come from `Slice.blockedBy` directly (no body trailers — see ADR `backend-native-blocker-storage`). The `in-flight` bucket is backend-conditional: the `file` backend never emits it.
 - **Output: PRD header + sectioned slices.** Header carries id, title, branch, state, and one-line summary counts. Body is one section per non-empty bucket; each section shows slice id + title + bucket-specific right-column metadata. Empty buckets are omitted (so `file`-backend output collapses cleanly with no `in-flight` heading).
 - **Right-column metadata per bucket.**
   - `done` — merged PR link/number (issue backend) or `merged` indicator (file backend).
   - `needs-revision` — open PR number (issue backend) or just the badge (file backend).
   - `in-flight` — open PR number + review state (issue backend only).
-  - `blocked` — `deps: <id>[, <id>...]` listing unmet dep slice ids.
+  - `blocked` — `blockedBy: <id>[, <id>...]` listing unmet blocker slice ids (read from `Slice.blockedBy`).
   - `ready`, `draft` — no extra column.
 - **No `--json` mode in v0.** Add when there's a real scripting consumer.
 - **Closed PRDs work too.** Read-only / cheap; useful for retro lookups.
@@ -367,6 +367,48 @@ State:   OPEN          (3 done · 1 in-flight · 2 ready · 1 blocked · 1 draft
 ---
 
 **Verification path.** Run both against a scratch PRD on the `file` backend with a handful of slices in different buckets; then against the `issue` backend with real GitHub state (open PR, merged PR, open sub-issue with `needs-revision` label).
+
+---
+
+## 6.5. Migrate from body-trailer deps to backend-native blockers
+
+**Goal.** Replace the `Depends-on:` body-trailer convention with backend-native blocker storage per ADR `backend-native-blocker-storage`. Spike against the live GitHub API was completed 2026-05-11 (results captured in the ADR).
+
+**Locked decisions** (from grilling session 2026-05-11):
+
+- **No coexistence.** Trailers are deleted, not kept as fallback. v0 has no production data to migrate; existing slice bodies that contain `Depends-on:` lines become harmless prose.
+- **Field name + shape.** `Slice.blockedBy: string[]` — always present (empty array when none), ids only, no resolution state cached on the type.
+- **Spec split.** `PrdSpec = { title, body }`; `SliceSpec = { title, body, blockedBy: string[] }`. `createSlice` takes `SliceSpec`; `createPrd` takes `PrdSpec`.
+- **Patch shape.** `SlicePatch.blockedBy?: string[]` is a full-array **replace**, not a delta. Backends compute the diff against the existing list internally.
+- **No backend-side validation** that blocker ids resolve to real slices in the PRD. The classifier already tolerates unknown ids (unknown == unmet). Validation belongs to whatever orchestrator wires user input → `updateSlice`.
+- **No `blocking` field on `Slice`.** The inverse is pure derivation across the slice list — implement when a consumer needs it.
+
+**Files to change.**
+
+- `src/backends/types.ts` — add `SliceSpec` (separate from `PrdSpec`); add `blockedBy: string[]` to `Slice` and `SlicePatch`.
+- `src/utils/deps.ts` — **delete** (no callers after refactor).
+- `src/utils/bucket.ts` — unchanged signature; classifier already takes `ctx.unmetDepIds: string[]`. Source of those ids switches from `parseDeps(body)` to `slice.blockedBy.filter(id => !doneIds.has(id))`.
+- `src/backends/implementations/file.ts`:
+  - `SliceStore` gains `blockedBy: string[]` (flat, alongside `readyForAgent` / `needsRevision`).
+  - `createSlice` writes `spec.blockedBy` to `store.json`.
+  - `updateSlice` overwrites `store.json.blockedBy` when `patch.blockedBy !== undefined`.
+  - `findSlices` reads `blockedBy` from `store.json`; passes `slice.blockedBy.filter(id => !doneIds.has(id))` to `classify`.
+- `src/backends/implementations/issue.ts`:
+  - `findSlices` reads `issue_dependencies_summary.total_blocked_by` inline from each sub-issue. For slices where `total_blocked_by > 0`, makes one `GET /repos/{o}/{r}/issues/{n}/dependencies/blocked_by` call and maps the response array to `blockedBy: string[]` (issue numbers as strings). For slices where it's 0, `blockedBy: []`.
+  - `createSlice` POSTs each entry of `spec.blockedBy` after the issue is created and sub-issue link is established (sequential — `gh api -X POST .../dependencies/blocked_by -F issue_id=<int>`). The blocker's *internal id* is required; resolve via `gh api repos/.../issues/{n} --jq .id` per blocker (or batch from a pre-fetch).
+  - `updateSlice` diffs old `blockedBy` (from `findSlices`-like fetch) against `patch.blockedBy`; emits `POST` per added and `DELETE` per removed.
+- `src/commands/status.ts` — `extractDepsFromBody` deleted; right column for `blocked` reads `slice.blockedBy.filter(unmet)` and renders `blockedBy: <ids>`.
+- Tests:
+  - All slice-body fixtures using `\n\nDepends-on: ...` trailers rewritten to use the `blockedBy` field.
+  - `src/utils/deps.ts` tests deleted with the file.
+  - New issue-backend tests for: `findSlices` skipping `dependencies/blocked_by` fetch when `total_blocked_by === 0`; `findSlices` fetching when > 0; `createSlice` POSTing each blocker; `updateSlice` diffing add/remove.
+  - New file-backend tests for: `store.json.blockedBy` round-trip; classifier integration.
+
+**Open question.** None — fact-check on the GitHub API has been resolved (see ADR). Implementation can proceed.
+
+**Verification path.** Scratch repo with both backends:
+- file: create two slices, set `blockedBy: [A.id]` on B, verify B's `bucket === 'blocked'`. Close A, re-`findSlices`, verify B's bucket flips to `ready` (assuming readyForAgent).
+- issue: end-to-end against a real (private throwaway) GitHub repo. Verify the "Blocked by" panel updates in the GitHub UI after `updateSlice`.
 
 ---
 

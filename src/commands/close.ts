@@ -174,8 +174,6 @@ export async function close(prdId: string, opts: { backend?: string }): Promise<
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { classify } = await import('../utils/bucket.ts')
-	const { parseDeps: _parseDeps } = await import('../utils/deps.ts')
-	void _parseDeps
 
 	type FakeBackendState = {
 		prd: { id: string; branch: string; title: string; state: 'OPEN' | 'CLOSED' } | null
@@ -209,7 +207,7 @@ if (import.meta.vitest) {
 			},
 			findSlices: async () => {
 				calls.push('findSlices')
-				return state.slices.map((s) => ({ ...s, bucket: classify(s, { hasOpenPr: false, unmetDepIds: [] }) }))
+				return state.slices.map((s) => ({ ...s, blockedBy: [], bucket: classify(s, { hasOpenPr: false, unmetDepIds: [] }) }))
 			},
 			updateSlice: async (_pid, sliceId, patch) => {
 				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)

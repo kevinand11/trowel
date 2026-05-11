@@ -30,7 +30,7 @@ export function renderStatus(prd: PrdRecord, slices: Slice[]): string {
 	lines.push(`State:   ${prd.state}          ${summary}`)
 	lines.push('')
 
-	const sliceById = parseDepsBySliceId(slices)
+	const sliceById = bySliceId(slices)
 
 	for (const bucket of BUCKET_ORDER) {
 		const inBucket = slices.filter((s) => s.bucket === bucket)
@@ -57,40 +57,20 @@ function formatCounts(counts: Record<Bucket, number>): string {
 		.join(' · ')
 }
 
-function parseDepsBySliceId(slices: Slice[]): Map<string, Slice> {
+function bySliceId(slices: Slice[]): Map<string, Slice> {
 	return new Map(slices.map((s) => [s.id, s]))
 }
 
-function rightColumn(s: Slice, _byId: Map<string, Slice>): string {
+function rightColumn(s: Slice, byId: Map<string, Slice>): string {
 	if (s.bucket === 'blocked') {
-		const deps = extractDepsFromBody(s.body)
-		if (deps.length === 0) return ''
-		return `deps: ${deps.join(', ')}`
+		const unmet = s.blockedBy.filter((id) => {
+			const dep = byId.get(id)
+			return !dep || dep.bucket !== 'done'
+		})
+		if (unmet.length === 0) return ''
+		return `blockedBy: ${unmet.join(', ')}`
 	}
 	return ''
-}
-
-function extractDepsFromBody(body: string): string[] {
-	// Re-parse trailers to surface dep ids for rendering. Cheap & avoids piping
-	// the raw dep list through the Slice type.
-	const lines = body.replace(/\r\n/g, '\n').split('\n')
-	let end = lines.length - 1
-	while (end >= 0 && lines[end]!.trim() === '') end--
-	if (end < 0) return []
-	let start = end
-	while (start > 0 && lines[start - 1]!.trim() !== '') start--
-	const re = /^([A-Za-z][A-Za-z0-9-]*):\s*(.+)$/
-	const out: string[] = []
-	for (let i = start; i <= end; i++) {
-		const m = lines[i]!.match(re)
-		if (!m) return []
-		if (m[1]!.toLowerCase() !== 'depends-on') continue
-		for (const part of m[2]!.split(',')) {
-			const id = part.trim().replace(/^#/, '')
-			if (id && !out.includes(id)) out.push(id)
-		}
-	}
-	return out
 }
 
 export type StatusRuntime = {
@@ -199,6 +179,7 @@ if (import.meta.vitest) {
 			state: 'OPEN',
 			readyForAgent: false,
 			needsRevision: false,
+			blockedBy: [],
 			...overrides,
 		})
 
@@ -237,15 +218,15 @@ if (import.meta.vitest) {
 			expect(out).toMatch(/^ {2}in-flight$/m)
 		})
 
-		test('"blocked" section shows deps in the right column', () => {
+		test('"blocked" section shows blockedBy ids in the right column (read from Slice.blockedBy)', () => {
 			const out = renderStatus(prd, [
 				{
-					...slice({ id: '146', title: 'SSO admin UI', body: 'spec\n\nDepends-on: 145, 147', readyForAgent: true }),
+					...slice({ id: '146', title: 'SSO admin UI', readyForAgent: true, blockedBy: ['145', '147'] }),
 					bucket: 'blocked',
 				},
 			])
 			expect(out).toMatch(/^ {2}blocked$/m)
-			expect(out).toContain('deps: 145, 147')
+			expect(out).toContain('blockedBy: 145, 147')
 		})
 
 		test('empty buckets are omitted from the rendering', () => {

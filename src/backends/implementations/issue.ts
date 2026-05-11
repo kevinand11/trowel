@@ -1,8 +1,7 @@
 import { classify } from '../../utils/bucket.ts'
-import { parseDeps } from '../../utils/deps.ts'
 import type { GhResult, GhRunner } from '../../utils/gh-runner.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch } from '../types.ts'
+import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = ''
 
@@ -52,6 +51,12 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		return branch
 	}
 
+	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
+		const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${sliceNumber}/dependencies/blocked_by`])
+		const blockers = JSON.parse(out) as Array<{ number: number }>
+		return blockers.map((b) => String(b.number))
+	}
+
 	function stripBodyTrailer(body: string, prdId: string): string {
 		const re = new RegExp(`\\s*\\n+\\s*Part of #${prdId}\\s*$`)
 		return body.replace(re, '')
@@ -65,15 +70,23 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 			body: string
 			state: string
 			labels: Array<{ name: string }>
+			issue_dependencies_summary?: { total_blocked_by?: number }
 		}>
-		const rawSlices: Array<Omit<Slice, 'bucket'>> = rawIssues.map((s) => ({
-			id: String(s.number),
-			title: s.title,
-			body: stripBodyTrailer(s.body, prdId),
-			state: (s.state === 'open' ? 'OPEN' : 'CLOSED') as Slice['state'],
-			readyForAgent: s.labels.some((l) => l.name === deps.labels.readyForAgent),
-			needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
-		}))
+		const rawSlices: Array<Omit<Slice, 'bucket'>> = await Promise.all(
+			rawIssues.map(async (s): Promise<Omit<Slice, 'bucket'>> => {
+				const totalBlockedBy = s.issue_dependencies_summary?.total_blocked_by ?? 0
+				const blockedBy = totalBlockedBy > 0 ? await fetchBlockedBy(s.number) : []
+				return {
+					id: String(s.number),
+					title: s.title,
+					body: stripBodyTrailer(s.body, prdId),
+					state: (s.state === 'open' ? 'OPEN' : 'CLOSED') as Slice['state'],
+					readyForAgent: s.labels.some((l) => l.name === deps.labels.readyForAgent),
+					needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
+					blockedBy,
+				}
+			}),
+		)
 
 		// Bulk-query open PRs once. Build a set of head branches that have open PRs.
 		// Used to mark slices as `in-flight` when their derived branch is among them.
@@ -88,20 +101,26 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		return rawSlices.map((r) => {
 			const expectedBranch = `${prefix}${r.id}-${slugify(r.title)}`
 			const hasOpenPr = openPrBranches.has(expectedBranch)
-			const sliceDeps = parseDeps(r.body)
-			const unmetDepIds = sliceDeps.filter((d) => !doneIds.has(d))
+			const unmetDepIds = r.blockedBy.filter((d) => !doneIds.has(d))
 			const bucket = classify(r, { hasOpenPr, unmetDepIds })
 			return { ...r, bucket }
 		})
 	}
 
-	async function createSlice(prdId: string, spec: PrdSpec): Promise<Slice> {
+	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
 		const body = `${spec.body}\n\nPart of #${prdId}`
 		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', body])
 		const sliceNumber = parseIssueNumberFromUrl(createOut)
 		const internalIdOut = await ghOrThrow(['api', `repos/{owner}/{repo}/issues/${sliceNumber}`, '--jq', '.id'])
 		const internalId = internalIdOut.trim()
 		await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${prdId}/sub_issues`, '-F', `sub_issue_id=${internalId}`])
+
+		for (const blockerNumber of spec.blockedBy) {
+			const blockerInternalIdOut = await ghOrThrow(['api', `repos/{owner}/{repo}/issues/${blockerNumber}`, '--jq', '.id'])
+			const blockerInternalId = blockerInternalIdOut.trim()
+			await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${sliceNumber}/dependencies/blocked_by`, '-F', `issue_id=${blockerInternalId}`])
+		}
+
 		return {
 			id: sliceNumber,
 			title: spec.title,
@@ -109,7 +128,8 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 			state: 'OPEN',
 			readyForAgent: false,
 			needsRevision: false,
-			bucket: 'draft',
+			bucket: spec.blockedBy.length > 0 ? 'blocked' : 'draft',
+			blockedBy: [...spec.blockedBy],
 		}
 	}
 
@@ -171,6 +191,23 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		if (patch.needsRevision !== undefined) {
 			const flag = patch.needsRevision ? '--add-label' : '--remove-label'
 			await ghOrThrow(['issue', 'edit', sliceId, flag, deps.labels.needsRevision])
+		}
+		if (patch.blockedBy !== undefined) {
+			const currentOut = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${sliceId}/dependencies/blocked_by`])
+			const current = JSON.parse(currentOut) as Array<{ id: number; number: number }>
+			const currentByNumber = new Map(current.map((b) => [String(b.number), b.id]))
+			const target = new Set(patch.blockedBy)
+			for (const [number, internalId] of currentByNumber) {
+				if (!target.has(number)) {
+					await ghOrThrow(['api', '-X', 'DELETE', `repos/{owner}/{repo}/issues/${sliceId}/dependencies/blocked_by/${internalId}`])
+				}
+			}
+			for (const number of patch.blockedBy) {
+				if (currentByNumber.has(number)) continue
+				const blockerInternalIdOut = await ghOrThrow(['api', `repos/{owner}/{repo}/issues/${number}`, '--jq', '.id'])
+				const blockerInternalId = blockerInternalIdOut.trim()
+				await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${sliceId}/dependencies/blocked_by`, '-F', `issue_id=${blockerInternalId}`])
+			}
 		}
 		if (patch.state === 'CLOSED') {
 			await ghOrThrow(['issue', 'close', sliceId])
@@ -345,7 +382,7 @@ if (import.meta.vitest) {
 				},
 			])
 			const backend = createIssueBackend(deps)
-			const slice = await backend.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec' })
+			const slice = await backend.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec', blockedBy: [] })
 
 			expect(slice).toEqual({
 				id: '57',
@@ -355,6 +392,7 @@ if (import.meta.vitest) {
 				readyForAgent: false,
 				needsRevision: false,
 				bucket: 'draft',
+				blockedBy: [],
 			})
 			// create issue with composed body
 			expect(calls[0]).toEqual(['issue', 'create', '--title', 'Implement Tab Parser', '--body', 'the slice spec\n\nPart of #42'])
@@ -362,6 +400,63 @@ if (import.meta.vitest) {
 			expect(calls[1]).toEqual(['api', 'repos/{owner}/{repo}/issues/57', '--jq', '.id'])
 			// link as sub-issue
 			expect(calls[2]).toEqual(['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/42/sub_issues', '-F', 'sub_issue_id=12345678'])
+		})
+	})
+
+	describe('issue backend: createSlice with blockedBy', () => {
+		test('POSTs dependencies/blocked_by for each blocker, resolving each blocker number → internal id', async () => {
+			const { deps, calls } = makeDeps([
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'create',
+					respond: { ok: true, stdout: 'https://github.com/o/r/issues/57\n', stderr: '' },
+				},
+				{
+					// Blocker 99's internal id resolution.
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/99') && a.includes('--jq'),
+					respond: { ok: true, stdout: '999000\n', stderr: '' },
+				},
+				{
+					// New slice 57's internal id resolution.
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/57') && a.includes('--jq'),
+					respond: { ok: true, stdout: '570000\n', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/42/sub_issues'),
+					respond: { ok: true, stdout: '', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/57/dependencies/blocked_by'),
+					respond: { ok: true, stdout: '{}', stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			const slice = await backend.createSlice('42', { title: 'Implement Tab Parser', body: 'spec', blockedBy: ['99'] })
+			expect(slice.blockedBy).toEqual(['99'])
+
+			// Verify the dependencies/blocked_by POST was made with the resolved internal id.
+			const depCall = calls.find((c) => c[0] === 'api' && c.includes('repos/{owner}/{repo}/issues/57/dependencies/blocked_by') && c.includes('-X') && c[c.indexOf('-X') + 1] === 'POST')
+			expect(depCall).toBeDefined()
+			expect(depCall).toContain('issue_id=999000')
+		})
+
+		test('blockedBy: [] → no extra dependencies POST calls', async () => {
+			const { deps, calls } = makeDeps([
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'create',
+					respond: { ok: true, stdout: 'https://github.com/o/r/issues/57\n', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/57') && a.includes('--jq'),
+					respond: { ok: true, stdout: '570000\n', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/42/sub_issues'),
+					respond: { ok: true, stdout: '', stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			await backend.createSlice('42', { title: 'A', body: 'b', blockedBy: [] })
+			expect(calls.find((c) => c.includes('repos/{owner}/{repo}/issues/57/dependencies/blocked_by'))).toBeUndefined()
 		})
 	})
 
@@ -399,8 +494,8 @@ if (import.meta.vitest) {
 			const slices = await backend.findSlices('42')
 			expect(calls[0]).toEqual(['api', '--paginate', 'repos/{owner}/{repo}/issues/42/sub_issues'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready' },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done' },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready', blockedBy: [] },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done', blockedBy: [] },
 			])
 		})
 
@@ -498,25 +593,48 @@ if (import.meta.vitest) {
 			expect(s!.bucket).toBe('needs-revision')
 		})
 
-		test('open slice with unmet dep → blocked', async () => {
-			const { deps } = makeDeps([
+		test('open slice with total_blocked_by > 0 → fetches dependencies + populates blockedBy + blocked bucket', async () => {
+			const { deps, calls } = makeDeps([
 				{
-					match: (a) => a[0] === 'api' && a.includes('--paginate'),
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/42/sub_issues'),
 					respond: {
 						ok: true,
 						stdout: JSON.stringify([
-							{ id: 1, number: 57, title: 'A', body: 'spec', state: 'open', labels: [] },
-							{ id: 2, number: 58, title: 'B', body: 'spec\n\nDepends-on: 57', state: 'open', labels: [{ name: 'ready-for-agent' }] },
+							{
+								id: 1,
+								number: 57,
+								title: 'A',
+								body: 'spec',
+								state: 'open',
+								labels: [],
+								issue_dependencies_summary: { blocked_by: 0, blocking: 1, total_blocked_by: 0, total_blocking: 1 },
+							},
+							{
+								id: 2,
+								number: 58,
+								title: 'B',
+								body: 'spec',
+								state: 'open',
+								labels: [{ name: 'ready-for-agent' }],
+								issue_dependencies_summary: { blocked_by: 1, blocking: 0, total_blocked_by: 1, total_blocking: 0 },
+							},
 						]),
 						stderr: '',
 					},
 				},
 				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/58/dependencies/blocked_by'),
+					respond: { ok: true, stdout: JSON.stringify([{ id: 1, number: 57, title: 'A' }]), stderr: '' },
+				},
 			])
 			const backend = createIssueBackend(deps)
 			const slices = await backend.findSlices('42')
 			const b = slices.find((x) => x.id === '58')!
+			expect(b.blockedBy).toEqual(['57'])
 			expect(b.bucket).toBe('blocked')
+			// Slice A had total_blocked_by=0 — no extra call should have been made for it.
+			expect(calls.find((c) => c.includes('repos/{owner}/{repo}/issues/57/dependencies/blocked_by'))).toBeUndefined()
 		})
 
 		test('skips pr list query when no open slices', async () => {
@@ -630,6 +748,59 @@ if (import.meta.vitest) {
 			expect(calls).toContainEqual(['issue', 'edit', '57', '--remove-label', 'ready-for-agent'])
 			expect(calls).toContainEqual(['issue', 'edit', '57', '--add-label', 'needs-revision'])
 			expect(calls).toContainEqual(['issue', 'close', '57'])
+		})
+	})
+
+	describe('issue backend: updateSlice with blockedBy', () => {
+		test('diffs old vs new: DELETEs removed blockers, POSTs added blockers', async () => {
+			const { deps, calls } = makeDeps([
+				{
+					// GET current blockers — returns issue objects with id + number
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/100/dependencies/blocked_by') && !a.includes('-X'),
+					respond: { ok: true, stdout: JSON.stringify([{ id: 700, number: 7 }]), stderr: '' },
+				},
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/8') && a.includes('--jq'),
+					respond: { ok: true, stdout: '800\n', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/9') && a.includes('--jq'),
+					respond: { ok: true, stdout: '900\n', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('-X') && a[a.indexOf('-X') + 1] === 'POST' && a.includes('repos/{owner}/{repo}/issues/100/dependencies/blocked_by'),
+					respond: { ok: true, stdout: '{}', stderr: '' },
+				},
+				{
+					match: (a) => a.includes('-X') && a[a.indexOf('-X') + 1] === 'DELETE' && a.includes('repos/{owner}/{repo}/issues/100/dependencies/blocked_by/700'),
+					respond: { ok: true, stdout: '{}', stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			await backend.updateSlice('42', '100', { blockedBy: ['8', '9'] })
+
+			// 7 was in old, removed → DELETE 700
+			const deleteCall = calls.find((c) => c.includes('-X') && c[c.indexOf('-X') + 1] === 'DELETE')
+			expect(deleteCall).toBeDefined()
+			expect(deleteCall!.some((s) => s.endsWith('/700'))).toBe(true)
+
+			// 8 and 9 are new → 2 POSTs with their internal ids
+			const postCalls = calls.filter((c) => c.includes('-X') && c[c.indexOf('-X') + 1] === 'POST' && c.includes('repos/{owner}/{repo}/issues/100/dependencies/blocked_by'))
+			expect(postCalls).toHaveLength(2)
+			expect(postCalls.some((c) => c.includes('issue_id=800'))).toBe(true)
+			expect(postCalls.some((c) => c.includes('issue_id=900'))).toBe(true)
+		})
+
+		test('blockedBy unchanged → no POST/DELETE calls', async () => {
+			const { deps, calls } = makeDeps([
+				{
+					match: (a) => a.includes('repos/{owner}/{repo}/issues/100/dependencies/blocked_by') && !a.includes('-X'),
+					respond: { ok: true, stdout: JSON.stringify([{ id: 700, number: 7 }]), stderr: '' },
+				},
+			])
+			const backend = createIssueBackend(deps)
+			await backend.updateSlice('42', '100', { blockedBy: ['7'] })
+			expect(calls.find((c) => c.includes('-X'))).toBeUndefined()
 		})
 	})
 

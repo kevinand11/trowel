@@ -2,16 +2,15 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { classify } from '../../utils/bucket.ts'
-import { parseDeps } from '../../utils/deps.ts'
 import { generateUniqueId } from '../../utils/id.ts'
 import { exec } from '../../utils/shell.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch } from '../types.ts'
+import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = 'prd/'
 
 type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }
-type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean }
+type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 
 export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend => {
 	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
@@ -157,7 +156,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 	}
 
-	async function createSlice(prdId: string, spec: PrdSpec): Promise<Slice> {
+	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
 		const slug = slugify(spec.title)
 		const id = await generateUniqueId(sliceIdIsAvailable, deps.generateId ? { gen: deps.generateId } : {})
 		const slicesPath = await slicesDir(prdId)
@@ -173,6 +172,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 			closedAt: null,
 			readyForAgent: false,
 			needsRevision: false,
+			blockedBy: spec.blockedBy,
 		}
 		await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
@@ -206,8 +206,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 		const doneIds = new Set(raw.filter((r) => r.state === 'CLOSED').map((r) => r.id))
 		return raw.map((r) => {
-			const deps = parseDeps(r.body)
-			const unmetDepIds = deps.filter((d) => !doneIds.has(d))
+			const unmetDepIds = r.blockedBy.filter((d) => !doneIds.has(d))
 			const bucket = classify(r, { hasOpenPr: false, unmetDepIds })
 			return { ...r, bucket }
 		})
@@ -220,6 +219,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 
 		if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
 		if (patch.needsRevision !== undefined) store.needsRevision = patch.needsRevision
+		if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
 		if (patch.state === 'CLOSED' && store.closedAt === null) store.closedAt = new Date().toISOString()
 		if (patch.state === 'OPEN') store.closedAt = null
 
@@ -234,6 +234,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 			state: store.closedAt === null ? 'OPEN' : 'CLOSED',
 			readyForAgent: store.readyForAgent,
 			needsRevision: store.needsRevision,
+			blockedBy: store.blockedBy ?? [],
 		}
 	}
 
@@ -490,7 +491,7 @@ if (import.meta.vitest) {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'Add ORM', body: 'prd-spec' })
 
-			const slice = await backend.createSlice(prdId, { title: 'Implement Tab Parser', body: '# spec\nbody' })
+			const slice = await backend.createSlice(prdId, { title: 'Implement Tab Parser', body: '# spec\nbody', blockedBy: [] })
 			expect(slice.id).toMatch(/^[a-z0-9]{6}$/)
 			expect(slice.title).toBe('Implement Tab Parser')
 			expect(slice.body).toBe('# spec\nbody')
@@ -513,7 +514,7 @@ if (import.meta.vitest) {
 			// Pre-create a colliding slice dir so 'aaaaaa' is taken.
 			await mkdir(path.join(f.prdsDir, `${prdId}-p`, 'slices', 'aaaaaa-pre'), { recursive: true })
 
-			const slice = await backend.createSlice(prdId, { title: 'Foo', body: 'b' })
+			const slice = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
 			expect(slice.id).toBe('bbbbbb')
 		})
 	})
@@ -536,8 +537,8 @@ if (import.meta.vitest) {
 		test('returns one Slice per slice directory with body from README.md and state from closedAt', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const a = await backend.createSlice(prdId, { title: 'Alpha', body: 'aa' })
-			const b = await backend.createSlice(prdId, { title: 'Beta', body: 'bb' })
+			const a = await backend.createSlice(prdId, { title: 'Alpha', body: 'aa', blockedBy: [] })
+			const b = await backend.createSlice(prdId, { title: 'Beta', body: 'bb', blockedBy: [] })
 			// Mark b as closed and needsRevision via updateSlice
 			await backend.updateSlice(prdId, b.id, { state: 'CLOSED', needsRevision: true })
 
@@ -546,6 +547,30 @@ if (import.meta.vitest) {
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
 			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'OPEN', readyForAgent: false, needsRevision: false })
 			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'CLOSED', needsRevision: true })
+		})
+	})
+
+	describe('file backend: createSlice round-trips blockedBy', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('persists spec.blockedBy to store.json; findSlices returns it on Slice', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const slice = await backend.createSlice(prdId, {
+				title: 'Needs others',
+				body: 'spec',
+				blockedBy: ['abc123', 'def456'],
+			})
+			expect(slice.blockedBy).toEqual(['abc123', 'def456'])
+
+			const found = (await backend.findSlices(prdId)).find((s) => s.id === slice.id)!
+			expect(found.blockedBy).toEqual(['abc123', 'def456'])
 		})
 	})
 
@@ -561,7 +586,7 @@ if (import.meta.vitest) {
 		test('OPEN slice with no readiness flags → draft', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
 			const [s] = await backend.findSlices(prdId)
 			expect(s!.bucket).toBe('draft')
 		})
@@ -569,7 +594,7 @@ if (import.meta.vitest) {
 		test('readyForAgent and no deps → ready', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
 			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
 			const [updated] = await backend.findSlices(prdId)
 			expect(updated!.bucket).toBe('ready')
@@ -578,7 +603,7 @@ if (import.meta.vitest) {
 		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
 			await backend.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: true })
 			const [updated] = await backend.findSlices(prdId)
 			expect(updated!.bucket).toBe('needs-revision')
@@ -587,7 +612,7 @@ if (import.meta.vitest) {
 		test('CLOSED → done', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
 			await backend.updateSlice(prdId, s.id, { state: 'CLOSED' })
 			const [updated] = await backend.findSlices(prdId)
 			expect(updated!.bucket).toBe('done')
@@ -596,8 +621,8 @@ if (import.meta.vitest) {
 		test('slice with Depends-on: pointing to a non-done slice → blocked', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
-			const b = await backend.createSlice(prdId, { title: 'B', body: `b spec\n\nDepends-on: ${a.id}` })
+			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const b = await backend.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
 			await backend.updateSlice(prdId, b.id, { readyForAgent: true })
 			const slices = await backend.findSlices(prdId)
 			const bAfter = slices.find((s) => s.id === b.id)!
@@ -607,8 +632,8 @@ if (import.meta.vitest) {
 		test('slice with Depends-on: pointing to a done slice → ready (dep satisfied)', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
-			const b = await backend.createSlice(prdId, { title: 'B', body: `b spec\n\nDepends-on: ${a.id}` })
+			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const b = await backend.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
 			await backend.updateSlice(prdId, a.id, { state: 'CLOSED' })
 			await backend.updateSlice(prdId, b.id, { readyForAgent: true })
 			const slices = await backend.findSlices(prdId)
@@ -619,7 +644,7 @@ if (import.meta.vitest) {
 		test('file backend never returns in-flight (no PR concept)', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec' })
+			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
 			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
 			const slices = await backend.findSlices(prdId)
 			expect(slices.every((x) => x.bucket !== 'in-flight')).toBe(true)
@@ -667,7 +692,7 @@ if (import.meta.vitest) {
 		test('flips readyForAgent and needsRevision', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
 
 			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
 			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
@@ -683,7 +708,7 @@ if (import.meta.vitest) {
 		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {
 			const backend = createFileBackend(f.deps)
 			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
 
 			await backend.updateSlice(prdId, s.id, { state: 'CLOSED' })
 			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
@@ -692,6 +717,21 @@ if (import.meta.vitest) {
 			await backend.updateSlice(prdId, s.id, { state: 'OPEN' })
 			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toBeNull()
+		})
+
+		test('updates blockedBy as a full-array replace', async () => {
+			const backend = createFileBackend(f.deps)
+			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: ['old1', 'old2'] })
+
+			await backend.updateSlice(prdId, s.id, { blockedBy: ['new1'] })
+			const found = (await backend.findSlices(prdId)).find((x) => x.id === s.id)!
+			expect(found.blockedBy).toEqual(['new1'])
+
+			// Empty array clears blockers.
+			await backend.updateSlice(prdId, s.id, { blockedBy: [] })
+			const found2 = (await backend.findSlices(prdId)).find((x) => x.id === s.id)!
+			expect(found2.blockedBy).toEqual([])
 		})
 
 		test('throws when the slice does not exist', async () => {
