@@ -4,5 +4,6 @@ export default defineConfig({
 	test: {
 		include: ['src/**/*.{test,spec}.ts'],
 		includeSource: ['src/**/*.ts'],
+		setupFiles: ['./test/setup-clean-git-env.ts'],
 	},
 })

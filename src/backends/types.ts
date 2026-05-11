@@ -1,6 +1,7 @@
+import type { GhRunner } from '../utils/gh-runner.ts'
+
 export type PrdSpec = {
 	title: string
-	slug: string
 	body: string
 }
 
@@ -14,24 +15,44 @@ export type Slice = {
 	id: string
 	title: string
 	body: string
-	labels: string[]
 	state: 'OPEN' | 'CLOSED'
+	readyForAgent: boolean
+	needsRevision: boolean
 }
 
+export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state'>>
+
+export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
+
+export type BackendDeps = {
+	gh: GhRunner
+	repoRoot: string
+	projectRoot: string
+	baseBranch: string
+	branchPrefix: string | null
+	prdsDir: string
+	docMsg: string
+	labels: { prd: string; readyForAgent: string; needsRevision: string }
+	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
+	confirm: (msg: string) => Promise<boolean>
+	// Optional override for id generation (file backend). Default: imported generateId.
+	generateId?: () => string
+}
+
+export type BackendFactory = (deps: BackendDeps) => Backend
+
 export interface Backend {
-	name: string
-	// identifier helpers
-	proposeIdentifier(title: string): string
-	branchFor(id: string): string
-	// creation flow (called by `trowel start`)
-	writeArtifacts(spec: PrdSpec, repoRoot: string): Promise<void>
-	createRemoteObject(spec: PrdSpec, branch: string): Promise<string>
-	linkBranchToPrd(id: string, branch: string): Promise<void>
-	// slicing
-	sliceMarker(prdId: string): string
-	attachSlice(prdId: string, sliceId: string): Promise<void>
-	findSlices(prdId: string): Promise<Slice[]>
-	// discovery
+	readonly name: string
+	readonly defaultBranchPrefix: string
+
+	// PRD lifecycle
+	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
+	branchForExisting(id: string): Promise<string>
 	listOpen(): Promise<PrdSummary[]>
 	close(id: string): Promise<void>
+
+	// Slice lifecycle
+	createSlice(prdId: string, spec: PrdSpec): Promise<Slice>
+	findSlices(prdId: string): Promise<Slice[]>
+	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
 }

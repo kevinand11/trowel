@@ -64,7 +64,7 @@ if (import.meta.vitest) {
 			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'init'])
 		})
 		afterEach(async () => {
-			await rm(repo, { recursive: true, force: true })
+			if (repo) await rm(repo, { recursive: true, force: true })
 		})
 
 		test('findGitRoot returns the repo toplevel', async () => {

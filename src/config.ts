@@ -80,7 +80,9 @@ export async function loadConfig(cwd: string = process.cwd(), home: string = hom
 	// Derive collision branchPattern if empty.
 	// Build a fresh object instead of mutating — `config.collision` may share
 	// a reference with `defaultConfig.collision` when no layer touched it.
-	if (!config.collision.branchPattern) {
+	// branchPrefix may be null (means "use backend default"); we leave the
+	// pattern empty in that case — callers resolve against the backend.
+	if (!config.collision.branchPattern && config.branchPrefix !== null) {
 		config = {
 			...config,
 			collision: { ...config.collision, branchPattern: `${config.branchPrefix}*` },
@@ -148,7 +150,7 @@ if (import.meta.vitest) {
 
 		test('returns hard-coded defaults when no config files exist', async () => {
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.backend).toBe('not-yet-implemented')
+			expect(resolved.config.backend).toBe('file')
 			expect(resolved.loaded).toEqual([])
 		})
 

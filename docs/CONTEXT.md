@@ -7,24 +7,24 @@ Trowel is a personal CLI that orchestrates PRD-driven feature work — start, sl
 ### PRD lifecycle
 
 **PRD**:
-A long-form spec describing a single feature or change. The artifact type — markdown file, GitHub draft PR, or GitHub issue — is chosen per project via the **backend**.
+A long-form spec describing a single feature or change, identified by a unique **PRD id**. The artifact type — directory of markdown files (`file` backend) or GitHub issue (`issue` backend) — is chosen per project via the **backend**.
 _Avoid_: Spec, design doc, ticket, story.
 
+**PRD id**:
+The canonical unique identifier for a **PRD**. Form depends on **backend**: GitHub issue number (`issue`) or 6-character base-36 random string (`file`). The id is what trowel commands take as arguments (`trowel close <id>`, `trowel work <id>`).
+_Avoid_: Slug (slug is human-legible, not unique on its own), name.
+
 **Backend**:
-The strategy that decides how a **PRD** is stored, identified, listed, and linked to its **slices**. One of `markdown`, `draft-pr`, `issue`.
+The strategy that decides how a **PRD** is stored, identified, listed, and linked to its **slices**. One of `file`, `issue`.
 _Avoid_: Provider, adapter, driver.
 
 **Slice**:
-A GitHub issue that implements one vertical cut of a **PRD**. Slices are always GitHub issues in v0, regardless of which **backend** the parent PRD uses.
-_Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature), task, ticket.
+One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is backend-defined: the `file` backend stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` backend stores them as GitHub sub-issues. Either way, the *implementation* of a slice goes through a GitHub PR managed by the AFK loop.
+_Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature; sub-issues are only one storage mechanism), task, ticket.
 
 **Integration branch**:
-The branch that holds the in-flight feature: doc commits from the **PRD** session, slice commits merged in from sub-PRs, ready for one final merge to `main` when the feature ships. Naming pattern is backend-defined.
+The branch that holds the in-flight feature: doc commits from the **PRD** session, slice-implementation commits merged in from per-slice PRs, ready for one final merge to `main` when the feature ships. Naming pattern is backend-defined.
 _Avoid_: Feature branch (overloaded; trowel reserves "feature branch" for `fix/<slug>` lightweight branches).
-
-**Slice marker**:
-The string a **slice** carries (in its body, as a trailer, or via the GitHub sub-issue API) that identifies which **PRD** it belongs to. Backend-defined.
-_Avoid_: Parent link, breadcrumb.
 
 ### Config discovery
 
@@ -41,6 +41,8 @@ One of the four named config sources trowel reads and merges. Precedence (β): *
 - **`project`** — project file at `<project root>/.trowel/config.json`; the source of truth for project conventions, wins outright.
 
 The `private` layer is keyed by **full-path mirror**: a project at `/Users/mac/Desktop/code/packages/equipped` reads its private config from `~/.trowel/projects/Users/mac/Desktop/code/packages/equipped/config.json`. No encoding, no hashing — true filesystem mirror.
+
+**Path values inside any layer's config resolve relative to that layer's anchor.** Project-layer paths anchor to the project root (matching every other config-file convention — tsconfig, eslint, prettier). Private-layer paths anchor to the directory of the private config file (`~/.trowel/projects/<mirror>/`). Global-layer paths anchor to `~/.trowel/`. Default-layer paths anchor to project root. Each layer resolves its paths to absolutes at load time; deep-merge then operates on resolved absolute paths, so the merge stays meaningful even when sources have different anchors. A `docs.prdsDir: 'docs/prds'` in the project layer resolves to `<project root>/docs/prds/`; the same string in the private layer resolves to `~/.trowel/projects/<mirror>/docs/prds/`.
 
 The TS type for this enum is `ConfigLayer = 'default' | 'global' | 'private' | 'project'` (see `src/schema.ts`). `InitableLayer` is the subset `Exclude<ConfigLayer, 'default'>` — the three layers `trowel init` can write to.
 
@@ -77,4 +79,4 @@ _Avoid_: Original branch, prior branch.
 - Multi-user, multi-machine sharing. Trowel is personal-only.
 - Non-git projects. Trowel requires a `.trowel/` or `.git/` to resolve a **Project root**.
 - A `projects` map inside any single config file. The `private` layer is one file per project via directory structure, not entries in a map.
-- The `draft-pr` and `issue` backends are designed but not yet implemented; each gets its own grilling session before landing.
+- The `issue` backend is designed but not yet implemented; it gets its own grilling session before landing.

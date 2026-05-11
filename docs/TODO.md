@@ -2,7 +2,7 @@
 
 Pending work, organised as discrete grilling sessions. Each item is meant to be picked up cold by a future Claude session — the assumptions, locked decisions, and open design questions are restated inline so no prior conversation is needed.
 
-Pre-work for every session: read `docs/CONTEXT.md` for vocabulary, `README.md` for v0 status, and `src/schema.ts` for the config + Backend interface.
+Pre-work for every session: read `docs/CONTEXT.md` for vocabulary, `README.md` for v0 status, `src/schema.ts` for the config shape, and `src/backends/types.ts` for the Backend interface. Both backends (`file`, `issue`) are implemented in `src/backends/{file,issue}.ts`; the AFK loop and command wiring (items below) build on top.
 
 ---
 
@@ -14,7 +14,11 @@ These decisions cross every pending session. Don't reopen unless you have a conc
 - **Language & runtime.** Node + `tsx`. TypeScript everywhere. `pnpm` for install/scripts/exec — never `npm`.
 - **Validation.** All config + external input goes through a `valleyed` pipe. Prefer `v.validate(pipe, input)` (success/error shape) over `v.assert(pipe, input)` (throws, slower).
 - **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
-- **PRD-host model.** A **PRD** is configurable per project across three **Backends**: `markdown`, `draft-pr`, `issue`. **Slices** are *always* GitHub issues. Doc changes (CONTEXT.md, ADRs) live on the **integration branch**, not on `main`.
+- **PRD-host model.** A **PRD** is configurable per project across two **Backends**: `file`, `issue`. Slices are backend-managed: the `file` backend stores them locally alongside the PRD; the `issue` backend uses GitHub sub-issues (see ADR `slices-local-for-file-backend`). Doc changes (CONTEXT.md, ADRs) live on the **integration branch**, not on `main`.
+- **Every PRD has a unique id (see ADR `prd-unique-id-and-file-backend-layout`).** Cross-backend: issue number (`issue`) or 6-char base-36 random (`file`). The id is the argument trowel commands take.
+- **Backend interface shape (see ADR `backend-interface-composite-create` + `slices-local-for-file-backend`).** Creation collapses into a single `Backend.createPrd(spec) → { id, branch }`. Slices: `createSlice(prdId, spec) → Slice`, `findSlices(prdId)`, `updateSlice(prdId, sliceId, patch)`. PRD discovery: `branchForExisting`, `listOpen`, `close`. Each backend exposes `defaultBranchPrefix` (used when `config.branchPrefix` is null).
+- **Config shape deltas (cross-cutting).** `config.branchPrefix: string | null` (was always-string; null means "use backend default"). `config.labels.prd: string` (was `string[]`), default `'prd'`. `config.labels.readyForAgent` / `config.labels.needsRevision` are used by the `issue` backend to translate GitHub labels ↔ `Slice` booleans; the `file` backend ignores them. New `config.close: { comment: string | null; deleteBranch: 'always' | 'never' | 'prompt' }`, defaults `'Closed via trowel'` / `'prompt'`. `config.close.comment` is a no-op for the `file` backend (no GitHub object to comment on).
+- **Per-layer path anchoring.** Path values in any config layer resolve relative to that layer's anchor (project layer → project root; private layer → `~/.trowel/projects/<mirror>/`; global layer → `~/.trowel/`; default → project root). Resolution happens at load time before deep-merge.
 - **Config discovery (named layers, β precedence — `project` wins outright).** Enum: `ConfigLayer = 'default' | 'global' | 'private' | 'project'`. `InitableLayer` excludes `'default'`.
   - `default` — hard-coded defaults (`src/schema.ts:defaultConfig`)
   - `global` — `~/.trowel/config.json`
@@ -29,91 +33,8 @@ Each pending session expands on one slice of the design; assume everything above
 
 ---
 
-## 1. Backend: `markdown`
 
-**Goal.** First concrete `Backend` implementation. PRDs are markdown files checked into the integration branch under `<config.docs.prdsDir>/<slug>.md`. Slices are GitHub issues carrying a body trailer that names the parent PRD.
-
-**Files to write.**
-- `src/backends/markdown.ts` — implements `Backend` from `src/backends/types.ts`.
-- Update `src/backends/registry.ts` to return the real implementation when `kind === 'markdown'` (keep not-implemented shim for the other two).
-- Tests under `src/backends/markdown.test.ts` (vitest).
-
-**Locked.**
-- `proposeIdentifier(title)` → slug (kebab-case, lowercase, alphanumeric + hyphens).
-- `branchFor(slug)` → `${config.branchPrefix}${slug}` (default `prd/<slug>`).
-- `createRemoteObject` → no-op (no GitHub object; the file *is* the PRD); returns the slug as the canonical id.
-- `writeArtifacts(spec, repoRoot)` → writes `<repoRoot>/<config.docs.prdsDir>/<slug>.md` with `spec.body`.
-- `linkBranchToPrd` → no-op for markdown.
-- `close(id)` → no-op (or: prepend `> CLOSED on <date>` to the markdown file? — needs grill).
-
-**Open questions to grill before writing code.**
-- **`sliceMarker(slug)` format.** Options: (a) plain trailer line `PRD: <slug>`; (b) trailer with file path `PRD: docs/prds/<slug>.md`; (c) frontmatter at the top of the slice body. Default pick: (a) — simplest, regex-greppable.
-- **`findSlices(slug)` query.** How does trowel list slices that name this PRD? Options: (a) `gh issue list --search "<marker>"` over open issues; (b) a `prd-<slug>` GitHub label; (c) both, falling back. Default pick: (b) — label is cheaper and unambiguous; (a) only as a verification cross-check.
-- **`attachSlice(slug, sliceId)`.** Just `gh issue edit <sliceId> --add-label prd-<slug>`? Or also append `PRD: <slug>` to the issue body? Default pick: label only — body trailer is optional and slows things down.
-- **`listOpen()`.** How is "open PRD" defined for markdown? Options: (a) every file under `docs/prds/` whose corresponding `prd/<slug>` branch exists on origin; (b) every file without a `> CLOSED` marker; (c) every file whose branch has unmerged commits vs `main`. Default pick: (a) — branch existence is the truth.
-- **Branch naming conflict.** Markdown's default `branchPrefix` is `prd/`. Existing config default is also `prd/`. Confirm during grill.
-
-**Verification path.**
-- Unit tests for `proposeIdentifier`, `branchFor`, `sliceMarker`, `writeArtifacts` (uses a tmp dir).
-- Integration: run `trowel start --backend markdown` (after backend lands) on a scratch repo, verify branch + file + label state.
-
----
-
-## 2. Backend: `issue`
-
-**Goal.** PRDs are GitHub issues; slices are GitHub sub-issues linked via the [sub-issues REST API](https://docs.github.com/en/rest/issues/sub-issues). This is the backend equipped's `.sandcastle/` already targets — porting it gives you the AFK loop "for free."
-
-**Files to write.**
-- `src/backends/issue.ts`
-- Update `src/backends/registry.ts` for `kind === 'issue'`.
-- Tests under `src/backends/issue.test.ts`.
-
-**Locked.**
-- `proposeIdentifier(title)` → returns a sentinel like `'pending'` (the real id is the issue number from `gh issue create`, only known after `createRemoteObject`).
-- `branchFor(issueNumber)` → `${config.branchPrefix || 'prds-issue-'}${issueNumber}` — default prefix changes when this backend is in use.
-- `createRemoteObject(spec, branch)` → `gh issue create --title "..." --body "..."`, returns `String(issueNumber)`.
-- `linkBranchToPrd(issueNumber, branch)` → `gh issue develop <issueNumber> --branch <branch>`.
-- `sliceMarker` → not a string marker; uses the sub-issues API for the link.
-- `attachSlice(prdId, sliceId)` → `gh api -X POST repos/{owner}/{repo}/issues/${prdId}/sub_issues -F sub_issue_id=<internal-id>`. Note: requires resolving the issue's internal `id` (different from `number`) via `gh api repos/.../issues/<n>`.
-- `findSlices(prdId)` → `gh api .../issues/<prdId>/sub_issues` — exactly what `.sandcastle/utils/candidates.ts:fetchCandidates` does today.
-
-**Open questions to grill.**
-- **Default `branchPrefix` per backend.** Should config's `branchPrefix` default change based on `backend`, or should it be one fixed value? Current `defaultConfig.branchPrefix = 'prd/'` is wrong for the issue backend. Options: (a) per-backend defaults inside backend code, ignoring config; (b) `default`-layer values vary by backend (requires resolving backend before defaults); (c) the user always sets the right `branchPrefix` in their project's `.trowel/config.json`. Default pick: (a).
-- **PRD labels.** Should `createRemoteObject` apply `config.labels.prd` to the new issue? Trivial yes; just confirm.
-- **`close(id)`.** `gh issue close <id> --comment "Shipped via PRD #<id>"` or just close silently? Default pick: close silently; users add their own comment if they want.
-
-**Verification path.**
-- Tests mock `gh` via a test double (see `src/utils/shell.ts:tryExec`); pass/fail on the constructed argument lists.
-- Integration: on a scratch repo, run `trowel start --backend issue`, verify issue + branch + linked-branch state via `gh issue view`.
-
----
-
-## 3. Backend: `draft-pr`
-
-**Goal.** PRD is a GitHub draft pull request; the PR body is the spec. Integration branch = the PR's head branch. Slices are regular issues with a `Part of #<pr>` body trailer.
-
-**Files to write.**
-- `src/backends/draft-pr.ts`
-- Update `src/backends/registry.ts` for `kind === 'draft-pr'`.
-- Tests.
-
-**Locked.**
-- `proposeIdentifier(title)` → slug (PR number only known after `createRemoteObject`).
-- `branchFor(slug)` → `prd/<slug>` (before PR exists) or `prds-pr-<N>` (after)? — needs grill.
-- `createRemoteObject` → push the branch, then `gh pr create --draft --title "..." --body "<spec>"`; returns `String(prNumber)`.
-- `linkBranchToPrd` → no-op (the PR *is* the link).
-- `sliceMarker(prNumber)` → `Part of #${prNumber}`.
-
-**Open questions to grill.**
-- **Branch naming.** Slug-keyed (matches markdown) or PR-number-keyed (matches issue)? Default pick: slug-keyed; the branch exists before the PR.
-- **`findSlices(prNumber)`.** `gh issue list --search "Part of #<prNumber>"` — but GitHub's search is fuzzy. Alternative: a `prd-pr-<N>` label, like the markdown backend. Default pick: label.
-- **`createRemoteObject` ordering.** Must push branch before `gh pr create`. Confirm error-handling: what if push succeeds but pr-create fails? Idempotent resume model says: re-run with `--prd <slug>`, see branch exists, skip push, retry pr-create.
-
-**Verification path.** Same shape as the others.
-
----
-
-## 4. Sandcastle port → AFK loop commands
+## 1. Sandcastle port → AFK loop commands
 
 **Goal.** Port equipped's `.sandcastle/` directory into `src/work/` and wire `trowel work`, `trowel implement`, `trowel address`, `trowel review` to call into it. Generalise it across the three backends via the `Backend` interface (`findSlices` replaces direct sub-issue API calls).
 
@@ -151,7 +72,7 @@ Each pending session expands on one slice of the design; assume everything above
 
 ---
 
-## 5. `trowel start` flow + `start.md` / `resume.md` prompts
+## 2. `trowel start` flow + `start.md` / `resume.md` prompts
 
 **Goal.** The orchestration we've grilled — preflight → grill → create PRD → branch → slice → restore — wired up as a real command, with the Claude prompt that drives it.
 
@@ -208,9 +129,8 @@ The user is starting a new feature. Your job:
    and docs/adr/ as decisions crystallise (read .claude/skills/grill-with-docs/).
 2. When the user confirms grilling is done, produce a PRD spec body.
 3. Call the appropriate gh / git commands to materialise the PRD per backend:
-   - markdown: write docs/prds/<slug>.md, create branch prd/<slug>, commit, push.
+   - file: generate id, write docs/prds/<id>-<slug>/{README.md, store.json}, create branch prd/<id>-<slug>, commit, push.
    - issue: gh issue create, then create prds-issue-<N>, commit docs, push, gh issue develop.
-   - draft-pr: create branch prd/<slug>, commit docs, push, gh pr create --draft.
 4. Slice the PRD into vertical-slice GitHub issues, each carrying the
    sliceMarker for this backend ({{SLICE_MARKER_TEMPLATE}}).
 5. Apply the `ready-for-agent` label to each slice.
@@ -225,11 +145,11 @@ handles that.
 - **Where does the slug come from in start mode?** Claude proposes; user confirms? Or trowel asks before invoking Claude? Default pick: Claude proposes mid-grill, locks it before writing artifacts.
 - **Cross-grill skill invocation.** Should `start.md` instruct Claude to invoke the `/grill-with-docs` skill? Default pick: yes — its `grill-with-docs` skill is the de-facto grilling discipline.
 
-**Verification path.** Run on a tiny scratch repo with the markdown backend; verify the branch, doc commit, and two slice issues land.
+**Verification path.** Run on a tiny scratch repo with the `file` backend; verify the branch, doc commit, and two slice issues land.
 
 ---
 
-## 6. `trowel fix` flow
+## 3. `trowel fix` flow
 
 **Goal.** Bug-fix flow that bypasses PRD machinery. **Always creates a new GitHub issue, opens a PR, and links the PR to the issue.**
 
@@ -266,7 +186,7 @@ async function fix(description: string) {
 
 ---
 
-## 7. `trowel diagnose` flow
+## 4. `trowel diagnose` flow
 
 **Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel work <prd>`, `trowel fix <desc>`, or `trowel start <feature>`). Does **not** auto-invoke any of them.
 
@@ -298,7 +218,7 @@ async function diagnose(description: string) {
 
 ---
 
-## 8. `trowel init` interactive wizard
+## 5. `trowel init` interactive wizard
 
 **Goal.** Replace the stub with a config-file writer for one of the three init-able layers (`global`, `private`, `project`). Signature: `trowel init [layer]`, where `layer` is a positional arg defaulting to `project`.
 
@@ -314,7 +234,7 @@ $ trowel init private          # writes ~/.trowel/projects/<full-path>/config.js
 $ trowel init project          # writes <project root>/.trowel/config.json
 
 # After picking a layer, prompt for the most-used knobs:
-Backend (markdown | draft-pr | issue) [markdown]:
+Backend (file | issue) [file]:
 > issue
 
 Branch prefix [prds-issue-]:
@@ -335,15 +255,14 @@ Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 
 ---
 
-## 9. `trowel close` + `trowel status`
+## 6. `trowel close` + `trowel status`
 
 **Goal.** Wire the two read-only-ish commands to the backend.
 
 **`close <prd-id>` flow.**
 - Resolve backend; verify PRD exists (`backend.findSlices` returns ≥0 results or `backend.listOpen` includes it).
-- For markdown: delete the file? rename? annotate? — grill.
+- For file: set `closedAt` in store.json, commit; apply branch policy (resolved in §1 grill).
 - For issue: `gh issue close <id>`.
-- For draft-pr: `gh pr close <prNumber>` (without merge).
 - In all cases: optionally delete the integration branch locally + on origin (with confirmation prompt).
 
 **`status <prd-id>` flow.**
@@ -356,7 +275,7 @@ Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 
 ---
 
-## 10. Cross-PRD collision warning (full implementation)
+## 7. Cross-PRD collision warning (full implementation)
 
 **Goal.** Currently a stub in `src/preflight.ts:detectCollisions`. Real implementation:
 
@@ -372,7 +291,7 @@ Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 
 ---
 
-## 11. JSON Schema emission (deferred)
+## 8. JSON Schema emission (deferred)
 
 **Goal.** Emit a JSON Schema from `partialConfigPipe()` and write to `~/.trowel/schema.json`. `trowel init` writes `"$schema": "<absolute path>"` into new config files.
 
@@ -382,7 +301,7 @@ Wrote /Users/mac/Desktop/code/packages/equipped/.trowel/config.json
 
 ---
 
-## 12. ADR backlog
+## 9. ADR backlog
 
 Decisions worth turning into ADRs once the implementation stabilises:
 
@@ -398,14 +317,11 @@ Write each as `docs/adr/YYYY-MM-DD-<slug>.md` when the relevant implementation l
 
 ## Order of work (suggested)
 
-1. Pick **one backend** to land first — recommend `markdown` for simplicity; it tests the interface without GitHub API surface.
-2. Implement `trowel start` flow end-to-end against that one backend.
-3. Add the second backend (`issue`) — gives you the existing sandcastle flow.
-4. Port the sandcastle AFK loop; wire `trowel work` against `issue` first, generalise later.
-5. Add `draft-pr` backend.
-6. `fix` + `diagnose` flows.
-7. `init` wizard.
-8. `close` + `status`.
-9. Collision detection + ADRs.
+1. Implement `trowel start` flow end-to-end against the `file` backend (the simpler of the two; no GitHub round-trip for the PRD itself).
+2. Port the sandcastle AFK loop into `src/work/`; wire `trowel work` against both backends via the `Backend` interface.
+3. `fix` + `diagnose` flows.
+4. `init` wizard.
+5. `close` + `status`.
+6. Collision detection + ADR backlog cleanup.
 
-Each step's grilling session can produce its own commit. Trowel's first useful state is reached at step 2.
+Both backends (`file`, `issue`) are implemented; the remaining work is wiring them into commands and orchestration.

@@ -1,11 +1,11 @@
 import { v, type DeepPartial, type PipeOutput } from 'valleyed'
 
-import { backendRegistry } from './backends/registry'
+import { backendFactories } from './backends/registry.ts'
 
 export const partialConfigPipe = () =>
 	v.object({
-		backend: v.optional(v.in(Object.keys(backendRegistry))),
-		branchPrefix: v.optional(v.string()),
+		backend: v.optional(v.in(Object.keys(backendFactories))),
+		branchPrefix: v.optional(v.nullable(v.string())),
 		baseBranch: v.optional(v.string()),
 		docs: v.optional(
 			v.object({
@@ -53,7 +53,13 @@ export const partialConfigPipe = () =>
 			v.object({
 				readyForAgent: v.optional(v.string()),
 				needsRevision: v.optional(v.string()),
-				prd: v.optional(v.array(v.string())),
+				prd: v.optional(v.string()),
+			}),
+		),
+		close: v.optional(
+			v.object({
+				comment: v.optional(v.nullable(v.string())),
+				deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
 			}),
 		),
 		sandbox: v.optional(
@@ -74,7 +80,7 @@ export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
 	backend: string
-	branchPrefix: string
+	branchPrefix: string | null
 	baseBranch: string
 	docs: {
 		dir: string
@@ -109,7 +115,11 @@ export type Config = {
 	labels: {
 		readyForAgent: string
 		needsRevision: string
-		prd: string[]
+		prd: string
+	}
+	close: {
+		comment: string | null
+		deleteBranch: 'always' | 'never' | 'prompt'
 	}
 	sandbox: {
 		image: string
@@ -130,8 +140,8 @@ export type InitableLayer = Exclude<ConfigLayer, 'default'>
 
 // Hard-coded defaults — the 'default' layer. Every field present.
 export const defaultConfig: Config = {
-	backend: 'not-yet-implemented',
-	branchPrefix: 'prd/',
+	backend: 'file',
+	branchPrefix: null,
 	baseBranch: 'main',
 	docs: {
 		dir: 'docs',
@@ -166,7 +176,11 @@ export const defaultConfig: Config = {
 	labels: {
 		readyForAgent: 'ready-for-agent',
 		needsRevision: 'needs-revision',
-		prd: [],
+		prd: 'prd',
+	},
+	close: {
+		comment: 'Closed via trowel',
+		deleteBranch: 'prompt',
 	},
 	sandbox: {
 		image: 'node:22-bookworm',
@@ -207,8 +221,21 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
 	describe('defaultConfig', () => {
-		test('uses not-yet-implemented as the default backend', () => {
-			expect(defaultConfig.backend).toBe('not-yet-implemented')
+		test('uses file as the default backend', () => {
+			expect(defaultConfig.backend).toBe('file')
+		})
+
+		test('branchPrefix is null by default (backend supplies its own)', () => {
+			expect(defaultConfig.branchPrefix).toBeNull()
+		})
+
+		test('labels.prd defaults to "prd"', () => {
+			expect(defaultConfig.labels.prd).toBe('prd')
+		})
+
+		test('close defaults to prompt + "Closed via trowel"', () => {
+			expect(defaultConfig.close.deleteBranch).toBe('prompt')
+			expect(defaultConfig.close.comment).toBe('Closed via trowel')
 		})
 
 		test('every preconditions check is on by default', () => {
@@ -228,6 +255,11 @@ if (import.meta.vitest) {
 			const result = mergePartial(defaultConfig, { backend: 'issue' })
 			expect(result.backend).toBe('issue')
 			expect(result.baseBranch).toBe(defaultConfig.baseBranch)
+		})
+
+		test('overrides branchPrefix from null to a string', () => {
+			const result = mergePartial(defaultConfig, { branchPrefix: 'feat/' })
+			expect(result.branchPrefix).toBe('feat/')
 		})
 
 		test('deep-merges nested objects per-key', () => {
@@ -263,6 +295,26 @@ if (import.meta.vitest) {
 		test('accepts a partial with only one nested key set', () => {
 			const result = v.validate(partialConfigPipe(), { agent: { model: 'sonnet' } })
 			expect(result.valid).toBe(true)
+		})
+
+		test('accepts branchPrefix: null', () => {
+			const result = v.validate(partialConfigPipe(), { branchPrefix: null })
+			expect(result.valid).toBe(true)
+		})
+
+		test('accepts labels.prd as a string', () => {
+			const result = v.validate(partialConfigPipe(), { labels: { prd: 'feature' } })
+			expect(result.valid).toBe(true)
+		})
+
+		test('accepts close.deleteBranch with valid policy', () => {
+			const result = v.validate(partialConfigPipe(), { close: { deleteBranch: 'always' } })
+			expect(result.valid).toBe(true)
+		})
+
+		test('rejects close.deleteBranch with invalid policy', () => {
+			const result = v.validate(partialConfigPipe(), { close: { deleteBranch: 'maybe' } })
+			expect(result.valid).toBe(false)
 		})
 
 		test('rejects an unknown backend value', () => {
