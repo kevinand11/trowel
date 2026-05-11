@@ -64,7 +64,12 @@ export const partialConfigPipe = () =>
 		),
 		sandbox: v.optional(
 			v.object({
+				enabled: v.optional(v.boolean()),
 				image: v.optional(v.string()),
+				dockerfile: v.optional(v.nullable(v.string())),
+				onReady: v.optional(v.array(v.string())),
+				copyToWorktree: v.optional(v.array(v.string())),
+				maxConcurrent: v.optional(v.nullable(v.number())),
 				iterationCaps: v.optional(
 					v.object({
 						implementer: v.optional(v.number()),
@@ -72,6 +77,14 @@ export const partialConfigPipe = () =>
 						addresser: v.optional(v.number()),
 					}),
 				),
+			}),
+		),
+		work: v.optional(
+			v.object({
+				maxIterations: v.optional(v.number()),
+				sliceStepCap: v.optional(v.number()),
+				usePrs: v.optional(v.boolean()),
+				worktreeCleanupAge: v.optional(v.string()),
 			}),
 		),
 	})
@@ -122,12 +135,23 @@ export type Config = {
 		deleteBranch: 'always' | 'never' | 'prompt'
 	}
 	sandbox: {
+		enabled: boolean
 		image: string
+		dockerfile: string | null
+		onReady: string[]
+		copyToWorktree: string[]
+		maxConcurrent: number | null
 		iterationCaps: {
 			implementer: number
 			reviewer: number
 			addresser: number
 		}
+	}
+	work: {
+		maxIterations: number
+		sliceStepCap: number
+		usePrs: boolean
+		worktreeCleanupAge: string
 	}
 }
 
@@ -183,12 +207,23 @@ export const defaultConfig: Config = {
 		deleteBranch: 'prompt',
 	},
 	sandbox: {
-		image: 'node:22-bookworm',
+		enabled: true,
+		image: 'trowel:latest',
+		dockerfile: null,
+		onReady: [],
+		copyToWorktree: [],
+		maxConcurrent: 3,
 		iterationCaps: {
 			implementer: 100,
 			reviewer: 1,
 			addresser: 50,
 		},
+	},
+	work: {
+		maxIterations: 50,
+		sliceStepCap: 5,
+		usePrs: true,
+		worktreeCleanupAge: '24h',
 	},
 }
 
@@ -236,6 +271,22 @@ if (import.meta.vitest) {
 		test('close defaults to prompt + "Closed via trowel"', () => {
 			expect(defaultConfig.close.deleteBranch).toBe('prompt')
 			expect(defaultConfig.close.comment).toBe('Closed via trowel')
+		})
+
+		test('sandbox is enabled by default with trowel:latest image and concurrency cap of 3', () => {
+			expect(defaultConfig.sandbox.enabled).toBe(true)
+			expect(defaultConfig.sandbox.image).toBe('trowel:latest')
+			expect(defaultConfig.sandbox.dockerfile).toBeNull()
+			expect(defaultConfig.sandbox.maxConcurrent).toBe(3)
+			expect(defaultConfig.sandbox.onReady).toEqual([])
+			expect(defaultConfig.sandbox.copyToWorktree).toEqual([])
+		})
+
+		test('work loop defaults: 50 outer iters, 5 inner step cap, PRs on, 24h worktree cleanup', () => {
+			expect(defaultConfig.work.maxIterations).toBe(50)
+			expect(defaultConfig.work.sliceStepCap).toBe(5)
+			expect(defaultConfig.work.usePrs).toBe(true)
+			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
 		})
 
 		test('every preconditions check is on by default', () => {
@@ -314,6 +365,28 @@ if (import.meta.vitest) {
 
 		test('rejects close.deleteBranch with invalid policy', () => {
 			const result = v.validate(partialConfigPipe(), { close: { deleteBranch: 'maybe' } })
+			expect(result.valid).toBe(false)
+		})
+
+		test('accepts sandbox.maxConcurrent as a number or null', () => {
+			expect(v.validate(partialConfigPipe(), { sandbox: { maxConcurrent: 5 } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { sandbox: { maxConcurrent: null } }).valid).toBe(true)
+		})
+
+		test('accepts sandbox.onReady and copyToWorktree as string arrays', () => {
+			const result = v.validate(partialConfigPipe(), {
+				sandbox: { onReady: ['pnpm install --prefer-offline'], copyToWorktree: ['node_modules'] },
+			})
+			expect(result.valid).toBe(true)
+		})
+
+		test('accepts work.usePrs as a boolean', () => {
+			expect(v.validate(partialConfigPipe(), { work: { usePrs: false } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { work: { usePrs: true } }).valid).toBe(true)
+		})
+
+		test('rejects work.maxIterations when non-numeric', () => {
+			const result = v.validate(partialConfigPipe(), { work: { maxIterations: 'lots' } })
 			expect(result.valid).toBe(false)
 		})
 

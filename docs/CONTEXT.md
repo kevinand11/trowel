@@ -58,14 +58,34 @@ The TS type for this enum is `ConfigLayer = 'default' | 'global' | 'private' | '
 The branch the user was on when they invoked a trowel command that switches branches. Captured at command start; restored via `try/finally` on exit (clean exit, error, or abort).
 _Avoid_: Original branch, prior branch.
 
-### AFK loop (deferred — port from `.sandcastle/`)
+### AFK loop
 
-**Worker** (placeholder): A sandboxed agent run by `trowel work` — implementer, reviewer, or addresser. Vocabulary will sharpen when the port lands.
+**AFK loop**:
+The auto-iterating agent flow run by `trowel work`. Asymmetric across **Backends** — the `issue` backend runs the full four-state per-slice machine (implement → review → address → done) by default; the `file` backend runs a serial implementer-only pass. One outer-loop invocation iterates until the **PRD**'s actionable queue drains (every remaining **Slice** is `done`, `draft`, or `blocked`) or the safety cap fires.
+_Avoid_: Sandcastle (the equipped-era name; trowel subsumes it), agent runner.
+
+**Implementer / Reviewer / Addresser**:
+The three agent roles inside the **AFK loop**. The **Implementer** writes the first cut of a **Slice**, commits, and exits. The **Reviewer** reads the resulting draft PR and either marks it ready or flags `needs-revision`. The **Addresser** reads the reviewer's feedback (line-level, summary, and thread comments fetched by the host) and responds with code changes. Reviewer and Addresser are issue-backend-only and only fire when `config.work.usePrs` is `true`; the file backend (and `config.work.usePrs: false` on issue) skips both.
+_Avoid_: Worker (placeholder term retired with this entry), agent.
+
+**Sandbox**:
+A fresh Docker container that hosts a single agent run. One container per agent run — torn down on exit, started clean on the next run (no inter-run state leakage). Opt-in via `config.sandbox.enabled` (default `true`). The container is **gh-free**: no GitHub round-trips happen inside the container. All `gh` operations (PR creation, label flips, comment fetches, sub-issue closing) happen on the **host** before or after the sandbox runs. The container is allowed outbound network for the agent's Anthropic API session and for `pnpm install`-style operations; it just doesn't talk to GitHub directly.
+_Avoid_: Worker, runner, container (the implementation detail; "sandbox" is the role).
+
+**Verdict**:
+The agent's self-reported outcome of one **Sandbox** run, written by the agent to `.trowel/sandbox-out.json` and read by the host post-exit. One of `ready`, `needs-revision`, `no-work-needed`, `partial`. The host translates the verdict into `gh` operations (e.g. `gh pr ready` for a reviewer's `ready`; `gh pr edit --add-label needs-revision` for a reviewer's `needs-revision`). A missing or unparseable verdict file is coerced to `partial`; a verdict invalid for the role (e.g. an implementer reporting `needs-revision`) is coerced to `partial` with a log line.
+_Avoid_: Result, status, outcome (overloaded; the value's purpose is specifically to drive host follow-up).
+
+**Slice branch**:
+The per-slice working branch used by the issue backend's AFK loop. Pattern: `prd-<prdId>/slice-<sliceId>-<slug>`. Created on the **host** via `gh issue develop <sliceN> --name <sliceBranch> --base <integrationBranch>` before the sandbox launches; the implementer's sandbox bind-mounts a worktree on this branch. The file backend has no slice branches — its implementer commits directly to the **Integration branch**.
+_Avoid_: Feature branch (reserved for `fix/<slug>`), task branch.
 
 ## Relationships
 
 - A **PRD** has zero or more **Slices**.
 - A **PRD** has exactly one **Integration branch** (named per **Backend**).
+- On the `issue` backend with `config.work.usePrs: true`, every **Slice** has its own **Slice branch**; with `usePrs: false`, slice branches are still created but the result is `git merge --no-ff`'d into the **Integration branch** instead of going through a PR. On the `file` backend, no slice branches exist — implementer commits land on the **Integration branch** directly.
+- Each **AFK loop** agent run produces exactly one **Verdict**; the host translates verdicts into the `gh` and `git` operations that move the **Slice**'s **Bucket** forward.
 - Every **Slice** carries a **Slice marker** referring to its **PRD**.
 - Every **Slice** is in exactly one **Bucket** at any time, assigned by its **Backend**.
 - A **Slice** may reference zero or more **Blockers** (other slices in the same **PRD**) via its `blockedBy` field; if any blocker is not yet `done`, the slice's bucket is `blocked`.
@@ -90,3 +110,6 @@ _Avoid_: Original branch, prior branch.
 - Non-git projects. Trowel requires a `.trowel/` or `.git/` to resolve a **Project root**.
 - A `projects` map inside any single config file. The `private` layer is one file per project via directory structure, not entries in a map.
 - The `issue` backend is designed but not yet implemented; it gets its own grilling session before landing.
+- Shared **Sandbox** containers across agent runs. Each run gets a fresh container; trowel does not pool or reuse them.
+- `gh` operations from inside the **Sandbox**. All GitHub round-trips happen on the host; sandboxes are gh-free by design.
+- Reviewer / Addresser on the `file` backend. The PR-driven review surface is absent there by construction; users wanting it pick the `issue` backend.

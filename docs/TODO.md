@@ -36,39 +36,79 @@ Each pending session expands on one slice of the design; assume everything above
 
 ## 1. Sandcastle port → AFK loop commands
 
-**Goal.** Port equipped's `.sandcastle/` directory into `src/work/` and wire `trowel work`, `trowel implement`, `trowel address`, `trowel review` to call into it. Generalise it across the three backends via the `Backend` interface (`findSlices` replaces direct sub-issue API calls).
+**Goal.** Port equipped's `.sandcastle/` directory into `src/work/` and wire `trowel work`, `trowel implement`, `trowel review`, `trowel address` to call into it. The AFK loop is **asymmetric across backends** — the `issue` backend runs the full state machine; the `file` backend runs an implementer-only serial pass. See ADRs `afk-loop-asymmetric-across-backends`, `gh-free-sandbox-host-owns-side-effects`, `optional-pr-flow-on-issue-backend` for the locked design.
 
-**Files to port from `~/Desktop/code/packages/equipped/.sandcastle/`.**
-- `utils/types.ts` → `src/work/types.ts`
-- `utils/shell.ts` → already done as `src/utils/shell.ts` (re-use)
-- `utils/deps.ts` → `src/work/deps.ts` (verbatim — the trailer parser is backend-agnostic)
-- `utils/git.ts` → merge into `src/utils/git.ts` (most helpers already there)
-- `utils/branches.ts` → `src/work/branches.ts`
-- `utils/gh.ts` → split: backend-agnostic parts into `src/work/gh.ts`, backend-specific into `src/backends/<kind>.ts`
-- `utils/sandbox.ts` → `src/work/sandbox.ts` (wraps `@ai-hero/sandcastle`; add `@ai-hero/sandcastle` as dependency)
-- `utils/config.ts` → fold into Trowel's config; loop-specific knobs (`MAX_ITERATIONS`, `ISSUE_STEP_CAP`) move under `config.sandbox`
-- `utils/candidates.ts` → split: classify is generic, fetch is backend-specific (already accounted for in `Backend.findSlices`)
-- `utils/process.ts` → `src/work/process.ts`
-- `main.ts` → `src/commands/work.ts` (entry)
-- `implement-prompt.md`, `review-prompt.md`, `respond-to-feedback-prompt.md` → `src/prompts/`
+**Locked decisions** (from grilling session 2026-05-11):
 
-**Generalisations needed.**
-- Sub-issue fetch goes through `backend.findSlices(prdId)` — `gh api .../sub_issues` is `issue`-only.
-- Branch naming uses `backend.branchFor(prdId)`.
-- The `FEATURE_BRANCH` constant becomes `config.baseBranch` (or per-PRD: `backend.branchFor(prdId)`, since PRs target the integration branch, not main).
-- Prompt placeholders (`TASK_ID`, `ISSUE_TITLE`, `BRANCH`, `FEATURE_BRANCH`, `PR_NUMBER`) stay; the backend supplies the values.
-- The `Sandcastle:` PR title prefix becomes configurable or drops entirely.
+- **Two loop drivers.** `src/work/loops/issue.ts` runs the four-state machine (implement → review → address → done). `src/work/loops/file.ts` runs a 20-line serial implementer-only driver. `src/commands/work.ts` dispatches by `backend.name`. The `Backend` interface stays minimal — no new methods land on it for the loop's sake; the drivers import backend-internal helpers directly.
+- **Commands.** Four ship: `work`, `implement`, `review`, `address`. `review` and `address` are issue-backend-only and refuse cleanly on `file` (and on issue with `config.work.usePrs: false`). Per-phase commands refuse on **bucket mismatch** with a bucket-aware message ("slice 145 is in `ready`; run `trowel implement <prd> 145` first").
+- **Sandbox model.** Fresh Docker container per agent run. Opt-in via `config.sandbox.enabled` (default `true`). Concurrency capped at `config.sandbox.maxConcurrent` (default `3`, null = unbounded). Image built lazily from `~/.trowel/Dockerfile` (default `null` for `config.sandbox.dockerfile`, resolved via the global anchor; trowel ships `assets/Dockerfile` and copy-on-demands to `~/.trowel/Dockerfile` if missing). `config.sandbox.image` default `'trowel:latest'`. Per-project install hooks live under `config.sandbox.onReady: string[]` (default `[]`; equipped-style projects set `["pnpm install --prefer-offline"]`); per-project worktree copy paths under `config.sandbox.copyToWorktree: string[]` (default `[]`; equipped sets `["node_modules"]`).
+- **Sandbox is gh-free.** All `gh` ops happen on the host — branch creation pre-sandbox via `gh issue develop`, PR ops / label flips / feedback fetches / sub-issue closes post-sandbox. The agent inside the sandbox does not call `gh`, does not `git push`, and does not need GitHub credentials.
+- **File-IPC verdict channel.** Host writes `<worktree>/.trowel/sandbox-in.json` before launch; agent writes `<worktree>/.trowel/sandbox-out.json` before exit; host reads and translates to gh/git ops. Verdict union: `'ready' | 'needs-revision' | 'no-work-needed' | 'partial'`. Invalid verdicts (missing file, malformed JSON, role-invalid value) coerce to `'partial'` with a log line; never crash the loop.
+- **`SandboxIn` shape.** Unified across roles: `{ slice: { id, title, body }, pr?: { number, branch }, feedback?: FeedbackEntry[] }`. Addresser feedback carries all three GitHub comment kinds (`line`, `review`, `thread`), no filtering, sorted by `createdAt`. Slice spec moves out of prompt placeholders into this file.
+- **Reduced prompt placeholders.** Single prompt per role at `src/prompts/{implement,review,address}.md` with conditional sections by backend (e.g. `{{#if BACKEND === 'issue'}}…{{/if}}`). Only two placeholders interpolated: `{{BACKEND}}` and `{{INTEGRATION_BRANCH}}`. All per-slice data (id, title, body, pr number, slice branch, feedback) flows through `sandbox-in.json`.
+- **Slice-branch pattern.** `prd-<prdId>/slice-<sliceId>-<slug>` on the issue backend. Created on the host via `gh issue develop <sliceN> --name <sliceBranch> --base <integrationBranch>` before the sandbox launches. No new config knob in v0. File backend has no slice branches.
+- **File-backend implementer.** Commits straight to the integration branch (no per-slice branch, no PR). Serial — concurrency = 1. On `ready` verdict: host runs `git push origin <integrationBranch>` + `backend.updateSlice(prdId, sliceId, { state: 'CLOSED' })`.
+- **PR flow is configurable.** `config.work.usePrs: boolean` (default `true`; issue-backend-only). When `false`: slice branch still created, implementer runs the same way, but on `ready` verdict the host merges `--no-ff` into the integration branch, pushes, deletes the slice branch, and closes the sub-issue (`gh issue close <sliceN>`). Reviewer and addresser refuse with: *"PR-driven review is disabled (`config.work.usePrs: false`); use `trowel work` for the implementer-only flow."* Merge conflicts at the host-side merge coerce to `partial`; slice branch left in place for manual resolution.
+- **`Slice` grows two fields.** `prState: 'draft' | 'ready' | 'merged' | null` and `branchAhead: boolean`, both populated by `findSlices`. Both `Bucket` (user-facing) and the loop's internal `ResumeState` derive from these. Issue-backend `findSlices` fetches PR state per slice + a ref-ahead check; file-backend `findSlices` always returns `prState: null, branchAhead: false`.
+- **Loop cadence.** `trowel work <prd-id>` runs until the queue drains (every remaining slice is `done`, `draft`, or `blocked`). Safety cap `config.work.maxIterations` (default `50`) bounds the outer loop; per-slice step cap `config.work.sliceStepCap` (default `5`) bounds the inner state-machine reruns. No `--iterations` flag; equipped's `MAX_ITERATIONS` env / CLI plumbing dropped.
+- **Worktree location.** `<project root>/.trowel/worktrees/<prd-id>/<sliceId>-<role>-<runId>/`. `trowel init` (any layer; primarily `project`) always creates the target `.trowel/` directory and writes `.trowel/.gitignore` containing `worktrees/`. Lazy fallback: `trowel work` creates `.trowel/` + `.trowel/.gitignore` if missing. Project's root `.gitignore` is never touched. Cleanup: `git worktree remove` on clean exit; stale-prune older than `config.work.worktreeCleanupAge` (default `'24h'`) at next-invocation startup.
+- **Verdict-to-host-action table** (per role, after sandbox exit):
+
+  | role + verdict | issue + `usePrs: true` | issue + `usePrs: false` | file |
+  |---|---|---|---|
+  | implementer `ready` | push slice branch; `gh pr create --draft` | push slice branch; checkout integration; `git merge --no-ff <sliceBranch>`; push integration; delete slice branch; `gh issue close <sliceN>` | push integration; `updateSlice(state: 'CLOSED')` |
+  | implementer `no-work-needed` | remove `ready-for-agent` label | remove `ready-for-agent` label | `updateSlice({ readyForAgent: false })` |
+  | implementer `partial` | leave | leave | leave |
+  | reviewer `ready` | if commits: push; `gh pr ready <prN>` | refuse | refuse |
+  | reviewer `needs-revision` | if commits: push; `gh pr edit <prN> --add-label needs-revision` | refuse | refuse |
+  | reviewer `partial` | leave | refuse | refuse |
+  | addresser `ready` | if commits: push; remove `needs-revision` label | refuse | refuse |
+  | addresser `no-work-needed` | remove `needs-revision` label | refuse | refuse |
+  | addresser `partial` | leave | refuse | refuse |
+  | any role-invalid verdict | coerce to `partial` + log | coerce to `partial` + log | coerce to `partial` + log |
+
+- **PR title prefix dropped.** PRs are titled with the slice title verbatim. Equipped's `"Sandcastle: "` prefix retires with the port.
+
+**Files to write or port (final layout under (c) + the gh-free + sandbox-in.json locks).**
+
+```
+src/work/
+  loops/
+    issue.ts       # the four-state machine; ports utils/process.ts + utils/candidates.ts logic
+    file.ts        # 20-line serial implementer-only driver
+  sandbox.ts       # wraps @ai-hero/sandcastle; spawns a fresh container per run; reads sandbox-out.json
+  prompts.ts       # loadPrompt(role, { BACKEND, INTEGRATION_BRANCH }): string
+  types.ts         # SandboxIn, SandboxOut, FeedbackEntry, Verdict, ResumeState, ProcessOutcome
+  worktrees.ts     # git worktree add/remove; stale-prune; lazy `.trowel/.gitignore` creation
+  feedback.ts      # gh-side fetch of PR comments / reviews / threads into FeedbackEntry[]
+src/commands/
+  work.ts          # dispatch by backend.name to loops/{issue,file}.ts
+  implement.ts     # one-phase command; refuses on bucket mismatch + on file backend nothing extra
+  review.ts        # one-phase command; refuses on bucket mismatch + on file backend / usePrs: false
+  address.ts       # one-phase command; refuses on bucket mismatch + on file backend / usePrs: false
+src/prompts/
+  implement.md     # single file, conditional by {{BACKEND}}
+  review.md
+  address.md
+assets/
+  Dockerfile       # copied from equipped's .sandcastle/Dockerfile; trowel lazy-copies to ~/.trowel/Dockerfile
+```
+
+**Files NOT ported (intentional drops vs the old TODO).**
+
+- `utils/candidates.ts` — fetching is `backend.findSlices`; classification logic into `ResumeState` lives in `src/work/loops/issue.ts` and derives from `Slice.prState` + `Slice.branchAhead` populated by `findSlices`.
+- `utils/deps.ts` — body-trailer parser is obsolete after the `blockedBy` refactor (ADR `backend-native-blocker-storage`).
+- `utils/config.ts` — `MAX_ITERATIONS` / `ISSUE_STEP_CAP` plumbing replaced by `config.work.maxIterations` / `config.work.sliceStepCap`. `--iterations` CLI flag dropped.
+- `utils/gh.ts` — the helpers split between `src/work/feedback.ts` (host-side fetch for addresser) and per-backend modules in `src/backends/implementations/{issue,file}.ts` (PR creation, label flips, slice-branch setup).
+- `utils/branches.ts` — slice-branch creation moves to `src/backends/implementations/issue.ts` (host-side, pre-sandbox).
 
 **Dependencies to add.**
 - `@ai-hero/sandcastle` (^0.5.7 in equipped; pin to same).
 
-**Slice-id-must-belong-to-prd-id check.** Every per-slice command (`implement`, `address`, `review`) calls `backend.findSlices(prdId)` and confirms `sliceId` is in the returned set before proceeding. If not in set: print error + exit non-zero.
-
-**Open questions to grill.**
-- **Sandbox image.** `config.sandbox.image` defaults to `node:22-bookworm` in `defaultConfig`. The Dockerfile in equipped's `.sandcastle/` does more than that (installs gh, claude CLI, etc.). Port the Dockerfile? Or run un-sandboxed? Default pick: port the Dockerfile to `~/.trowel/Dockerfile`; trowel builds the image lazily.
-- **Per-PRD vs per-project sandboxing.** Each `trowel work <prd-id>` builds and uses a single sandbox container; siblings (multiple PRDs concurrently) get their own. Confirm.
-
-**Verification path.** Run end-to-end on equipped against a real PRD with one or two simple slices.
+**Verification path.** Two end-to-end runs against scratch repos:
+- `file` backend: create a PRD with two `ready` slices, run `trowel work`, verify both slices close in serial; verify worktrees cleaned up; verify slice store.json reflects CLOSED state.
+- `issue` backend (private throwaway GitHub repo): create a PRD with three slices (`ready`, `in-flight` mid-flow, `needs-revision`), run `trowel work` once, verify the four-state machine drives each forward correctly; verify a `gh pr ready` fired on the reviewer's `ready` verdict; verify a `needs-revision` label landed on the reviewer's `needs-revision` verdict; verify the addresser pre-fetch populated `.trowel/sandbox-in.json` with the right feedback shape. Then flip `config.work.usePrs: false`, create another PRD, verify no PRs created and slice branches merged via `--no-ff` into the integration branch.
 
 ---
 
