@@ -1,0 +1,33 @@
+{
+	"name": "trowel",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Personal CLI for orchestrating PRD-driven feature work",
+	"type": "module",
+	"engines": {
+		"node": ">= 20.0.0"
+	},
+	"bin": {
+		"trowel": "./bin/trowel"
+	},
+	"scripts": {
+		"prebuild": "tsc --noEmit",
+		"build": "tsc --noEmit",
+		"lint": "eslint --fix src",
+		"test": "vitest run",
+		"prepare": "husky"
+	},
+	"devDependencies": {
+		"@k11/configs": "^0.1.2",
+		"@types/node": "^25.2.0",
+		"eslint": "^9.39.2",
+		"husky": "^9.1.7",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.18"
+	},
+	"dependencies": {
+		"commander": "^14.0.3",
+		"valleyed": "4.5.19"
+	}
+}

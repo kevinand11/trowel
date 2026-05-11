@@ -1,0 +1,10 @@
+{
+	"extends": "@k11/configs/tsconfig/lib",
+	"compilerOptions": {
+		"types": ["@types/node", "vitest/importMeta"],
+		"allowImportingTsExtensions": true,
+		"noEmit": true
+	},
+	"include": ["src", "bin", "config.ts"],
+	"exclude": ["node_modules"]
+}
