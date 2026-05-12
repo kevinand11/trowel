@@ -12,34 +12,37 @@ export type SpawnSandboxArgs = {
 	sandboxIn: SandboxIn
 }
 
+export type Worktree = {
+	readonly worktreePath: string
+	close: () => Promise<unknown>
+}
+
 export type SpawnSandboxDeps = {
 	prdId: string
 	repoRoot: string
-	worktreesDir: string
-	addWorktree: (repoRoot: string, worktreePath: string, branch: string) => Promise<void>
-	removeWorktree: (repoRoot: string, worktreePath: string) => Promise<void>
-	runAgent: (args: { worktreePath: string; role: Role; branch: string }) => Promise<void>
+	createWorktree: (args: { branch: string }) => Promise<Worktree>
+	runAgent: (args: { worktree: Worktree; logPath: string; role: Role; branch: string }) => Promise<{ commits: number }>
 	randId: () => string
 }
 
 export async function spawnSandbox(args: SpawnSandboxArgs, deps: SpawnSandboxDeps): Promise<SandboxOut> {
 	const runId = deps.randId()
-	const worktreePath = path.join(deps.worktreesDir, deps.prdId, `${args.slice.id}-${args.role}-${runId}`)
-	await deps.addWorktree(deps.repoRoot, worktreePath, args.branch)
+	const logPath = path.join(deps.repoRoot, '.trowel', 'logs', deps.prdId, `${args.slice.id}-${args.role}-${runId}.log`)
+	const worktree = await deps.createWorktree({ branch: args.branch })
 	try {
-		const trowelDir = path.join(worktreePath, '.trowel')
+		const trowelDir = path.join(worktree.worktreePath, '.trowel')
 		await mkdir(trowelDir, { recursive: true })
 		await writeFile(path.join(trowelDir, 'sandbox-in.json'), JSON.stringify(args.sandboxIn))
-		await deps.runAgent({ worktreePath, role: args.role, branch: args.branch })
+		const agentResult = await deps.runAgent({ worktree, logPath, role: args.role, branch: args.branch })
 		let rawOut: string | null = null
 		try {
 			rawOut = await readFile(path.join(trowelDir, 'sandbox-out.json'), 'utf8')
 		} catch {
 			rawOut = null
 		}
-		return parseVerdict(rawOut, args.role)
+		return parseVerdict(rawOut, args.role, agentResult.commits)
 	} finally {
-		await deps.removeWorktree(deps.repoRoot, worktreePath)
+		await worktree.close()
 	}
 }
 
@@ -72,27 +75,32 @@ if (import.meta.vitest) {
 
 	describe('spawnSandbox', () => {
 		let tmp: string
-		let worktreesDir: string
 		beforeEach(async () => {
 			tmp = await mkdtemp(path.join(tmpdir(), 'trowel-sandbox-'))
-			worktreesDir = path.join(tmp, '.trowel', 'worktrees')
 		})
 		afterEach(async () => {
 			await rm(tmp, { recursive: true, force: true })
 		})
 
-		test('worktree is removed even when runAgent throws', async () => {
+		function makeFakeWorktree(wtPath: string, closeRecord?: string[]): Worktree {
+			return {
+				worktreePath: wtPath,
+				close: async () => {
+					closeRecord?.push(wtPath)
+				},
+			}
+		}
+
+		test('closes the worktree even when runAgent throws', async () => {
 			const args = makeArgs()
-			const removedPaths: string[] = []
+			const closedPaths: string[] = []
+			const wtPath = path.join(tmp, 'sandbox-wt')
 			const deps: SpawnSandboxDeps = {
 				prdId: '142',
 				repoRoot: tmp,
-				worktreesDir,
-				addWorktree: async (_root, wt) => {
-					await mkdir(wt, { recursive: true })
-				},
-				removeWorktree: async (_root, wt) => {
-					removedPaths.push(wt)
+				createWorktree: async () => {
+					await mkdir(wtPath, { recursive: true })
+					return makeFakeWorktree(wtPath, closedPaths)
 				},
 				runAgent: async () => {
 					throw new Error('Docker died')
@@ -100,22 +108,23 @@ if (import.meta.vitest) {
 				randId: () => 'r1',
 			}
 			await expect(spawnSandbox(args, deps)).rejects.toThrow(/Docker died/)
-			expect(removedPaths).toHaveLength(1)
+			expect(closedPaths).toEqual([wtPath])
 		})
 
 		test('missing sandbox-out.json coerces to partial verdict (via parseVerdict)', async () => {
 			const args = makeArgs()
+			const wtPath = path.join(tmp, 'sandbox-wt')
 			const deps: SpawnSandboxDeps = {
 				prdId: '142',
 				repoRoot: tmp,
-				worktreesDir,
-				addWorktree: async (_root, wt) => {
-					await mkdir(wt, { recursive: true })
+				createWorktree: async () => {
+					await mkdir(wtPath, { recursive: true })
+					return makeFakeWorktree(wtPath)
 				},
-				removeWorktree: async () => {},
-				runAgent: async () => {
+				runAgent: async () => 
 					// Agent exits without writing sandbox-out.json
-				},
+					 ({ commits: 0 })
+				,
 				randId: () => 'r1',
 			}
 			const out = await spawnSandbox(args, deps)
@@ -123,46 +132,90 @@ if (import.meta.vitest) {
 			expect(out.notes).toMatch(/missing/i)
 		})
 
-		test('worktree path follows <worktreesDir>/<prdId>/<sliceId>-<role>-<runId>/', async () => {
+		test('passes runAgent the Worktree handle returned by createWorktree', async () => {
 			const args = makeArgs({ role: 'review' })
-			let observedPath: string | null = null
+			const wtPath = path.join(tmp, 'sandcastle-managed-wt')
+			let observedWorktreePath: string | null = null
 			const deps: SpawnSandboxDeps = {
 				prdId: '142',
 				repoRoot: tmp,
-				worktreesDir,
-				addWorktree: async (_root, wt) => {
-					observedPath = wt
-					await mkdir(wt, { recursive: true })
+				createWorktree: async () => {
+					await mkdir(wtPath, { recursive: true })
+					return makeFakeWorktree(wtPath)
 				},
-				removeWorktree: async () => {},
-				runAgent: async ({ worktreePath }) => {
-					await writeFile(path.join(worktreePath, '.trowel', 'sandbox-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+				runAgent: async ({ worktree }) => {
+					observedWorktreePath = worktree.worktreePath
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'sandbox-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					return { commits: 0 }
 				},
 				randId: () => 'abc',
 			}
 			await spawnSandbox(args, deps)
-			expect(observedPath).toBe(path.join(worktreesDir, '142', '145-review-abc'))
+			expect(observedWorktreePath).toBe(wtPath)
+		})
+
+		test('passes runAgent a logPath under <repoRoot>/.trowel/logs/<prdId>/ containing the slice id, role and runId', async () => {
+			const args = makeArgs({ role: 'review' })
+			const wtPath = path.join(tmp, 'sandbox-wt')
+			let observedLogPath: string | null = null
+			const deps: SpawnSandboxDeps = {
+				prdId: '142',
+				repoRoot: tmp,
+				createWorktree: async () => {
+					await mkdir(wtPath, { recursive: true })
+					return makeFakeWorktree(wtPath)
+				},
+				runAgent: async ({ logPath, worktree }) => {
+					observedLogPath = logPath
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'sandbox-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					return { commits: 0 }
+				},
+				randId: () => 'abc',
+			}
+			await spawnSandbox(args, deps)
+			expect(observedLogPath).toBe(path.join(tmp, '.trowel', 'logs', '142', '145-review-abc.log'))
+		})
+
+		test('surfaces the commits count returned by runAgent on the parsed SandboxOut', async () => {
+			const args = makeArgs()
+			const wtPath = path.join(tmp, 'sandbox-wt')
+			const deps: SpawnSandboxDeps = {
+				prdId: '142',
+				repoRoot: tmp,
+				createWorktree: async () => {
+					await mkdir(wtPath, { recursive: true })
+					return makeFakeWorktree(wtPath)
+				},
+				runAgent: async ({ worktree }) => {
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'sandbox-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 5 }
+				},
+				randId: () => 'r1',
+			}
+			const out = await spawnSandbox(args, deps)
+			expect(out.commits).toBe(5)
 		})
 
 		test('writes sandbox-in.json into the worktree, runs the agent, reads sandbox-out.json, returns parsed verdict', async () => {
 			const args = makeArgs()
 			let runAgentCalled = false
 			let observedSandboxIn: SandboxIn | null = null
+			const wtPath = path.join(tmp, 'sandbox-wt')
 			const deps: SpawnSandboxDeps = {
 				prdId: '142',
 				repoRoot: tmp,
-				worktreesDir,
-				addWorktree: async (_root, wt) => {
-					await mkdir(wt, { recursive: true })
+				createWorktree: async () => {
+					await mkdir(wtPath, { recursive: true })
+					return makeFakeWorktree(wtPath)
 				},
-				removeWorktree: async () => {},
-				runAgent: async ({ worktreePath }) => {
+				runAgent: async ({ worktree }) => {
 					runAgentCalled = true
 					// Read what the host wrote to sandbox-in.json
-					const inRaw = await readFile(path.join(worktreePath, '.trowel', 'sandbox-in.json'), 'utf8')
+					const inRaw = await readFile(path.join(worktree.worktreePath, '.trowel', 'sandbox-in.json'), 'utf8')
 					observedSandboxIn = JSON.parse(inRaw) as SandboxIn
 					// Simulate the agent writing its verdict
-					await writeFile(path.join(worktreePath, '.trowel', 'sandbox-out.json'), JSON.stringify({ verdict: 'ready' }))
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'sandbox-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 2 }
 				},
 				randId: () => 'r1',
 			}

@@ -37,8 +37,6 @@ export const partialConfigPipe = () =>
 		),
 		agent: v.optional(
 			v.object({
-				command: v.optional(v.string()),
-				args: v.optional(v.array(v.string())),
 				model: v.optional(v.string()),
 			}),
 		),
@@ -64,9 +62,7 @@ export const partialConfigPipe = () =>
 		),
 		sandbox: v.optional(
 			v.object({
-				enabled: v.optional(v.boolean()),
 				image: v.optional(v.string()),
-				dockerfile: v.optional(v.nullable(v.string())),
 				onReady: v.optional(v.array(v.string())),
 				copyToWorktree: v.optional(v.array(v.string())),
 				maxConcurrent: v.optional(v.nullable(v.number())),
@@ -116,9 +112,7 @@ export type Config = {
 		branchPattern: string
 	}
 	agent: {
-		command: string
-		args: string[]
-		model: string | null
+		model: string
 	}
 	preconditions: {
 		requireCleanTree: boolean
@@ -135,9 +129,7 @@ export type Config = {
 		deleteBranch: 'always' | 'never' | 'prompt'
 	}
 	sandbox: {
-		enabled: boolean
 		image: string
-		dockerfile: string | null
 		onReady: string[]
 		copyToWorktree: string[]
 		maxConcurrent: number | null
@@ -188,9 +180,7 @@ export const defaultConfig: Config = {
 		branchPattern: '',
 	},
 	agent: {
-		command: 'claude',
-		args: [],
-		model: null,
+		model: 'claude-opus-4-6',
 	},
 	preconditions: {
 		requireCleanTree: true,
@@ -207,9 +197,7 @@ export const defaultConfig: Config = {
 		deleteBranch: 'prompt',
 	},
 	sandbox: {
-		enabled: true,
 		image: 'trowel:latest',
-		dockerfile: null,
 		onReady: [],
 		copyToWorktree: [],
 		maxConcurrent: 3,
@@ -273,13 +261,19 @@ if (import.meta.vitest) {
 			expect(defaultConfig.close.comment).toBe('Closed via trowel')
 		})
 
-		test('sandbox is enabled by default with trowel:latest image and concurrency cap of 3', () => {
-			expect(defaultConfig.sandbox.enabled).toBe(true)
+		test('sandbox defaults to trowel:latest image with concurrency cap of 3 and empty hook arrays', () => {
 			expect(defaultConfig.sandbox.image).toBe('trowel:latest')
-			expect(defaultConfig.sandbox.dockerfile).toBeNull()
 			expect(defaultConfig.sandbox.maxConcurrent).toBe(3)
 			expect(defaultConfig.sandbox.onReady).toEqual([])
 			expect(defaultConfig.sandbox.copyToWorktree).toEqual([])
+		})
+
+		test('sandbox.iterationCaps defaults match equipped (implementer 100, reviewer 1, addresser 50)', () => {
+			expect(defaultConfig.sandbox.iterationCaps).toEqual({ implementer: 100, reviewer: 1, addresser: 50 })
+		})
+
+		test('agent defaults to claude-opus-4-6 (matches sandcastle DEFAULT_MODEL)', () => {
+			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
 		test('work loop defaults: 50 outer iters, 5 inner step cap, PRs on, 24h worktree cleanup', () => {
@@ -314,15 +308,15 @@ if (import.meta.vitest) {
 		})
 
 		test('deep-merges nested objects per-key', () => {
-			const result = mergePartial(defaultConfig, { agent: { model: 'sonnet' } })
-			expect(result.agent.model).toBe('sonnet')
-			expect(result.agent.command).toBe(defaultConfig.agent.command)
-			expect(result.agent.args).toEqual(defaultConfig.agent.args)
+			const result = mergePartial(defaultConfig, { sandbox: { image: 'custom:tag' } })
+			expect(result.sandbox.image).toBe('custom:tag')
+			expect(result.sandbox.maxConcurrent).toBe(defaultConfig.sandbox.maxConcurrent)
+			expect(result.sandbox.iterationCaps).toEqual(defaultConfig.sandbox.iterationCaps)
 		})
 
 		test('replaces arrays whole (no element merging)', () => {
-			const result = mergePartial(defaultConfig, { agent: { args: ['--foo', '--bar'] } })
-			expect(result.agent.args).toEqual(['--foo', '--bar'])
+			const result = mergePartial(defaultConfig, { sandbox: { onReady: ['pnpm install --prefer-offline'] } })
+			expect(result.sandbox.onReady).toEqual(['pnpm install --prefer-offline'])
 		})
 
 		test('ignores undefined values inside a partial', () => {

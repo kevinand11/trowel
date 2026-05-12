@@ -106,9 +106,14 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 		}
 		const verdict = await deps.spawnSandbox({ role: 'address', slice, branch: sliceBranch, sandboxIn })
 		if (verdict.verdict === 'partial') return 'partial'
-		if (verdict.verdict === 'ready' || verdict.verdict === 'no-work-needed') {
+		if (verdict.verdict === 'ready') {
+			if (verdict.commits > 0) await deps.gitPush(sliceBranch)
 			await deps.backend.updateSlice(deps.prdId, slice.id, { needsRevision: false })
-			return verdict.verdict === 'no-work-needed' ? 'no-work' : 'progress'
+			return 'progress'
+		}
+		if (verdict.verdict === 'no-work-needed') {
+			await deps.backend.updateSlice(deps.prdId, slice.id, { needsRevision: false })
+			return 'no-work'
 		}
 		return 'progress'
 	}
@@ -123,11 +128,13 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 		const verdict = await deps.spawnSandbox({ role: 'review', slice, branch: sliceBranch, sandboxIn })
 		if (verdict.verdict === 'partial') return 'partial'
 		if (verdict.verdict === 'ready') {
+			if (verdict.commits > 0) await deps.gitPush(sliceBranch)
 			const result = await deps.gh(['pr', 'ready', String(prNumber)])
 			if (!result.ok) throw new Error(`gh pr ready failed: ${result.error.message}`)
 			return 'progress'
 		}
 		if (verdict.verdict === 'needs-revision') {
+			if (verdict.commits > 0) await deps.gitPush(sliceBranch)
 			await deps.backend.updateSlice(deps.prdId, slice.id, { needsRevision: true })
 			return 'progress'
 		}
@@ -266,7 +273,7 @@ if (import.meta.vitest) {
 				gitMergeNoFf: async () => {},
 				gitDeleteRemoteBranch: async () => {},
 				findPrNumber: async () => 168,
-				spawnSandbox: async () => ({ verdict: 'partial', notes: 'stop' }),
+				spawnSandbox: async () => ({ verdict: 'partial', notes: 'stop', commits: 0 }),
 				log: () => {},
 				slugify: (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
 				config: { usePrs: true, sliceStepCap: 1 },
@@ -280,7 +287,7 @@ if (import.meta.vitest) {
 			await processIssueSlice(slice, makeDeps({
 				spawnSandbox: async ({ role, slice: s, sandboxIn }) => {
 					captured = { role, sliceId: s.id, sandboxIn }
-					return { verdict: 'partial', notes: 'stop here' }
+					return { verdict: 'partial', notes: 'stop here', commits: 0 }
 				},
 			}))
 			expect(captured).not.toBeNull()
@@ -293,7 +300,7 @@ if (import.meta.vitest) {
 			const slice = makeIssueSlice()
 			const logs: string[] = []
 			const deps = makeDeps({
-				spawnSandbox: async () => ({ verdict: 'partial', notes: 'always stuck' }),
+				spawnSandbox: async () => ({ verdict: 'partial', notes: 'always stuck', commits: 0 }),
 				log: (msg) => logs.push(msg),
 			})
 			// findSlices always returns the same slice as actionable; queue never drains.
@@ -319,7 +326,7 @@ if (import.meta.vitest) {
 					peakLive = Math.max(peakLive, live)
 					await new Promise((r) => setTimeout(r, 10))
 					live -= 1
-					return { verdict: 'partial', notes: 'stop' }
+					return { verdict: 'partial', notes: 'stop', commits: 0 }
 				},
 			})
 			deps.backend.findSlices = async () => {
@@ -344,7 +351,7 @@ if (import.meta.vitest) {
 			const deps = makeDeps({
 				spawnSandbox: async () => {
 					sandboxCalls += 1
-					return { verdict: 'partial', notes: 'stop' }
+					return { verdict: 'partial', notes: 'stop', commits: 0 }
 				},
 			})
 			deps.backend.findSlices = async () => {
@@ -376,7 +383,7 @@ if (import.meta.vitest) {
 				},
 				spawnSandbox: async ({ role }) => {
 					sandboxRoles.push(role)
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 				config: { usePrs: true, sliceStepCap: 5 },
 			})
@@ -407,7 +414,7 @@ if (import.meta.vitest) {
 				},
 				spawnSandbox: async () => {
 					sandboxCalled = true
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 			}))
 			expect(sandboxCalled).toBe(false)
@@ -424,6 +431,25 @@ if (import.meta.vitest) {
 				'--body',
 				'Closes #145',
 			])
+		})
+
+		test('address + ready verdict + commits > 0: pushes the slice branch before clearing needsRevision', async () => {
+			const slice = makeIssueSlice({ prState: 'draft', needsRevision: true })
+			const pushedBranches: string[] = []
+			await processIssueSlice(slice, makeDeps({
+				gh: async (args) => {
+					if (args[0] === 'api' && args[1]!.endsWith('/comments')) return { ok: true, stdout: '[]', stderr: '' }
+					if (args[0] === 'pr' && args[1] === 'view' && args.includes('reviews')) return { ok: true, stdout: '{"reviews":[]}', stderr: '' }
+					if (args[0] === 'pr' && args[1] === 'view' && args.includes('comments')) return { ok: true, stdout: '{"comments":[]}', stderr: '' }
+					return { ok: true, stdout: '', stderr: '' }
+				},
+				gitPush: async (b) => {
+					pushedBranches.push(b)
+				},
+				findPrNumber: async () => 168,
+				spawnSandbox: async () => ({ verdict: 'ready', commits: 3 }),
+			}))
+			expect(pushedBranches).toEqual(['prd-142/slice-145-session-middleware'])
 		})
 
 		test('address + ready verdict: spawns addresser sandbox with feedback, then clears needsRevision via backend.updateSlice', async () => {
@@ -444,7 +470,7 @@ if (import.meta.vitest) {
 				spawnSandbox: async ({ role, sandboxIn }) => {
 					sandboxRole = role
 					sandboxFeedback = sandboxIn.feedback
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 			})
 			deps.backend.updateSlice = async (_p, sliceId, patch) => {
@@ -467,7 +493,7 @@ if (import.meta.vitest) {
 					ghCalls.push(args)
 					return { ok: true, stdout: '', stderr: '' }
 				},
-				spawnSandbox: async () => ({ verdict: 'needs-revision', notes: 'add tests for the edge case' }),
+				spawnSandbox: async () => ({ verdict: 'needs-revision', notes: 'add tests for the edge case', commits: 0 }),
 			})
 			deps.backend.updateSlice = async (_p, sliceId, patch) => {
 				updateCalls.push({ id: sliceId, patch })
@@ -493,12 +519,86 @@ if (import.meta.vitest) {
 				spawnSandbox: async ({ role, branch }) => {
 					sandboxRole = role
 					sandboxBranch = branch
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 			}))
 			expect(sandboxRole).toBe('review')
 			expect(sandboxBranch).toBe('prd-142/slice-145-session-middleware')
 			expect(ghCalls).toContainEqual(['pr', 'ready', '168'])
+		})
+
+		test('all `if commits > 0` gates skip the push when commits === 0 (reviewer ready, reviewer needs-revision, addresser ready)', async () => {
+			const stubFeedbackGh = async (args: string[]) => {
+				if (args[0] === 'api' && args[1]!.endsWith('/comments')) return { ok: true as const, stdout: '[]', stderr: '' }
+				if (args[0] === 'pr' && args[1] === 'view' && args.includes('reviews')) return { ok: true as const, stdout: '{"reviews":[]}', stderr: '' }
+				if (args[0] === 'pr' && args[1] === 'view' && args.includes('comments')) return { ok: true as const, stdout: '{"comments":[]}', stderr: '' }
+				return { ok: true as const, stdout: '', stderr: '' }
+			}
+
+			// reviewer ready, zero commits → gh pr ready fires, no push
+			const reviewerReadyPushes: string[] = []
+			const reviewerReadyGh: string[][] = []
+			await processIssueSlice(makeIssueSlice({ prState: 'draft' }), makeDeps({
+				gh: async (args) => {
+					reviewerReadyGh.push(args)
+					return { ok: true, stdout: '', stderr: '' }
+				},
+				gitPush: async (b) => {
+					reviewerReadyPushes.push(b)
+				},
+				findPrNumber: async () => 168,
+				spawnSandbox: async () => ({ verdict: 'ready', commits: 0 }),
+			}))
+			expect(reviewerReadyPushes).toEqual([])
+			expect(reviewerReadyGh).toContainEqual(['pr', 'ready', '168'])
+
+			// reviewer needs-revision, zero commits → updateSlice fires, no push
+			const reviewerNrPushes: string[] = []
+			const reviewerNrUpdates: Array<{ id: string; patch: Record<string, unknown> }> = []
+			const reviewerNrDeps = makeDeps({
+				gitPush: async (b) => {
+					reviewerNrPushes.push(b)
+				},
+				findPrNumber: async () => 168,
+				spawnSandbox: async () => ({ verdict: 'needs-revision', commits: 0 }),
+			})
+			reviewerNrDeps.backend.updateSlice = async (_p, sliceId, patch) => {
+				reviewerNrUpdates.push({ id: sliceId, patch })
+			}
+			await processIssueSlice(makeIssueSlice({ prState: 'draft' }), reviewerNrDeps)
+			expect(reviewerNrPushes).toEqual([])
+			expect(reviewerNrUpdates).toContainEqual({ id: '145', patch: { needsRevision: true } })
+
+			// addresser ready, zero commits → updateSlice fires, no push
+			const addresserPushes: string[] = []
+			const addresserUpdates: Array<{ id: string; patch: Record<string, unknown> }> = []
+			const addresserDeps = makeDeps({
+				gh: stubFeedbackGh,
+				gitPush: async (b) => {
+					addresserPushes.push(b)
+				},
+				findPrNumber: async () => 168,
+				spawnSandbox: async () => ({ verdict: 'ready', commits: 0 }),
+			})
+			addresserDeps.backend.updateSlice = async (_p, sliceId, patch) => {
+				addresserUpdates.push({ id: sliceId, patch })
+			}
+			await processIssueSlice(makeIssueSlice({ prState: 'draft', needsRevision: true }), addresserDeps)
+			expect(addresserPushes).toEqual([])
+			expect(addresserUpdates).toContainEqual({ id: '145', patch: { needsRevision: false } })
+		})
+
+		test('review + ready verdict + commits > 0: pushes the slice branch before `gh pr ready`', async () => {
+			const slice = makeIssueSlice({ prState: 'draft' })
+			const pushedBranches: string[] = []
+			await processIssueSlice(slice, makeDeps({
+				gitPush: async (b) => {
+					pushedBranches.push(b)
+				},
+				findPrNumber: async () => 168,
+				spawnSandbox: async () => ({ verdict: 'ready', commits: 2 }),
+			}))
+			expect(pushedBranches).toEqual(['prd-142/slice-145-session-middleware'])
 		})
 
 		test('implement + ready verdict + usePrs=false: pushes slice branch, merges --no-ff into integration, pushes integration, deletes slice branch, closes sub-issue', async () => {
@@ -525,7 +625,7 @@ if (import.meta.vitest) {
 				gitDeleteRemoteBranch: async (b) => {
 					deleteRemoteCalls.push(b)
 				},
-				spawnSandbox: async () => ({ verdict: 'ready' }),
+				spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 				config: { usePrs: false, sliceStepCap: 1 },
 			}))
 			const expectedBranch = 'prd-142/slice-145-session-middleware'
@@ -553,7 +653,7 @@ if (import.meta.vitest) {
 				gitPush: async (b) => {
 					pushCalls.push(b)
 				},
-				spawnSandbox: async () => ({ verdict: 'no-work-needed', notes: 'spec already met' }),
+				spawnSandbox: async () => ({ verdict: 'no-work-needed', notes: 'spec already met', commits: 0 }),
 			})
 			deps.backend.updateSlice = async (_p, sliceId, patch) => {
 				updateCalls.push({ id: sliceId, patch })
@@ -579,7 +679,7 @@ if (import.meta.vitest) {
 				gitPush: async (b) => {
 					pushCalls.push(b)
 				},
-				spawnSandbox: async () => ({ verdict: 'ready' }),
+				spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 			}))
 			const expectedBranch = 'prd-142/slice-145-session-middleware'
 			expect(outcome).toBe('partial') // sliceStepCap=1; phase progressed; slice still in-flight after
@@ -614,7 +714,7 @@ if (import.meta.vitest) {
 				},
 				spawnSandbox: async ({ branch }) => {
 					sandboxBranch = branch
-					return { verdict: 'partial', notes: 'stop' }
+					return { verdict: 'partial', notes: 'stop', commits: 0 }
 				},
 			}))
 			const expectedBranch = 'prd-142/slice-145-session-middleware'

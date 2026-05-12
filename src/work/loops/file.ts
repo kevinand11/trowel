@@ -121,7 +121,7 @@ if (import.meta.vitest) {
 				integrationBranch: 'integration',
 				spawnSandbox: async ({ role, slice: s }) => {
 					sandboxCalls.push({ role, sliceId: s.id })
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 				gitPush: async (branch) => {
 					pushedBranches.push(branch)
@@ -148,7 +148,7 @@ if (import.meta.vitest) {
 				integrationBranch: 'integration',
 				spawnSandbox: async ({ slice: s }) => {
 					sandboxCalls.push(s.id)
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 				gitPush: async () => {},
 				log: () => {},
@@ -172,7 +172,7 @@ if (import.meta.vitest) {
 				integrationBranch: 'integration',
 				spawnSandbox: async ({ slice: s }) => {
 					sandboxCalls.push(s.id)
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 				gitPush: async (b) => {
 					pushedBranches.push(b)
@@ -199,7 +199,7 @@ if (import.meta.vitest) {
 				integrationBranch: 'integration',
 				spawnSandbox: async ({ slice: s }) => {
 					sandboxCalls.push(s.id)
-					return { verdict: 'ready' }
+					return { verdict: 'ready', commits: 1 }
 				},
 				gitPush: async () => {},
 				log: () => {},
@@ -220,7 +220,7 @@ if (import.meta.vitest) {
 				integrationBranch: 'integration',
 				spawnSandbox: async ({ slice: s }) => {
 					sandboxCalls.push(s.id)
-					return s.id === 'stuck' ? { verdict: 'partial', notes: 'stuck' } : { verdict: 'ready' }
+					return s.id === 'stuck' ? { verdict: 'partial', notes: 'stuck', commits: 0 } : { verdict: 'ready', commits: 1 }
 				},
 				gitPush: async () => {},
 				log: () => {},
@@ -245,7 +245,7 @@ if (import.meta.vitest) {
 				integrationBranch: 'integration',
 				spawnSandbox: async () => {
 					calls += 1
-					return { verdict: 'partial', notes: 'stuck' }
+					return { verdict: 'partial', notes: 'stuck', commits: 0 }
 				},
 				gitPush: async () => {},
 				log: () => {},
@@ -263,7 +263,7 @@ if (import.meta.vitest) {
 			await runFileLoop('p1', {
 				backend,
 				integrationBranch: 'integration',
-				spawnSandbox: async () => ({ verdict: 'partial', notes: 'hit cap' }),
+				spawnSandbox: async () => ({ verdict: 'partial', notes: 'hit cap', commits: 0 }),
 				gitPush: async (b) => {
 					pushedBranches.push(b)
 				},
@@ -285,7 +285,7 @@ if (import.meta.vitest) {
 			await runFileLoop('p1', {
 				backend,
 				integrationBranch: 'integration',
-				spawnSandbox: async () => ({ verdict: 'no-work-needed', notes: 'spec already satisfied' }),
+				spawnSandbox: async () => ({ verdict: 'no-work-needed', notes: 'spec already satisfied', commits: 0 }),
 				gitPush: async (branch) => {
 					pushedBranches.push(branch)
 				},
