@@ -45,9 +45,10 @@ export type IssueLoopDeps = PerSliceDeps & {
 
 export async function runIssueLoop(prdId: string, deps: IssueLoopDeps): Promise<void> {
 	const tag = `[work prd-${prdId}]`
+	const failed = new Set<string>()
 	for (let iter = 0; iter < deps.config.maxIterations; iter++) {
 		const slices = await deps.backend.findSlices(prdId)
-		const actionable = slices.filter((s) => s.bucket !== 'blocked' && classifyResumeState(s) !== 'done')
+		const actionable = slices.filter((s) => !failed.has(s.id) && s.bucket !== 'blocked' && classifyResumeState(s) !== 'done')
 		if (actionable.length === 0) {
 			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
 			return
@@ -56,7 +57,15 @@ export async function runIssueLoop(prdId: string, deps: IssueLoopDeps): Promise<
 		const limit = deps.config.maxConcurrent ?? actionable.length
 		for (let start = 0; start < actionable.length; start += limit) {
 			const batch = actionable.slice(start, start + limit)
-			await Promise.allSettled(batch.map((s) => processIssueSlice(s, deps)))
+			const results = await Promise.allSettled(batch.map((s) => processIssueSlice(s, deps)))
+			results.forEach((r, i) => {
+				if (r.status === 'rejected') {
+					const slice = batch[i]!
+					const msg = r.reason instanceof Error ? r.reason.message : String(r.reason)
+					deps.log(`[work prd-${prdId} slice-${slice.id}] error: ${msg}; skipping for the rest of this run`)
+					failed.add(slice.id)
+				}
+			})
 		}
 	}
 	deps.log(`issue loop hit maxIterations (${deps.config.maxIterations}); leaving remaining slices for next invocation`)
@@ -331,6 +340,57 @@ if (import.meta.vitest) {
 			}))
 			expect(sandboxCalled).toBe(false)
 			expect(outcome).toBe('no-work')
+		})
+
+		test('runIssueLoop: a slice that throws is logged, added to skip set, and not retried in subsequent iterations', async () => {
+			const sliceA = makeIssueSlice({ id: 'a' })
+			const sliceB = makeIssueSlice({ id: 'b' })
+			const spawnCalls: string[] = []
+			const logs: string[] = []
+			const deps = makeDeps({
+				spawnSandbox: async ({ slice }) => {
+					spawnCalls.push(slice.id)
+					if (slice.id === 'a') throw new Error('docker unreachable')
+					return { verdict: 'partial', notes: 'stop', commits: 0 }
+				},
+				log: (m) => logs.push(m),
+			})
+			// Always return both slices as actionable; only the skip-set should keep 'a' out.
+			deps.backend.findSlices = async () => [{ ...sliceA }, { ...sliceB }]
+			const loopDeps: IssueLoopDeps = {
+				...deps,
+				config: { ...deps.config, maxIterations: 3, maxConcurrent: 5 },
+			}
+
+			await runIssueLoop('142', loopDeps)
+
+			// 'a' spawns once (iter 1), then never again. 'b' spawns each iteration.
+			expect(spawnCalls.filter((id) => id === 'a')).toHaveLength(1)
+			expect(spawnCalls.filter((id) => id === 'b')).toHaveLength(3)
+			expect(logs.some((m) => /slice-a\] error: docker unreachable/.test(m))).toBe(true)
+		})
+
+		test('runIssueLoop: one slice throwing does not block sibling slices in the same batch', async () => {
+			const sliceA = makeIssueSlice({ id: 'a' })
+			const sliceB = makeIssueSlice({ id: 'b' })
+			const spawned: string[] = []
+			const deps = makeDeps({
+				spawnSandbox: async ({ slice }) => {
+					spawned.push(slice.id)
+					if (slice.id === 'a') throw new Error('boom')
+					return { verdict: 'partial', notes: 'stop', commits: 0 }
+				},
+			})
+			deps.backend.findSlices = async () => [{ ...sliceA }, { ...sliceB }]
+			const loopDeps: IssueLoopDeps = {
+				...deps,
+				config: { ...deps.config, maxIterations: 1, maxConcurrent: 2 },
+			}
+
+			await runIssueLoop('142', loopDeps)
+
+			expect(spawned).toContain('a')
+			expect(spawned).toContain('b')
 		})
 
 		test('runIssueLoop: blocked slices excluded from actionable filter', async () => {

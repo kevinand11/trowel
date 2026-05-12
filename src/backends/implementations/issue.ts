@@ -24,7 +24,7 @@ export async function createSliceBranch(
 	integrationBranch: string,
 ): Promise<string> {
 	const branch = `prd-${prdId}/slice-${sliceId}-${slug}`
-	const result = await deps.gh(['issue', 'develop', sliceId, '--branch', branch, '--base', integrationBranch])
+	const result = await deps.gh(['issue', 'develop', sliceId, '--name', branch, '--base', integrationBranch])
 	if (!result.ok) throw new Error(`gh issue develop failed: ${result.error.message}`)
 	await deps.gitFetch(branch)
 	return branch
