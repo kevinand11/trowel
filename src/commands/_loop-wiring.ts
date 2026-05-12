@@ -115,6 +115,12 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 		const r = await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `:${b}`])
 		if (!r.ok) throw r.error
 	}
+	const gitCreateRemoteBranch = async (newBranch: string, baseBranch: string) => {
+		const fetched = await tryExec('git', ['-C', projectRoot, 'fetch', '-q', 'origin', baseBranch])
+		if (!fetched.ok) throw fetched.error
+		const pushed = await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `refs/remotes/origin/${baseBranch}:refs/heads/${newBranch}`])
+		if (!pushed.ok) throw pushed.error
+	}
 	const findPrNumber = async (sliceBranch: string): Promise<number> => {
 		const r = await realGhRunner(['pr', 'list', '--head', sliceBranch, '--json', 'number', '--jq', '.[0].number'])
 		if (!r.ok || !r.stdout.trim()) throw new Error(`no PR found for head '${sliceBranch}'`)
@@ -210,6 +216,7 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 				gitDeleteRemoteBranch,
 				findPrNumber,
 				spawnSandbox: makeSpawnSandboxFor(prdId, branch),
+				gitCreateRemoteBranch,
 				log,
 				slugify,
 				config: { usePrs: config.work.usePrs, sliceStepCap: 1, maxIterations: 1, maxConcurrent: 1 },
@@ -244,6 +251,7 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 			gitDeleteRemoteBranch,
 			findPrNumber,
 			spawnSandbox: makeSpawnSandboxFor(prdId, branch),
+			gitCreateRemoteBranch,
 			log,
 			slugify,
 			config: {

@@ -6,26 +6,33 @@ import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSumma
 const DEFAULT_BRANCH_PREFIX = ''
 
 /**
- * Compose the slice branch name (`prd-<prdId>/slice-<sliceId>-<slug>`) and create it
- * on the host: `gh issue develop` to register a linked branch with the issue, then
- * `git fetch origin <branch>` so the host has the ref locally before any worktree op.
+ * Compose the slice branch name (`prd-<prdId>/slice-<sliceId>-<slug>`) and create
+ * it as a new remote branch off the integration branch's tip, then fetch it locally
+ * so the host has the ref before any worktree op.
  *
- * Returns the branch name on success. Idempotence with existing linked branches is
- * the caller's concern for now (a future cycle when the issue loop demands it).
+ * Implemented via `git push origin <integration-base>:<new>` rather than `gh issue
+ * develop` — gh 2.71.x has a bug where `gh issue develop --name X --base Y` writes
+ * `branch..gh-merge-base = Y` (empty branch name) to .git/config and then trips
+ * over its own write inside the same command. The trade-off: the new slice branch
+ * is not "linked" to the GitHub issue in the UI, but trowel never reads that
+ * linkage — `Closes #<sliceId>` on the PR closes the issue at merge time, and
+ * `findSlices` discovers slices via the sub-issues API.
  *
  * See ADR `afk-loop-asymmetric-across-backends` for why this lives outside the
  * Backend interface (issue-only operation; the loop imports it directly).
  */
 export async function createSliceBranch(
-	deps: { gh: GhRunner; gitFetch: (branch: string) => Promise<void> },
+	deps: {
+		gitFetch: (branch: string) => Promise<void>
+		gitCreateRemoteBranch: (newBranch: string, baseBranch: string) => Promise<void>
+	},
 	prdId: string,
 	sliceId: string,
 	slug: string,
 	integrationBranch: string,
 ): Promise<string> {
 	const branch = `prd-${prdId}/slice-${sliceId}-${slug}`
-	const result = await deps.gh(['issue', 'develop', sliceId, '--name', branch, '--base', integrationBranch])
-	if (!result.ok) throw new Error(`gh issue develop failed: ${result.error.message}`)
+	await deps.gitCreateRemoteBranch(branch, integrationBranch)
 	await deps.gitFetch(branch)
 	return branch
 }
@@ -907,17 +914,16 @@ if (import.meta.vitest) {
 	})
 
 	describe('createSliceBranch', () => {
-		test('runs `gh issue develop` with prd-<prdId>/slice-<sliceId>-<slug>, fetches it, and returns the branch name', async () => {
-			const ghCalls: string[][] = []
+		test('creates the remote branch from the integration base, fetches it, returns its name', async () => {
+			const createCalls: Array<[string, string]> = []
 			const fetchCalls: string[] = []
 			const branch = await createSliceBranch(
 				{
-					gh: async (args) => {
-						ghCalls.push(args)
-						return { ok: true, stdout: '', stderr: '' }
-					},
 					gitFetch: async (b) => {
 						fetchCalls.push(b)
+					},
+					gitCreateRemoteBranch: async (newBranch, baseBranch) => {
+						createCalls.push([newBranch, baseBranch])
 					},
 				},
 				'142',
@@ -926,10 +932,25 @@ if (import.meta.vitest) {
 				'prds-issue-142',
 			)
 			expect(branch).toBe('prd-142/slice-145-session-middleware')
-			expect(ghCalls).toEqual([
-				['issue', 'develop', '145', '--name', 'prd-142/slice-145-session-middleware', '--base', 'prds-issue-142'],
-			])
+			expect(createCalls).toEqual([['prd-142/slice-145-session-middleware', 'prds-issue-142']])
 			expect(fetchCalls).toEqual(['prd-142/slice-145-session-middleware'])
+		})
+
+		test('propagates the underlying git error when remote-branch creation fails', async () => {
+			await expect(
+				createSliceBranch(
+					{
+						gitFetch: async () => {},
+						gitCreateRemoteBranch: async () => {
+							throw new Error('remote rejected: refs/heads/<x> already exists')
+						},
+					},
+					'142',
+					'145',
+					'session-middleware',
+					'prds-issue-142',
+				),
+			).rejects.toThrow(/remote rejected/)
 		})
 	})
 }

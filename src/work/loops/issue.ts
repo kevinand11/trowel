@@ -34,6 +34,7 @@ export type PerSliceDeps = {
 	gitDeleteRemoteBranch: (branch: string) => Promise<void>
 	findPrNumber: (sliceBranch: string) => Promise<number>
 	spawnSandbox: (args: { role: Role; slice: Slice; branch: string; sandboxIn: SandboxIn }) => Promise<SandboxOut>
+	gitCreateRemoteBranch: (newBranch: string, baseBranch: string) => Promise<void>
 	log: (msg: string) => void
 	slugify: (title: string) => string
 	config: { usePrs: boolean; sliceStepCap: number }
@@ -183,7 +184,7 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 
 	if (resumeState === 'implement') {
 		const slug = deps.slugify(slice.title)
-		const sliceBranch = await createSliceBranch({ gh: deps.gh, gitFetch: deps.gitFetch }, deps.prdId, slice.id, slug, deps.integrationBranch)
+		const sliceBranch = await createSliceBranch({ gitFetch: deps.gitFetch, gitCreateRemoteBranch: deps.gitCreateRemoteBranch }, deps.prdId, slice.id, slug, deps.integrationBranch)
 		deps.log(`${tag} created slice branch ${sliceBranch}`)
 		const sandboxIn: SandboxIn = { slice: { id: slice.id, title: slice.title, body: slice.body } }
 		deps.log(`${tag} spawning implement sandbox on ${sliceBranch}`)
@@ -322,6 +323,7 @@ if (import.meta.vitest) {
 				gitDeleteRemoteBranch: async () => {},
 				findPrNumber: async () => 168,
 				spawnSandbox: async () => ({ verdict: 'partial', notes: 'stop', commits: 0 }),
+				gitCreateRemoteBranch: async () => {},
 				log: () => {},
 				slugify: (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
 				config: { usePrs: true, sliceStepCap: 1 },
@@ -835,18 +837,17 @@ if (import.meta.vitest) {
 			])
 		})
 
-		test('on implement state: creates the slice branch via gh issue develop, fetches it, then spawns the sandbox on that branch', async () => {
+		test('on implement state: creates the slice branch via git push (not gh), fetches it, then spawns the sandbox on that branch', async () => {
 			const slice = makeIssueSlice()
-			const ghCalls: string[][] = []
+			const createCalls: Array<[string, string]> = []
 			const fetchCalls: string[] = []
 			let sandboxBranch: string | null = null
 			await processIssueSlice(slice, makeDeps({
-				gh: async (args) => {
-					ghCalls.push(args)
-					return { ok: true, stdout: '', stderr: '' }
-				},
 				gitFetch: async (b) => {
 					fetchCalls.push(b)
+				},
+				gitCreateRemoteBranch: async (newBranch, baseBranch) => {
+					createCalls.push([newBranch, baseBranch])
 				},
 				spawnSandbox: async ({ branch }) => {
 					sandboxBranch = branch
@@ -854,7 +855,7 @@ if (import.meta.vitest) {
 				},
 			}))
 			const expectedBranch = 'prd-142/slice-145-session-middleware'
-			expect(ghCalls).toContainEqual(['issue', 'develop', '145', '--name', expectedBranch, '--base', 'prds-issue-142'])
+			expect(createCalls).toEqual([[expectedBranch, 'prds-issue-142']])
 			expect(fetchCalls).toContain(expectedBranch)
 			expect(sandboxBranch).toBe(expectedBranch)
 		})
