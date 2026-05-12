@@ -20,27 +20,39 @@ export type ProcessFileSliceDeps = Omit<FileLoopDeps, 'config'>
  * Used by both `runFileLoop` (in its serial outer loop) and by the per-phase `trowel implement` command.
  */
 export async function processFileSlice(prdId: string, slice: Slice, deps: ProcessFileSliceDeps): Promise<FileSliceOutcome> {
+	const tag = `[work prd-${prdId} slice-${slice.id}]`
 	const sandboxIn: SandboxIn = { slice: { id: slice.id, title: slice.title, body: slice.body } }
+	deps.log(`${tag} spawning implement sandbox`)
 	const verdict = await deps.spawnSandbox({ role: 'implement', slice, sandboxIn })
+	deps.log(`${tag} implement verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
 	if (verdict.verdict === 'ready') {
 		await deps.gitPush(deps.integrationBranch)
+		deps.log(`${tag} pushed ${deps.integrationBranch}`)
 		await deps.backend.updateSlice(prdId, slice.id, { state: 'CLOSED' })
+		deps.log(`${tag} closed slice`)
 		return 'done'
 	}
 	if (verdict.verdict === 'no-work-needed') {
 		await deps.backend.updateSlice(prdId, slice.id, { readyForAgent: false })
+		deps.log(`${tag} no-work-needed: cleared readyForAgent`)
 		return 'no-work'
 	}
 	return 'partial'
 }
 
 export async function runFileLoop(prdId: string, deps: FileLoopDeps): Promise<void> {
+	const tag = `[work prd-${prdId}]`
 	const stepCounts = new Map<string, number>()
 	for (let iter = 0; iter < deps.config.maxIterations; iter++) {
 		const slices = await deps.backend.findSlices(prdId)
 		const next = slices.find((s) => s.bucket === 'ready' && (stepCounts.get(s.id) ?? 0) < deps.config.sliceStepCap)
-		if (!next) return
-		stepCounts.set(next.id, (stepCounts.get(next.id) ?? 0) + 1)
+		if (!next) {
+			deps.log(`${tag} no ready slices; exiting after ${iter} iteration(s)`)
+			return
+		}
+		const step = (stepCounts.get(next.id) ?? 0) + 1
+		stepCounts.set(next.id, step)
+		deps.log(`${tag} iter ${iter + 1}/${deps.config.maxIterations}: selected slice ${next.id} "${next.title}" (step ${step}/${deps.config.sliceStepCap})`)
 		await processFileSlice(prdId, next, deps)
 		// On 'partial' (or invalid verdicts coerced to partial), the slice
 		// remains 'ready'; stepCounts prevents reselecting it past sliceStepCap.

@@ -44,10 +44,15 @@ export type IssueLoopDeps = PerSliceDeps & {
 }
 
 export async function runIssueLoop(prdId: string, deps: IssueLoopDeps): Promise<void> {
+	const tag = `[work prd-${prdId}]`
 	for (let iter = 0; iter < deps.config.maxIterations; iter++) {
 		const slices = await deps.backend.findSlices(prdId)
 		const actionable = slices.filter((s) => classifyResumeState(s) !== 'done')
-		if (actionable.length === 0) return
+		if (actionable.length === 0) {
+			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
+			return
+		}
+		deps.log(`${tag} iter ${iter + 1}/${deps.config.maxIterations}: ${actionable.length} actionable slice(s) [${actionable.map((s) => s.id).join(', ')}]`)
 		const limit = deps.config.maxConcurrent ?? actionable.length
 		for (let start = 0; start < actionable.length; start += limit) {
 			const batch = actionable.slice(start, start + limit)
@@ -69,12 +74,15 @@ export async function processIssueSlice(initial: Slice, deps: PerSliceDeps): Pro
 		if (!refreshed) return 'partial'
 		slice = refreshed
 	}
+	deps.log(`[work prd-${deps.prdId} slice-${slice.id}] step-cap reached after ${deps.config.sliceStepCap} step(s); returning partial`)
 	return 'partial'
 }
 
 async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseOutcome> {
+	const tag = `[work prd-${deps.prdId} slice-${slice.id}]`
 	const resumeState = classifyResumeState(slice)
 	if (resumeState === 'done') return 'done'
+	deps.log(`${tag} state=${resumeState}: "${slice.title}"`)
 
 	if (resumeState === 'create-pr-then-review') {
 		const sliceBranch = `prd-${deps.prdId}/slice-${slice.id}-${deps.slugify(slice.title)}`
@@ -92,6 +100,7 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 			`Closes #${slice.id}`,
 		])
 		if (!result.ok) throw new Error(`gh pr create failed: ${result.error.message}`)
+		deps.log(`${tag} opened draft PR for ${sliceBranch}`)
 		return 'progress'
 	}
 
@@ -99,20 +108,28 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 		const sliceBranch = `prd-${deps.prdId}/slice-${slice.id}-${deps.slugify(slice.title)}`
 		const prNumber = await deps.findPrNumber(sliceBranch)
 		const feedback = await fetchPrFeedback(prNumber, { gh: deps.gh })
+		deps.log(`${tag} fetched ${feedback.length} feedback item(s) from PR #${prNumber}`)
 		const sandboxIn: SandboxIn = {
 			slice: { id: slice.id, title: slice.title, body: slice.body },
 			pr: { number: prNumber, branch: sliceBranch },
 			feedback,
 		}
+		deps.log(`${tag} spawning address sandbox on ${sliceBranch}`)
 		const verdict = await deps.spawnSandbox({ role: 'address', slice, branch: sliceBranch, sandboxIn })
+		deps.log(`${tag} address verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
 		if (verdict.verdict === 'partial') return 'partial'
 		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) await deps.gitPush(sliceBranch)
+			if (verdict.commits > 0) {
+				await deps.gitPush(sliceBranch)
+				deps.log(`${tag} pushed ${sliceBranch}`)
+			}
 			await deps.backend.updateSlice(deps.prdId, slice.id, { needsRevision: false })
+			deps.log(`${tag} cleared needsRevision`)
 			return 'progress'
 		}
 		if (verdict.verdict === 'no-work-needed') {
 			await deps.backend.updateSlice(deps.prdId, slice.id, { needsRevision: false })
+			deps.log(`${tag} no-work-needed: cleared needsRevision`)
 			return 'no-work'
 		}
 		return 'progress'
@@ -125,17 +142,27 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 			slice: { id: slice.id, title: slice.title, body: slice.body },
 			pr: { number: prNumber, branch: sliceBranch },
 		}
+		deps.log(`${tag} spawning review sandbox on ${sliceBranch} (PR #${prNumber})`)
 		const verdict = await deps.spawnSandbox({ role: 'review', slice, branch: sliceBranch, sandboxIn })
+		deps.log(`${tag} review verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
 		if (verdict.verdict === 'partial') return 'partial'
 		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) await deps.gitPush(sliceBranch)
+			if (verdict.commits > 0) {
+				await deps.gitPush(sliceBranch)
+				deps.log(`${tag} pushed ${sliceBranch}`)
+			}
 			const result = await deps.gh(['pr', 'ready', String(prNumber)])
 			if (!result.ok) throw new Error(`gh pr ready failed: ${result.error.message}`)
+			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
 			return 'progress'
 		}
 		if (verdict.verdict === 'needs-revision') {
-			if (verdict.commits > 0) await deps.gitPush(sliceBranch)
+			if (verdict.commits > 0) {
+				await deps.gitPush(sliceBranch)
+				deps.log(`${tag} pushed ${sliceBranch}`)
+			}
 			await deps.backend.updateSlice(deps.prdId, slice.id, { needsRevision: true })
+			deps.log(`${tag} flagged needsRevision`)
 			return 'progress'
 		}
 		return 'progress'
@@ -144,15 +171,20 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 	if (resumeState === 'implement') {
 		const slug = deps.slugify(slice.title)
 		const sliceBranch = await createSliceBranch({ gh: deps.gh, gitFetch: deps.gitFetch }, deps.prdId, slice.id, slug, deps.integrationBranch)
+		deps.log(`${tag} created slice branch ${sliceBranch}`)
 		const sandboxIn: SandboxIn = { slice: { id: slice.id, title: slice.title, body: slice.body } }
+		deps.log(`${tag} spawning implement sandbox on ${sliceBranch}`)
 		const verdict = await deps.spawnSandbox({ role: 'implement', slice, branch: sliceBranch, sandboxIn })
+		deps.log(`${tag} implement verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
 		if (verdict.verdict === 'partial') return 'partial'
 		if (verdict.verdict === 'no-work-needed') {
 			await deps.backend.updateSlice(deps.prdId, slice.id, { readyForAgent: false })
+			deps.log(`${tag} no-work-needed: cleared readyForAgent`)
 			return 'no-work'
 		}
 		if (verdict.verdict === 'ready') {
 			await deps.gitPush(sliceBranch)
+			deps.log(`${tag} pushed ${sliceBranch}`)
 			if (deps.config.usePrs) {
 				const result = await deps.gh([
 					'pr',
@@ -168,13 +200,16 @@ async function processOnePhase(slice: Slice, deps: PerSliceDeps): Promise<PhaseO
 					`Closes #${slice.id}`,
 				])
 				if (!result.ok) throw new Error(`gh pr create failed: ${result.error.message}`)
+				deps.log(`${tag} opened draft PR for ${sliceBranch}`)
 			} else {
 				await deps.gitCheckout(deps.integrationBranch)
 				await deps.gitMergeNoFf(sliceBranch)
 				await deps.gitPush(deps.integrationBranch)
 				await deps.gitDeleteRemoteBranch(sliceBranch)
+				deps.log(`${tag} merged ${sliceBranch} into ${deps.integrationBranch}; deleted slice branch`)
 				const closeResult = await deps.gh(['issue', 'close', slice.id])
 				if (!closeResult.ok) throw new Error(`gh issue close failed: ${closeResult.error.message}`)
+				deps.log(`${tag} closed sub-issue #${slice.id}`)
 			}
 			return 'progress'
 		}
