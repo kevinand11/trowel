@@ -142,7 +142,7 @@ if (import.meta.vitest) {
 				if (!state.prd || state.prd.id !== id) return null
 				return state.prd
 			},
-			listOpen: async () => [],
+			listPrds: async () => [],
 			close: async () => {},
 			createSlice: async () => {
 				throw new Error('nyi')

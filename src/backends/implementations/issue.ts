@@ -189,8 +189,8 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		}
 	}
 
-	async function listOpen(): Promise<PrdSummary[]> {
-		const out = await ghOrThrow(['issue', 'list', '--label', deps.labels.prd, '--state', 'open', '--json', 'number,title'])
+	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
+		const out = await ghOrThrow(['issue', 'list', '--label', deps.labels.prd, '--state', opts.state, '--json', 'number,title'])
 		const issues = JSON.parse(out) as Array<{ number: number; title: string }>
 		const summaries: PrdSummary[] = []
 		for (const issue of issues) {
@@ -207,7 +207,7 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		createPrd,
 		branchForExisting,
 		findPrd,
-		listOpen,
+		listPrds,
 		close,
 		createSlice,
 		findSlices,
@@ -355,14 +355,32 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('issue backend: listOpen', () => {
+	describe('issue backend: listPrds', () => {
 		test('returns empty array when no issues match the prd label', async () => {
 			const { deps, calls } = makeDeps([
 				{ match: (a) => a[0] === 'issue' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
 			])
 			const backend = createIssueBackend(deps)
-			expect(await backend.listOpen()).toEqual([])
+			expect(await backend.listPrds({ state: 'open' })).toEqual([])
 			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'open', '--json', 'number,title'])
+		})
+
+		test('passes --state closed through to gh when called with { state: "closed" }', async () => {
+			const { deps, calls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			await backend.listPrds({ state: 'closed' })
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'closed', '--json', 'number,title'])
+		})
+
+		test('passes --state all through to gh when called with { state: "all" }', async () => {
+			const { deps, calls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			await backend.listPrds({ state: 'all' })
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'all', '--json', 'number,title'])
 		})
 
 		test('returns one PrdSummary per matching issue, with branch from branchForExisting', async () => {
@@ -388,7 +406,7 @@ if (import.meta.vitest) {
 				},
 			])
 			const backend = createIssueBackend(deps)
-			const result = await backend.listOpen()
+			const result = await backend.listPrds({ state: 'open' })
 			expect(result).toEqual([
 				{ id: '42', title: 'Fix Tabs', branch: '42-fix-tabs' },
 				{ id: '7', title: 'Add ORM', branch: '7-add-orm' },

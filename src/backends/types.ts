@@ -85,7 +85,7 @@ export interface Backend {
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
 	branchForExisting(id: string): Promise<string>
 	findPrd(id: string): Promise<PrdRecord | null>
-	listOpen(): Promise<PrdSummary[]>
+	listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]>
 	close(id: string): Promise<void>
 
 	// Slice lifecycle

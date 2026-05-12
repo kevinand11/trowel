@@ -197,7 +197,7 @@ if (import.meta.vitest) {
 				if (!state.prd || state.prd.id !== id) return null
 				return { ...state.prd }
 			},
-			listOpen: async () => (state.prd && state.prd.state === 'OPEN' ? [state.prd] : []),
+			listPrds: async () => (state.prd && state.prd.state === 'OPEN' ? [state.prd] : []),
 			close: async (id) => {
 				calls.push(`close(${id})`)
 				if (state.prd && state.prd.id === id) state.prd.state = 'CLOSED'

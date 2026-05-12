@@ -6,6 +6,7 @@ import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
+import { list, type PrdState } from './commands/list.ts'
 import { review } from './commands/review.ts'
 import { status } from './commands/status.ts'
 import * as stubs from './commands/stubs.ts'
@@ -58,6 +59,22 @@ export function run(): void {
 		.argument('[layer]', "Which layer to write: global | private | project", 'project')
 		.action(async (layer: string) => {
 			await init(layer)
+		})
+
+	const listCmd = program.command('list').description('List entities in this project')
+
+	listCmd
+		.command('prds')
+		.description('List PRDs in this project')
+		.option('--state <kind>', 'Filter by state: open | closed | all', 'open')
+		.option('--backend <kind>', 'Override project backend')
+		.action(async (opts: { state: string; backend?: string }) => {
+			const validStates: PrdState[] = ['open', 'closed', 'all']
+			if (!validStates.includes(opts.state as PrdState)) {
+				process.stderr.write(`trowel list prds: invalid --state '${opts.state}' (expected open | closed | all)\n`)
+				process.exit(1)
+			}
+			await list(opts.state as PrdState, { backend: opts.backend })
 		})
 
 	program

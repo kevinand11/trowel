@@ -65,7 +65,7 @@ if (import.meta.vitest) {
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
-			listOpen: async () => [],
+			listPrds: async () => [],
 			close: async () => {},
 			createSlice: async () => {
 				throw new Error('not used')

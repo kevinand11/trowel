@@ -115,29 +115,33 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		return `${prefix}${store.id}-${store.slug}`
 	}
 
-	async function listOpen(): Promise<PrdSummary[]> {
+	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
 		let entries: string[]
 		try {
 			entries = await readdir(deps.prdsDir)
 		} catch {
 			return []
 		}
-		const summaries: PrdSummary[] = []
+		const summaries: Array<PrdSummary & { createdAt: string }> = []
 		for (const entry of entries) {
 			const storePath = path.join(deps.prdsDir, entry, 'store.json')
 			try {
 				const store: PrdStore = JSON.parse(await readFile(storePath, 'utf8'))
-				if (store.closedAt !== null) continue
+				const isClosed = store.closedAt !== null
+				if (opts.state === 'open' && isClosed) continue
+				if (opts.state === 'closed' && !isClosed) continue
 				summaries.push({
 					id: store.id,
 					title: store.title,
 					branch: `${prefix}${store.id}-${store.slug}`,
+					createdAt: store.createdAt,
 				})
 			} catch {
 				continue
 			}
 		}
-		return summaries
+		summaries.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+		return summaries.map(({ createdAt: _, ...summary }) => summary)
 	}
 
 	async function close(id: string): Promise<void> {
@@ -260,7 +264,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		createPrd,
 		branchForExisting,
 		findPrd,
-		listOpen,
+		listPrds,
 		close,
 		createSlice,
 		findSlices,
@@ -393,7 +397,7 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file backend: listOpen', () => {
+	describe('file backend: listPrds', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -404,7 +408,7 @@ if (import.meta.vitest) {
 
 		test('returns empty array when prdsDir does not exist', async () => {
 			const backend = createFileBackend(f.deps)
-			expect(await backend.listOpen()).toEqual([])
+			expect(await backend.listPrds({ state: 'open' })).toEqual([])
 		})
 
 		test('returns one summary per PRD with closedAt === null, skipping closed ones', async () => {
@@ -434,9 +438,93 @@ if (import.meta.vitest) {
 			)
 
 			const backend = createFileBackend(f.deps)
-			const open = await backend.listOpen()
+			const open = await backend.listPrds({ state: 'open' })
 			expect(open).toHaveLength(1)
 			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'prd/bbbbbb-beta' })
+		})
+
+		test('returns both open and closed PRDs when called with { state: "all" }', async () => {
+			const alphaDir = path.join(f.prdsDir, 'aaaaaa-alpha')
+			const betaDir = path.join(f.prdsDir, 'bbbbbb-beta')
+			await mkdir(alphaDir, { recursive: true })
+			await mkdir(betaDir, { recursive: true })
+			await writeFile(
+				path.join(alphaDir, 'store.json'),
+				JSON.stringify({
+					id: 'aaaaaa',
+					slug: 'alpha',
+					title: 'Alpha',
+					createdAt: '2026-05-11T00:00:00.000Z',
+					closedAt: '2026-05-11T01:00:00.000Z',
+				}),
+			)
+			await writeFile(
+				path.join(betaDir, 'store.json'),
+				JSON.stringify({
+					id: 'bbbbbb',
+					slug: 'beta',
+					title: 'Beta',
+					createdAt: '2026-05-11T00:00:00.000Z',
+					closedAt: null,
+				}),
+			)
+
+			const backend = createFileBackend(f.deps)
+			const all = await backend.listPrds({ state: 'all' })
+			expect(all).toHaveLength(2)
+			expect(all.map((p) => p.id).sort()).toEqual(['aaaaaa', 'bbbbbb'])
+		})
+
+		test('returns PRDs sorted by createdAt descending (newest first)', async () => {
+			const dirs = [
+				{ name: 'aaaaaa-old', id: 'aaaaaa', slug: 'old', createdAt: '2026-05-01T00:00:00.000Z' },
+				{ name: 'bbbbbb-new', id: 'bbbbbb', slug: 'new', createdAt: '2026-05-12T00:00:00.000Z' },
+				{ name: 'cccccc-mid', id: 'cccccc', slug: 'mid', createdAt: '2026-05-07T00:00:00.000Z' },
+			]
+			for (const d of dirs) {
+				const dir = path.join(f.prdsDir, d.name)
+				await mkdir(dir, { recursive: true })
+				await writeFile(
+					path.join(dir, 'store.json'),
+					JSON.stringify({ id: d.id, slug: d.slug, title: d.id, createdAt: d.createdAt, closedAt: null }),
+				)
+			}
+
+			const backend = createFileBackend(f.deps)
+			const ordered = await backend.listPrds({ state: 'open' })
+			expect(ordered.map((p) => p.id)).toEqual(['bbbbbb', 'cccccc', 'aaaaaa'])
+		})
+
+		test('returns only closed PRDs when called with { state: "closed" }', async () => {
+			const alphaDir = path.join(f.prdsDir, 'aaaaaa-alpha')
+			const betaDir = path.join(f.prdsDir, 'bbbbbb-beta')
+			await mkdir(alphaDir, { recursive: true })
+			await mkdir(betaDir, { recursive: true })
+			await writeFile(
+				path.join(alphaDir, 'store.json'),
+				JSON.stringify({
+					id: 'aaaaaa',
+					slug: 'alpha',
+					title: 'Alpha',
+					createdAt: '2026-05-11T00:00:00.000Z',
+					closedAt: '2026-05-11T01:00:00.000Z',
+				}),
+			)
+			await writeFile(
+				path.join(betaDir, 'store.json'),
+				JSON.stringify({
+					id: 'bbbbbb',
+					slug: 'beta',
+					title: 'Beta',
+					createdAt: '2026-05-11T00:00:00.000Z',
+					closedAt: null,
+				}),
+			)
+
+			const backend = createFileBackend(f.deps)
+			const closed = await backend.listPrds({ state: 'closed' })
+			expect(closed).toHaveLength(1)
+			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'prd/aaaaaa-alpha' })
 		})
 	})
 
