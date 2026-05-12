@@ -47,7 +47,7 @@ export async function runIssueLoop(prdId: string, deps: IssueLoopDeps): Promise<
 	const tag = `[work prd-${prdId}]`
 	for (let iter = 0; iter < deps.config.maxIterations; iter++) {
 		const slices = await deps.backend.findSlices(prdId)
-		const actionable = slices.filter((s) => classifyResumeState(s) !== 'done')
+		const actionable = slices.filter((s) => s.bucket !== 'blocked' && classifyResumeState(s) !== 'done')
 		if (actionable.length === 0) {
 			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
 			return
@@ -63,6 +63,10 @@ export async function runIssueLoop(prdId: string, deps: IssueLoopDeps): Promise<
 }
 
 export async function processIssueSlice(initial: Slice, deps: PerSliceDeps): Promise<ProcessOutcome> {
+	if (initial.bucket === 'blocked') {
+		deps.log(`[work prd-${deps.prdId} slice-${initial.id}] blocked by [${initial.blockedBy.join(', ')}]; skipping`)
+		return 'no-work'
+	}
 	let slice = initial
 	for (let step = 0; step < deps.config.sliceStepCap; step++) {
 		const outcome = await processOnePhase(slice, deps)
@@ -315,6 +319,43 @@ if (import.meta.vitest) {
 				...overrides,
 			}
 		}
+
+		test('blocked slice: skipped, no sandbox spawn, returns no-work', async () => {
+			const slice = makeIssueSlice({ bucket: 'blocked', blockedBy: ['144'] })
+			let sandboxCalled = false
+			const outcome = await processIssueSlice(slice, makeDeps({
+				spawnSandbox: async () => {
+					sandboxCalled = true
+					return { verdict: 'partial', notes: 'x', commits: 0 }
+				},
+			}))
+			expect(sandboxCalled).toBe(false)
+			expect(outcome).toBe('no-work')
+		})
+
+		test('runIssueLoop: blocked slices excluded from actionable filter', async () => {
+			const blocked = makeIssueSlice({ id: 'b', bucket: 'blocked', blockedBy: ['a'] })
+			const ready = makeIssueSlice({ id: 'r' })
+			const sandboxIds: string[] = []
+			const deps = makeDeps({
+				spawnSandbox: async ({ slice }) => {
+					sandboxIds.push(slice.id)
+					return { verdict: 'partial', notes: 'stop', commits: 0 }
+				},
+			})
+			let findCalls = 0
+			deps.backend.findSlices = async () => {
+				findCalls += 1
+				if (findCalls === 1) return [blocked, ready]
+				return [blocked, { ...ready, state: 'CLOSED' as const, bucket: 'done' as const }]
+			}
+			const loopDeps: IssueLoopDeps = {
+				...deps,
+				config: { ...deps.config, maxIterations: 3, maxConcurrent: 5 },
+			}
+			await runIssueLoop('142', loopDeps)
+			expect(sandboxIds).toEqual(['r'])
+		})
 
 		test('on implement state: spawns the implementer sandbox with role=implement and slice spec', async () => {
 			const slice = makeIssueSlice()

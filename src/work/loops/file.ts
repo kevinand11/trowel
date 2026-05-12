@@ -21,6 +21,10 @@ export type ProcessFileSliceDeps = Omit<FileLoopDeps, 'config'>
  */
 export async function processFileSlice(prdId: string, slice: Slice, deps: ProcessFileSliceDeps): Promise<FileSliceOutcome> {
 	const tag = `[work prd-${prdId} slice-${slice.id}]`
+	if (slice.bucket === 'blocked') {
+		deps.log(`${tag} blocked by [${slice.blockedBy.join(', ')}]; skipping`)
+		return 'no-work'
+	}
 	const sandboxIn: SandboxIn = { slice: { id: slice.id, title: slice.title, body: slice.body } }
 	deps.log(`${tag} spawning implement sandbox`)
 	const verdict = await deps.spawnSandbox({ role: 'implement', slice, sandboxIn })
@@ -122,6 +126,24 @@ if (import.meta.vitest) {
 	}
 
 	describe('runFileLoop', () => {
+		test('processFileSlice: blocked slice → no-work, no sandbox spawn', async () => {
+			const blocked = makeReadySlice({ id: 's1', bucket: 'blocked', blockedBy: ['s0'] })
+			const backend = makeFakeBackend({ slices: [blocked] })
+			let sandboxCalled = false
+			const outcome = await processFileSlice('p1', blocked, {
+				backend,
+				integrationBranch: 'integration',
+				spawnSandbox: async () => {
+					sandboxCalled = true
+					return { verdict: 'ready', commits: 1 }
+				},
+				gitPush: async () => {},
+				log: () => {},
+			})
+			expect(sandboxCalled).toBe(false)
+			expect(outcome).toBe('no-work')
+		})
+
 		test('runs implementer once on a single ready slice, pushes integration, and closes the slice on a ready verdict', async () => {
 			const slice = makeReadySlice({ id: 's1', title: 'Implement A' })
 			const backend = makeFakeBackend({ slices: [slice] })
