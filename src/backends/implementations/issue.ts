@@ -927,7 +927,7 @@ if (import.meta.vitest) {
 			)
 			expect(branch).toBe('prd-142/slice-145-session-middleware')
 			expect(ghCalls).toEqual([
-				['issue', 'develop', '145', '--branch', 'prd-142/slice-145-session-middleware', '--base', 'prds-issue-142'],
+				['issue', 'develop', '145', '--name', 'prd-142/slice-145-session-middleware', '--base', 'prds-issue-142'],
 			])
 			expect(fetchCalls).toEqual(['prd-142/slice-145-session-middleware'])
 		})

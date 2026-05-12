@@ -854,7 +854,7 @@ if (import.meta.vitest) {
 				},
 			}))
 			const expectedBranch = 'prd-142/slice-145-session-middleware'
-			expect(ghCalls).toContainEqual(['issue', 'develop', '145', '--branch', expectedBranch, '--base', 'prds-issue-142'])
+			expect(ghCalls).toContainEqual(['issue', 'develop', '145', '--name', expectedBranch, '--base', 'prds-issue-142'])
 			expect(fetchCalls).toContain(expectedBranch)
 			expect(sandboxBranch).toBe(expectedBranch)
 		})

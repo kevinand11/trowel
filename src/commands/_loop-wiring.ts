@@ -12,6 +12,7 @@ import type { Backend, BackendDeps, Slice } from '../backends/types.ts'
 import { loadConfig } from '../config.ts'
 import type { Config } from '../schema.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
+import { loadClaudeOauthToken, realLoadOauthTokenDeps } from '../utils/oauth-token.ts'
 import { exec, tryExec } from '../utils/shell.ts'
 import { slug as slugify } from '../utils/slug.ts'
 import { ensureSandboxImage } from '../work/image.ts'
@@ -91,6 +92,9 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 
 	await ensureTrowelDir(projectRoot)
 
+	const oauthToken = await loadClaudeOauthToken(projectRoot, realLoadOauthTokenDeps)
+	const sandboxEnv: Record<string, string> = oauthToken !== null ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}
+
 	const gitFetch = async (b: string) => {
 		const r = await tryExec('git', ['-C', projectRoot, 'fetch', '-q', 'origin', b])
 		if (!r.ok) throw r.error
@@ -145,6 +149,7 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 				sandbox: docker({
 					imageName: config.sandbox.image,
 					mounts: [{ hostPath: '~/.claude', sandboxPath: '/home/agent/.claude' }],
+					env: sandboxEnv,
 				}),
 				hooks: {
 					sandbox: {
