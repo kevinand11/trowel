@@ -1,11 +1,15 @@
 import { Command } from 'commander'
 
+import { address } from './commands/address.ts'
 import { close } from './commands/close.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
+import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
+import { review } from './commands/review.ts'
 import { status } from './commands/status.ts'
 import * as stubs from './commands/stubs.ts'
+import { work } from './commands/work.ts'
 
 export function run(): void {
 	const program = new Command()
@@ -27,7 +31,7 @@ export function run(): void {
 		.argument('<prd-id>')
 		.option('--backend <kind>', 'Override project backend')
 		.action(async (prdId: string, opts) => {
-			await stubs.work(prdId, opts)
+			await work(prdId, opts)
 		})
 
 	program
@@ -92,7 +96,7 @@ export function run(): void {
 		.argument('<prd-id>')
 		.argument('<slice-id>')
 		.action(async (prdId: string, sliceId: string) => {
-			await stubs.implement(prdId, sliceId)
+			await implement(prdId, sliceId)
 		})
 
 	program
@@ -101,7 +105,7 @@ export function run(): void {
 		.argument('<prd-id>')
 		.argument('<slice-id>')
 		.action(async (prdId: string, sliceId: string) => {
-			await stubs.address(prdId, sliceId)
+			await address(prdId, sliceId)
 		})
 
 	program
@@ -110,7 +114,7 @@ export function run(): void {
 		.argument('<prd-id>')
 		.argument('<slice-id>')
 		.action(async (prdId: string, sliceId: string) => {
-			await stubs.review(prdId, sliceId)
+			await review(prdId, sliceId)
 		})
 
 	program.parseAsync(process.argv).catch((error: Error) => {

@@ -11,6 +11,29 @@ export type FileLoopDeps = {
 	config: { maxIterations: number; sliceStepCap: number }
 }
 
+export type FileSliceOutcome = 'done' | 'partial' | 'no-work'
+
+export type ProcessFileSliceDeps = Omit<FileLoopDeps, 'config'>
+
+/**
+ * Run one implementer phase on one slice (single-pass; caller filters bucket and decides cadence).
+ * Used by both `runFileLoop` (in its serial outer loop) and by the per-phase `trowel implement` command.
+ */
+export async function processFileSlice(prdId: string, slice: Slice, deps: ProcessFileSliceDeps): Promise<FileSliceOutcome> {
+	const sandboxIn: SandboxIn = { slice: { id: slice.id, title: slice.title, body: slice.body } }
+	const verdict = await deps.spawnSandbox({ role: 'implement', slice, sandboxIn })
+	if (verdict.verdict === 'ready') {
+		await deps.gitPush(deps.integrationBranch)
+		await deps.backend.updateSlice(prdId, slice.id, { state: 'CLOSED' })
+		return 'done'
+	}
+	if (verdict.verdict === 'no-work-needed') {
+		await deps.backend.updateSlice(prdId, slice.id, { readyForAgent: false })
+		return 'no-work'
+	}
+	return 'partial'
+}
+
 export async function runFileLoop(prdId: string, deps: FileLoopDeps): Promise<void> {
 	const stepCounts = new Map<string, number>()
 	for (let iter = 0; iter < deps.config.maxIterations; iter++) {
@@ -18,14 +41,7 @@ export async function runFileLoop(prdId: string, deps: FileLoopDeps): Promise<vo
 		const next = slices.find((s) => s.bucket === 'ready' && (stepCounts.get(s.id) ?? 0) < deps.config.sliceStepCap)
 		if (!next) return
 		stepCounts.set(next.id, (stepCounts.get(next.id) ?? 0) + 1)
-		const sandboxIn: SandboxIn = { slice: { id: next.id, title: next.title, body: next.body } }
-		const verdict = await deps.spawnSandbox({ role: 'implement', slice: next, sandboxIn })
-		if (verdict.verdict === 'ready') {
-			await deps.gitPush(deps.integrationBranch)
-			await deps.backend.updateSlice(prdId, next.id, { state: 'CLOSED' })
-		} else if (verdict.verdict === 'no-work-needed') {
-			await deps.backend.updateSlice(prdId, next.id, { readyForAgent: false })
-		}
+		await processFileSlice(prdId, next, deps)
 		// On 'partial' (or invalid verdicts coerced to partial), the slice
 		// remains 'ready'; stepCounts prevents reselecting it past sliceStepCap.
 	}
