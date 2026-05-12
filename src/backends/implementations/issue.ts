@@ -5,6 +5,31 @@ import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSumma
 
 const DEFAULT_BRANCH_PREFIX = ''
 
+/**
+ * Compose the slice branch name (`prd-<prdId>/slice-<sliceId>-<slug>`) and create it
+ * on the host: `gh issue develop` to register a linked branch with the issue, then
+ * `git fetch origin <branch>` so the host has the ref locally before any worktree op.
+ *
+ * Returns the branch name on success. Idempotence with existing linked branches is
+ * the caller's concern for now (a future cycle when the issue loop demands it).
+ *
+ * See ADR `afk-loop-asymmetric-across-backends` for why this lives outside the
+ * Backend interface (issue-only operation; the loop imports it directly).
+ */
+export async function createSliceBranch(
+	deps: { gh: GhRunner; gitFetch: (branch: string) => Promise<void> },
+	prdId: string,
+	sliceId: string,
+	slug: string,
+	integrationBranch: string,
+): Promise<string> {
+	const branch = `prd-${prdId}/slice-${sliceId}-${slug}`
+	const result = await deps.gh(['issue', 'develop', sliceId, '--branch', branch, '--base', integrationBranch])
+	if (!result.ok) throw new Error(`gh issue develop failed: ${result.error.message}`)
+	await deps.gitFetch(branch)
+	return branch
+}
+
 export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend => {
 	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
 
@@ -860,6 +885,33 @@ if (import.meta.vitest) {
 				'--comment',
 				'Closed via trowel',
 			])
+		})
+	})
+
+	describe('createSliceBranch', () => {
+		test('runs `gh issue develop` with prd-<prdId>/slice-<sliceId>-<slug>, fetches it, and returns the branch name', async () => {
+			const ghCalls: string[][] = []
+			const fetchCalls: string[] = []
+			const branch = await createSliceBranch(
+				{
+					gh: async (args) => {
+						ghCalls.push(args)
+						return { ok: true, stdout: '', stderr: '' }
+					},
+					gitFetch: async (b) => {
+						fetchCalls.push(b)
+					},
+				},
+				'142',
+				'145',
+				'session-middleware',
+				'prds-issue-142',
+			)
+			expect(branch).toBe('prd-142/slice-145-session-middleware')
+			expect(ghCalls).toEqual([
+				['issue', 'develop', '145', '--branch', 'prd-142/slice-145-session-middleware', '--base', 'prds-issue-142'],
+			])
+			expect(fetchCalls).toEqual(['prd-142/slice-145-session-middleware'])
 		})
 	})
 }

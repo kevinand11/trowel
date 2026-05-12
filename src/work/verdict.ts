@@ -7,6 +7,17 @@ export type SandboxOut = {
 	notes?: string
 }
 
+export type FeedbackEntry =
+	| { kind: 'line'; author: string; createdAt: string; body: string; path: string; line: number; resolved: boolean }
+	| { kind: 'review'; author: string; createdAt: string; body: string; state: 'COMMENTED' | 'CHANGES_REQUESTED' | 'APPROVED' }
+	| { kind: 'thread'; author: string; createdAt: string; body: string }
+
+export type SandboxIn = {
+	slice: { id: string; title: string; body: string }
+	pr?: { number: number; branch: string }
+	feedback?: FeedbackEntry[]
+}
+
 const ALL_VERDICTS: VerdictKind[] = ['ready', 'needs-revision', 'no-work-needed', 'partial']
 
 const ROLE_VERDICTS: Record<Role, VerdictKind[]> = {
