@@ -53,8 +53,10 @@ type ListRuntime = {
 
 async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
 	const summaries = await rt.storage.listPrds({ state: filter })
+	// Storages return unsorted; sort newest-first here. See ADR `storage-behavior-separation` step 4.
+	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 	const rows: PrdListRow[] = await Promise.all(
-		summaries.map(async (summary) => {
+		sorted.map(async (summary) => {
 			const slices = classifySlices(await rt.storage.findSlices(summary.id))
 			const found = await rt.storage.findPrd(summary.id)
 			const state: 'OPEN' | 'CLOSED' = found?.state ?? 'OPEN'
@@ -117,7 +119,7 @@ if (import.meta.vitest) {
 		test('renders one open PRD with bucket counts', () => {
 			const rows: PrdListRow[] = [
 				{
-					summary: { id: 'ab12cd', title: 'Add SSO', branch: 'prd/ab12cd-add-sso' },
+					summary: { id: 'ab12cd', title: 'Add SSO', branch: 'prd/ab12cd-add-sso', createdAt: '2026-05-13T00:00:00.000Z' },
 					state: 'OPEN',
 					slices: [fakeSlice({ id: 's1', bucket: 'done' })],
 				},
@@ -132,7 +134,7 @@ if (import.meta.vitest) {
 		test('renders buckets in canonical order with empty ones omitted', () => {
 			const rows: PrdListRow[] = [
 				{
-					summary: { id: 'p1', title: 'T', branch: 'b' },
+					summary: { id: 'p1', title: 'T', branch: 'b', createdAt: '2026-05-13T00:00:00.000Z' },
 					state: 'OPEN',
 					slices: [
 						fakeSlice({ id: '1', bucket: 'ready' }),
@@ -165,7 +167,7 @@ if (import.meta.vitest) {
 		test('CLOSED state renders for closed PRDs', () => {
 			const rows: PrdListRow[] = [
 				{
-					summary: { id: 'ef34gh', title: 'Old work', branch: 'prd/ef34gh-old-work' },
+					summary: { id: 'ef34gh', title: 'Old work', branch: 'prd/ef34gh-old-work', createdAt: '2026-05-13T00:00:00.000Z' },
 					state: 'CLOSED',
 					slices: [fakeSlice({ id: 's1', bucket: 'done' })],
 				},
@@ -181,12 +183,6 @@ if (import.meta.vitest) {
 				defaultBranchPrefix: '',
 				maxConcurrent: null,
 				capabilities: { prFlow: false },
-				prepareImplement: async () => { throw new Error('not used in test') },
-				landImplement: async () => 'done' as const,
-				prepareReview: async () => { throw new Error('not used in test') },
-				landReview: async () => 'done' as const,
-				prepareAddress: async () => { throw new Error('not used in test') },
-				landAddress: async () => 'done' as const,
 				createPrd: async () => {
 					throw new Error('nyi')
 				},
@@ -218,11 +214,27 @@ if (import.meta.vitest) {
 			expect(receivedState).toBe('closed')
 		})
 
+		test('sorts PRDs newest-first by createdAt, regardless of the order the storage returned', async () => {
+			const storage = fakeStorage({
+				// Returned in the "wrong" order (oldest first) so the test proves the consumer sort flips it.
+				listPrds: async () => [
+					{ id: 'older', title: 'Older', branch: 'b/older', createdAt: '2026-05-10T00:00:00.000Z' },
+					{ id: 'newer', title: 'Newer', branch: 'b/newer', createdAt: '2026-05-13T00:00:00.000Z' },
+				],
+				findPrd: async (id) => ({ id, title: id, branch: `b/${id}`, state: 'OPEN' }),
+				findSlices: async () => [],
+			})
+			const captured: string[] = []
+			await runListPrds('open', { storage, stdout: (s) => captured.push(s) })
+			const text = captured.join('')
+			expect(text.indexOf('newer')).toBeLessThan(text.indexOf('older'))
+		})
+
 		test('aborts the whole command when one findSlices rejects', async () => {
 			const storage = fakeStorage({
 				listPrds: async () => [
-					{ id: 'a', title: 'A', branch: 'b/a' },
-					{ id: 'b', title: 'B', branch: 'b/b' },
+					{ id: 'a', title: 'A', branch: 'b/a', createdAt: '2026-05-12T00:00:00.000Z' },
+					{ id: 'b', title: 'B', branch: 'b/b', createdAt: '2026-05-13T00:00:00.000Z' },
 				],
 				findPrd: async (id) => ({ id, title: id, branch: `b/${id}`, state: 'OPEN' }),
 				findSlices: async (prdId) => {

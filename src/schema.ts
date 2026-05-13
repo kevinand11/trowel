@@ -195,7 +195,9 @@ export const defaultConfig: Config = {
 	work: {
 		maxIterations: 50,
 		sliceStepCap: 5,
-		usePrs: true,
+		// Default false: matches the default `storage: 'file'`, which has `prFlow: false`.
+		// Users who switch to a `prFlow` storage (e.g. `issue`) and want PRs flip both flags.
+		usePrs: false,
 		review: false,
 		worktreeCleanupAge: '24h',
 	},
@@ -262,10 +264,10 @@ if (import.meta.vitest) {
 			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
-		test('work loop defaults: 50 outer iters, 5 inner step cap, PRs on, 24h worktree cleanup', () => {
+		test('work loop defaults: 50 outer iters, 5 inner step cap, PRs off (matches default file storage), 24h worktree cleanup', () => {
 			expect(defaultConfig.work.maxIterations).toBe(50)
 			expect(defaultConfig.work.sliceStepCap).toBe(5)
-			expect(defaultConfig.work.usePrs).toBe(true)
+			expect(defaultConfig.work.usePrs).toBe(false)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
 		})
 

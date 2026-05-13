@@ -17,6 +17,7 @@ import { loadClaudeOauthToken, realLoadOauthTokenDeps } from '../utils/oauth-tok
 import { exec, tryExec } from '../utils/shell.ts'
 import { ensureSandboxImage } from '../work/image.ts'
 import { runLoop } from '../work/loop.ts'
+import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
 import { loadPrompt, type StorageKind, type Role } from '../work/prompts.ts'
 import { spawnSandbox, type Worktree } from '../work/sandbox.ts'
 import type { SandboxIn, SandboxOut } from '../work/verdict.ts'
@@ -164,20 +165,22 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const runOnePhase = async (prdId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await integrationBranch(prdId)
 		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review } }
+		const phaseDeps: PhaseDeps = { storage, git, gh: realGhRunner, log }
 		const prep = role === 'implement'
-			? await storage.prepareImplement(slice, ctx)
+			? await prepareImplement(phaseDeps, slice, ctx)
 			: role === 'review'
-				? await storage.prepareReview(slice, ctx)
-				: await storage.prepareAddress(slice, ctx)
+				? await prepareReview(phaseDeps, slice, ctx)
+				: await prepareAddress(phaseDeps, slice, ctx)
 		const verdict: SandboxOut = await makeSpawnSandboxFor(prdId, branch)({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
-		if (role === 'implement') await storage.landImplement(slice, verdict, ctx)
-		else if (role === 'review') await storage.landReview(slice, verdict, ctx)
-		else await storage.landAddress(slice, verdict, ctx)
+		if (role === 'implement') await landImplement(phaseDeps, slice, verdict, ctx)
+		else if (role === 'review') await landReview(phaseDeps, slice, verdict, ctx)
+		else await landAddress(phaseDeps, slice, verdict, ctx)
 	}
 
 	const runLoopFor = async (prdId: string, branch: string): Promise<void> => {
 		await runLoop(prdId, {
 			storage,
+			git,
 			gh: realGhRunner,
 			integrationBranch: branch,
 			spawnSandbox: makeSpawnSandboxFor(prdId, branch),

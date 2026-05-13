@@ -154,12 +154,6 @@ if (import.meta.vitest) {
 			defaultBranchPrefix: '',
 			maxConcurrent: null,
 			capabilities: { prFlow: false },
-			prepareImplement: async () => { throw new Error('not used in test') },
-			landImplement: async () => 'done' as const,
-			prepareReview: async () => { throw new Error('not used in test') },
-			landReview: async () => 'done' as const,
-			prepareAddress: async () => { throw new Error('not used in test') },
-			landAddress: async () => 'done' as const,
 			createPrd: async () => {
 				throw new Error('not implemented')
 			},
@@ -172,7 +166,7 @@ if (import.meta.vitest) {
 				if (!state.prd || state.prd.id !== id) return null
 				return { ...state.prd }
 			},
-			listPrds: async () => (state.prd && state.prd.state === 'OPEN' ? [state.prd] : []),
+			listPrds: async () => (state.prd && state.prd.state === 'OPEN' ? [{ ...state.prd, createdAt: '2026-05-13T00:00:00.000Z' }] : []),
 			closePrd: async (id) => {
 				calls.push(`closePrd(${id})`)
 				if (state.prd && state.prd.id === id) state.prd.state = 'CLOSED'

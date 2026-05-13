@@ -1,7 +1,7 @@
 import type { Bucket } from '../utils/bucket.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import type { SandboxIn, SandboxOut } from '../work/verdict.ts'
+import type { SandboxIn } from '../work/verdict.ts'
 
 export type { GitOps }
 
@@ -20,6 +20,12 @@ export type PrdSummary = {
 	id: string
 	title: string
 	branch: string
+	/**
+	 * ISO 8601 creation timestamp. Issue storage uses the underlying GitHub issue's `createdAt`;
+	 * file storage uses the PRD's `store.json:createdAt`. Consumers sort by this (e.g. `trowel
+	 * list` shows newest first); storages return unsorted.
+	 */
+	createdAt: string
 }
 
 export type PrdState = 'OPEN' | 'CLOSED'
@@ -170,23 +176,4 @@ export interface Storage {
 	findSlices(prdId: string): Promise<Slice[]>
 	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
 
-	/**
-	 * Per-role phase primitives. The loop dispatches via `classify` (`src/work/classify.ts`):
-	 *   - For each phase the classifier emits, the loop calls `prepare<Role>` (which may create branches,
-	 *     fetch PR data, build a `SandboxIn`), spawns the sandbox itself, then calls `land<Role>` with
-	 *     the verdict to apply gh/git side effects.
-	 *   - Methods unreachable on a given storage (e.g. `prepareReview` on file storage) throw.
-	 *     The throw is a runtime invariant: `classify` on file-storage slices (always `prState: null`)
-	 *     never returns the matching state, so the loop never calls the method. Per-phase commands
-	 *     (`trowel review`) that bypass the classifier propagate the throw as a "not supported on this
-	 *     storage" error.
-	 */
-	prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase>
-	landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome>
-
-	prepareReview(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase>
-	landReview(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome>
-
-	prepareAddress(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase>
-	landAddress(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome>
 }

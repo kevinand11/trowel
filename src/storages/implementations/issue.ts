@@ -1,9 +1,8 @@
 import { classifySlices } from '../../utils/bucket.ts'
 import type { GhResult, GhRunner } from '../../utils/gh-runner.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import { fetchPrFeedback } from '../../work/feedback.ts'
-import type { SandboxIn, SandboxOut } from '../../work/verdict.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SlicePrState, SliceSpec } from '../types.ts'
+import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = ''
 
@@ -41,11 +40,6 @@ async function createSliceBranch(
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
-	const log = deps.log ?? (() => {})
-	const requireGit = () => {
-		if (!deps.git) throw new Error('issue storage phase methods require git ops to be wired')
-		return deps.git
-	}
 
 	function parseIssueNumberFromUrl(url: string): string {
 		const trimmed = url.trim()
@@ -96,11 +90,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return blockers.map((b) => String(b.number))
 	}
 
-	function stripBodyTrailer(body: string, prdId: string): string {
-		const re = new RegExp(`\\s*\\n+\\s*Part of #${prdId}\\s*$`)
-		return body.replace(re, '')
-	}
-
 	async function findSlices(prdId: string): Promise<Slice[]> {
 		const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${prdId}/sub_issues`])
 		const rawIssues = JSON.parse(out) as Array<{
@@ -111,40 +100,32 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			labels: Array<{ name: string }>
 			issue_dependencies_summary?: { total_blocked_by?: number }
 		}>
-		const rawSlices = await Promise.all(
-			rawIssues.map(async (s) => {
+		// Storage emits raw slices: `prState: null` and `branchAhead: false` for everyone. The loop
+		// calls `enrichSlicePrStates` (and, eventually, branch-ahead detection) before classification.
+		// See ADR `storage-behavior-separation` step 4.
+		return Promise.all(
+			rawIssues.map(async (s): Promise<Slice> => {
 				const totalBlockedBy = s.issue_dependencies_summary?.total_blocked_by ?? 0
 				const blockedBy = totalBlockedBy > 0 ? await fetchBlockedBy(s.number) : []
 				return {
 					id: String(s.number),
 					title: s.title,
-					body: stripBodyTrailer(s.body, prdId),
+					body: s.body,
 					state: (s.state === 'open' ? 'OPEN' : 'CLOSED') as Slice['state'],
 					readyForAgent: s.labels.some((l) => l.name === deps.labels.readyForAgent),
 					needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
 					blockedBy,
+					prState: null,
+					branchAhead: false,
 				}
 			}),
 		)
-		// Bulk-query open PRs once; mark each open-PR'd slice with `prState: 'draft'` so
-		// downstream `classifySlices` can derive the `in-flight` bucket. (Distinguishing
-		// draft from ready awaits the PR-flow utils in ADR-C step 4.)
-		let openPrBranches = new Set<string>()
-		if (rawSlices.some((s) => s.state === 'OPEN')) {
-			const prListOut = await ghOrThrow(['pr', 'list', '--state', 'open', '--json', 'headRefName'])
-			const prs = JSON.parse(prListOut) as Array<{ headRefName: string }>
-			openPrBranches = new Set(prs.map((p) => p.headRefName))
-		}
-		return rawSlices.map((s): Slice => {
-			const expectedBranch = `${prefix}${s.id}-${slugify(s.title)}`
-			const prState: SlicePrState = openPrBranches.has(expectedBranch) ? 'draft' : null
-			return { ...s, prState, branchAhead: false }
-		})
 	}
 
 	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
-		const body = `${spec.body}\n\nPart of #${prdId}`
-		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', body])
+		// Parent linkage lives in the GitHub sub-issues API (`POST .../sub_issues` below); no body
+		// trailer needed. See ADR `storage-behavior-separation` step 4.
+		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', spec.body])
 		const sliceNumber = parseIssueNumberFromUrl(createOut)
 		const internalIdOut = await ghOrThrow(['api', `repos/{owner}/{repo}/issues/${sliceNumber}`, '--jq', '.id'])
 		const internalId = internalIdOut.trim()
@@ -195,152 +176,15 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
-		const out = await ghOrThrow(['issue', 'list', '--label', deps.labels.prd, '--state', opts.state, '--json', 'number,title'])
-		const issues = JSON.parse(out) as Array<{ number: number; title: string }>
+		const out = await ghOrThrow(['issue', 'list', '--label', deps.labels.prd, '--state', opts.state, '--json', 'number,title,createdAt'])
+		const issues = JSON.parse(out) as Array<{ number: number; title: string; createdAt: string }>
 		const summaries: PrdSummary[] = []
 		for (const issue of issues) {
 			const id = String(issue.number)
 			const branch = await branchForExisting(id)
-			summaries.push({ id, title: issue.title, branch })
+			summaries.push({ id, title: issue.title, branch, createdAt: issue.createdAt })
 		}
 		return summaries
-	}
-
-	function sliceBranchFor(prdId: string, slice: Slice): string {
-		return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
-	}
-
-	async function findPrNumber(sliceBranch: string): Promise<number> {
-		const out = await ghOrThrow(['pr', 'list', '--head', sliceBranch, '--json', 'number', '--jq', '.[0].number'])
-		const trimmed = out.trim()
-		if (!trimmed) throw new Error(`no PR found for head '${sliceBranch}'`)
-		return Number.parseInt(trimmed, 10)
-	}
-
-	async function prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-		const git = requireGit()
-		const branch = await createSliceBranch(
-			{ gitFetch: git.fetch, gitCreateRemoteBranch: git.createRemoteBranch },
-			ctx.prdId,
-			slice.id,
-			slugify(slice.title),
-			ctx.integrationBranch,
-		)
-		return {
-			branch,
-			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
-		}
-	}
-
-	async function landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'partial') return 'partial'
-		if (verdict.verdict === 'no-work-needed') {
-			await updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
-			log(`${tag} no-work-needed: cleared readyForAgent`)
-			return 'no-work'
-		}
-		if (verdict.verdict !== 'ready') return 'partial'
-
-		const git = requireGit()
-		const branch = sliceBranchFor(ctx.prdId, slice)
-		await git.push(branch)
-		log(`${tag} pushed ${branch}`)
-
-		if (ctx.config.usePrs) {
-			await ghOrThrow([
-				'pr', 'create', '--draft',
-				'--title', slice.title,
-				'--head', branch,
-				'--base', ctx.integrationBranch,
-				'--body', `Closes #${slice.id}`,
-			])
-			log(`${tag} opened draft PR for ${branch}`)
-			return 'progress'
-		}
-
-		// usePrs: false → host-side merge-and-close.
-		await git.checkout(ctx.integrationBranch)
-		await git.mergeNoFf(branch)
-		await git.push(ctx.integrationBranch)
-		await git.deleteRemoteBranch(branch)
-		log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
-		await ghOrThrow(['issue', 'close', slice.id])
-		log(`${tag} closed sub-issue #${slice.id}`)
-		return 'done'
-	}
-
-	async function prepareReview(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-		const branch = sliceBranchFor(ctx.prdId, slice)
-		const prNumber = await findPrNumber(branch)
-		const sandboxIn: SandboxIn = {
-			slice: { id: slice.id, title: slice.title, body: slice.body },
-			pr: { number: prNumber, branch },
-		}
-		return { branch, sandboxIn }
-	}
-
-	async function landReview(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'partial') return 'partial'
-		const git = requireGit()
-		const branch = sliceBranchFor(ctx.prdId, slice)
-
-		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) {
-				await git.push(branch)
-				log(`${tag} pushed ${branch}`)
-			}
-			const prNumber = await findPrNumber(branch)
-			await ghOrThrow(['pr', 'ready', String(prNumber)])
-			log(`${tag} marked PR #${prNumber} ready for merge`)
-			return 'progress'
-		}
-		if (verdict.verdict === 'needs-revision') {
-			if (verdict.commits > 0) {
-				await git.push(branch)
-				log(`${tag} pushed ${branch}`)
-			}
-			await updateSlice(ctx.prdId, slice.id, { needsRevision: true })
-			log(`${tag} flagged needsRevision`)
-			return 'progress'
-		}
-		return 'partial'
-	}
-
-	async function prepareAddress(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-		const branch = sliceBranchFor(ctx.prdId, slice)
-		const prNumber = await findPrNumber(branch)
-		const feedback = await fetchPrFeedback(prNumber, { gh: deps.gh })
-		const sandboxIn: SandboxIn = {
-			slice: { id: slice.id, title: slice.title, body: slice.body },
-			pr: { number: prNumber, branch },
-			feedback,
-		}
-		return { branch, sandboxIn }
-	}
-
-	async function landAddress(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'partial') return 'partial'
-		const git = requireGit()
-		const branch = sliceBranchFor(ctx.prdId, slice)
-
-		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) {
-				await git.push(branch)
-				log(`${tag} pushed ${branch}`)
-			}
-			await updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-			log(`${tag} cleared needsRevision`)
-			return 'progress'
-		}
-		if (verdict.verdict === 'no-work-needed') {
-			await updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-			log(`${tag} no-work-needed: cleared needsRevision`)
-			return 'no-work'
-		}
-		return 'partial'
 	}
 
 	return {
@@ -356,12 +200,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		createSlice,
 		findSlices,
 		updateSlice,
-		prepareImplement,
-		landImplement,
-		prepareReview,
-		landReview,
-		prepareAddress,
-		landAddress,
 	}
 
 	async function updateSlice(_prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -473,10 +311,14 @@ if (import.meta.vitest) {
 			}
 		}
 
+		function phaseDeps(deps: StorageDeps, storage: Storage): PhaseDeps {
+			return { storage, git: deps.git!, gh: deps.gh, log: deps.log! }
+		}
+
 		test('prepareImplement: creates slice branch via git, returns {branch, sandboxIn}', async () => {
 			const { deps, gitCalls } = makeDeps([])
 			const storage = createIssueStorage(deps)
-			const prep = await storage.prepareImplement(makeOpenSlice(), {
+			const prep = await prepareImplement(phaseDeps(deps, storage), makeOpenSlice(), {
 				prdId: '142',
 				integrationBranch: 'prds-issue-142',
 				config: { usePrs: true, review: false },
@@ -492,7 +334,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'pr' && a[1] === 'create', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landImplement(
+			const outcome = await landImplement(
+				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'ready', commits: 1 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
@@ -513,7 +356,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'issue' && a[1] === 'close', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landImplement(
+			const outcome = await landImplement(
+				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'ready', commits: 1 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false } },
@@ -535,7 +379,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landImplement(
+			const outcome = await landImplement(
+				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'no-work-needed', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
@@ -547,7 +392,8 @@ if (import.meta.vitest) {
 		test('landImplement + partial: returns partial, no side effects', async () => {
 			const { deps, calls, gitCalls } = makeDeps([])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landImplement(
+			const outcome = await landImplement(
+				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'partial', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
@@ -562,7 +408,7 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const prep = await storage.prepareReview(makeOpenSlice(), {
+			const prep = await prepareReview(phaseDeps(deps, storage), makeOpenSlice(), {
 				prdId: '142',
 				integrationBranch: 'prds-issue-142',
 				config: { usePrs: true, review: true },
@@ -579,7 +425,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'pr' && a[1] === 'ready', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landReview(
+			const outcome = await landReview(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'ready', commits: 2 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -595,7 +442,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'pr' && a[1] === 'ready', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landReview(
+			const outcome = await landReview(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'ready', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -610,7 +458,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landReview(
+			const outcome = await landReview(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'needs-revision', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -624,7 +473,8 @@ if (import.meta.vitest) {
 		test('landReview + partial: returns partial, no side effects', async () => {
 			const { deps, calls, gitCalls } = makeDeps([])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landReview(
+			const outcome = await landReview(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'partial', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -642,7 +492,7 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'pr' && a[1] === 'view' && a.includes('comments'), respond: { ok: true, stdout: '{"comments":[]}', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const prep = await storage.prepareAddress(makeOpenSlice({ prState: 'draft', needsRevision: true }), {
+			const prep = await prepareAddress(phaseDeps(deps, storage), makeOpenSlice({ prState: 'draft', needsRevision: true }), {
 				prdId: '142',
 				integrationBranch: 'prds-issue-142',
 				config: { usePrs: true, review: true },
@@ -657,7 +507,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landAddress(
+			const outcome = await landAddress(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft', needsRevision: true }),
 				{ verdict: 'ready', commits: 3 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -672,7 +523,8 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landAddress(
+			const outcome = await landAddress(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft', needsRevision: true }),
 				{ verdict: 'no-work-needed', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -685,7 +537,8 @@ if (import.meta.vitest) {
 		test('landAddress + partial: returns partial, no side effects', async () => {
 			const { deps, calls, gitCalls } = makeDeps([])
 			const storage = createIssueStorage(deps)
-			const outcome = await storage.landAddress(
+			const outcome = await landAddress(
+				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft', needsRevision: true }),
 				{ verdict: 'partial', commits: 0 },
 				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
@@ -782,7 +635,7 @@ if (import.meta.vitest) {
 			])
 			const storage = createIssueStorage(deps)
 			expect(await storage.listPrds({ state: 'open' })).toEqual([])
-			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'open', '--json', 'number,title'])
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'open', '--json', 'number,title,createdAt'])
 		})
 
 		test('passes --state closed through to gh when called with { state: "closed" }', async () => {
@@ -791,7 +644,7 @@ if (import.meta.vitest) {
 			])
 			const storage = createIssueStorage(deps)
 			await storage.listPrds({ state: 'closed' })
-			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'closed', '--json', 'number,title'])
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'closed', '--json', 'number,title,createdAt'])
 		})
 
 		test('passes --state all through to gh when called with { state: "all" }', async () => {
@@ -800,18 +653,18 @@ if (import.meta.vitest) {
 			])
 			const storage = createIssueStorage(deps)
 			await storage.listPrds({ state: 'all' })
-			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'all', '--json', 'number,title'])
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'all', '--json', 'number,title,createdAt'])
 		})
 
-		test('returns one PrdSummary per matching issue, with branch from branchForExisting', async () => {
+		test('returns one PrdSummary per matching issue, with branch from branchForExisting and createdAt from gh', async () => {
 			const { deps } = makeDeps([
 				{
 					match: (a) => a[0] === 'issue' && a[1] === 'list',
 					respond: {
 						ok: true,
 						stdout: JSON.stringify([
-							{ number: 42, title: 'Fix Tabs' },
-							{ number: 7, title: 'Add ORM' },
+							{ number: 42, title: 'Fix Tabs', createdAt: '2026-05-12T00:00:00Z' },
+							{ number: 7, title: 'Add ORM', createdAt: '2026-05-11T00:00:00Z' },
 						]),
 						stderr: '',
 					},
@@ -828,8 +681,8 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			const result = await storage.listPrds({ state: 'open' })
 			expect(result).toEqual([
-				{ id: '42', title: 'Fix Tabs', branch: '42-fix-tabs' },
-				{ id: '7', title: 'Add ORM', branch: '7-add-orm' },
+				{ id: '42', title: 'Fix Tabs', branch: '42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
+				{ id: '7', title: 'Add ORM', branch: '7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
 			])
 		})
 	})
@@ -864,8 +717,8 @@ if (import.meta.vitest) {
 				prState: null,
 				branchAhead: false,
 			})
-			// create issue with composed body
-			expect(calls[0]).toEqual(['issue', 'create', '--title', 'Implement Tab Parser', '--body', 'the slice spec\n\nPart of #42'])
+			// create issue (no body trailer — parent linkage uses the sub_issues API below)
+			expect(calls[0]).toEqual(['issue', 'create', '--title', 'Implement Tab Parser', '--body', 'the slice spec'])
 			// resolve internal id
 			expect(calls[1]).toEqual(['api', 'repos/{owner}/{repo}/issues/57', '--jq', '.id'])
 			// link as sub-issue
@@ -942,7 +795,7 @@ if (import.meta.vitest) {
 								id: 1,
 								number: 57,
 								title: 'Implement Parser',
-								body: 'parser spec\n\nPart of #42',
+								body: 'parser spec',
 								state: 'open',
 								labels: [{ name: 'ready-for-agent' }],
 							},
@@ -958,7 +811,6 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
-				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
 			])
 			const storage = createIssueStorage(deps)
 			const slices = classifySlices(await storage.findSlices('42'))
@@ -988,7 +840,6 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
-				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
 			])
 			deps.labels.readyForAgent = 'CUSTOM-ready'
 			deps.labels.needsRevision = 'CUSTOM-needs'
@@ -999,9 +850,13 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('issue storage: findSlices computes bucket', () => {
-		test('open slice with matching open-PR head branch → in-flight', async () => {
-			const { deps } = makeDeps([
+	describe('issue storage: findSlices output → classifier', () => {
+		// findSlices itself no longer enriches `prState`; the loop calls `enrichSlicePrStates` from
+		// pr-flow.ts before classification. These tests cover the non-PR paths the storage still owns:
+		// raw slice shape + label parsing + blockedBy resolution.
+
+		test('open slice with readyForAgent label and no blockers → ready bucket', async () => {
+			const { deps, calls } = makeDeps([
 				{
 					match: (a) => a[0] === 'api' && a.includes('--paginate'),
 					respond: {
@@ -1012,36 +867,15 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
-				{
-					match: (a) => a[0] === 'pr' && a[1] === 'list',
-					respond: { ok: true, stdout: JSON.stringify([{ headRefName: '57-implement-parser' }]), stderr: '' },
-				},
 			])
 			const storage = createIssueStorage(deps)
-			const [s] = classifySlices(await storage.findSlices('42'))
-			expect(s!.bucket).toBe('in-flight')
+			const slices = await storage.findSlices('42')
+			expect(slices[0]!.prState).toBeNull()
+			expect(classifySlices(slices)[0]!.bucket).toBe('ready')
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'list')).toBeUndefined()
 		})
 
-		test('open slice with no matching open PR + readyForAgent → ready', async () => {
-			const { deps } = makeDeps([
-				{
-					match: (a) => a[0] === 'api' && a.includes('--paginate'),
-					respond: {
-						ok: true,
-						stdout: JSON.stringify([
-							{ id: 1, number: 57, title: 'Implement Parser', body: 'b', state: 'open', labels: [{ name: 'ready-for-agent' }] },
-						]),
-						stderr: '',
-					},
-				},
-				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
-			])
-			const storage = createIssueStorage(deps)
-			const [s] = classifySlices(await storage.findSlices('42'))
-			expect(s!.bucket).toBe('ready')
-		})
-
-		test('open slice with needsRevision → needs-revision (takes priority over in-flight)', async () => {
+		test('open slice with needsRevision label → needs-revision bucket (classifier precedence)', async () => {
 			const { deps } = makeDeps([
 				{
 					match: (a) => a[0] === 'api' && a.includes('--paginate'),
@@ -1052,10 +886,6 @@ if (import.meta.vitest) {
 						]),
 						stderr: '',
 					},
-				},
-				{
-					match: (a) => a[0] === 'pr' && a[1] === 'list',
-					respond: { ok: true, stdout: JSON.stringify([{ headRefName: '57-p' }]), stderr: '' },
 				},
 			])
 			const storage = createIssueStorage(deps)
@@ -1092,7 +922,6 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
-				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '[]', stderr: '' } },
 				{
 					match: (a) => a.includes('repos/{owner}/{repo}/issues/58/dependencies/blocked_by'),
 					respond: { ok: true, stdout: JSON.stringify([{ id: 1, number: 57, title: 'A' }]), stderr: '' },
@@ -1107,7 +936,7 @@ if (import.meta.vitest) {
 			expect(calls.find((c) => c.includes('repos/{owner}/{repo}/issues/57/dependencies/blocked_by'))).toBeUndefined()
 		})
 
-		test('skips pr list query when no open slices', async () => {
+		test('closed slice → done bucket; no `pr list` call (findSlices does not issue PR queries)', async () => {
 			const { deps, calls } = makeDeps([
 				{
 					match: (a) => a[0] === 'api' && a.includes('--paginate'),

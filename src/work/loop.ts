@@ -1,10 +1,13 @@
 import { classify } from './classify.ts'
+import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
+import { enrichSlicePrStates } from './pr-flow.ts'
 import type { Role } from './prompts.ts'
 import { reconcileSlices } from './reconcile.ts'
 import type { SandboxIn, SandboxOut } from './verdict.ts'
 import type { ClassifiedSlice, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
+import type { GitOps } from '../utils/git-ops.ts'
 
 export type LoopConfig = {
 	usePrs: boolean
@@ -16,6 +19,7 @@ export type LoopConfig = {
 
 export type LoopDeps = {
 	storage: Storage
+	git: GitOps
 	gh: GhRunner
 	integrationBranch: string
 	spawnSandbox: (args: { role: Role; slice: Slice; branch: string; sandboxIn: SandboxIn }) => Promise<SandboxOut>
@@ -43,10 +47,16 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 		config: { usePrs: config.usePrs, review: config.review },
 	})
 
+	const fetchEnriched = async (): Promise<Slice[]> => {
+		const raw = await storage.findSlices(prdId)
+		if (!storage.capabilities.prFlow) return raw
+		return enrichSlicePrStates(deps.gh, prdId, raw)
+	}
+
 	for (let iter = 0; iter < config.maxIterations; iter++) {
-		const before = await storage.findSlices(prdId)
+		const before = await fetchEnriched()
 		await reconcileSlices(deps.gh, before, ctxOf())
-		const slices = classifySlices(await storage.findSlices(prdId))
+		const slices = classifySlices(await fetchEnriched())
 		const actionable = slices.filter((s) => !failed.has(s.id) && classify(s, ctxOf().config) !== 'done')
 		if (actionable.length === 0) {
 			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
@@ -96,16 +106,19 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 		const role = state as Role
 		deps.log(`${tag} state=${role}: "${slice.title}"`)
 
-		const prep = await callPrepare(storage, role, slice, ctx)
+		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log }
+		const prep = await callPrepare(phaseDeps, role, slice, ctx)
 		deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
 		const verdict = await deps.spawnSandbox({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
 		deps.log(`${tag} ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
-		const outcome: PhaseOutcome = await callLand(storage, role, slice, verdict, ctx)
+		const outcome: PhaseOutcome = await callLand(phaseDeps, role, slice, verdict, ctx)
 		if (outcome === 'done') return 'done'
 		if (outcome === 'no-work') return 'no-work'
 		if (outcome === 'partial') return 'partial'
-		// outcome === 'progress': refetch and continue
-		const refreshed = classifySlices(await storage.findSlices(prdId)).find((s) => s.id === slice.id)
+		// outcome === 'progress': refetch (with PR-state enrichment for prFlow storages) and continue
+		const raw = await storage.findSlices(prdId)
+		const enriched = storage.capabilities.prFlow ? await enrichSlicePrStates(deps.gh, prdId, raw) : raw
+		const refreshed = classifySlices(enriched).find((s) => s.id === slice.id)
 		if (!refreshed) return 'partial'
 		slice = refreshed
 	}
@@ -113,16 +126,16 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 	return 'partial'
 }
 
-function callPrepare(storage: Storage, role: Role, slice: Slice, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
-	if (role === 'implement') return storage.prepareImplement(slice, ctx)
-	if (role === 'review') return storage.prepareReview(slice, ctx)
-	return storage.prepareAddress(slice, ctx)
+function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
+	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
+	if (role === 'review') return prepareReview(phaseDeps, slice, ctx)
+	return prepareAddress(phaseDeps, slice, ctx)
 }
 
-function callLand(storage: Storage, role: Role, slice: Slice, verdict: SandboxOut, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
-	if (role === 'implement') return storage.landImplement(slice, verdict, ctx)
-	if (role === 'review') return storage.landReview(slice, verdict, ctx)
-	return storage.landAddress(slice, verdict, ctx)
+function callLand(phaseDeps: PhaseDeps, role: Role, slice: Slice, verdict: SandboxOut, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
+	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
+	if (role === 'review') return landReview(phaseDeps, slice, verdict, ctx)
+	return landAddress(phaseDeps, slice, verdict, ctx)
 }
 
 if (import.meta.vitest) {
@@ -154,30 +167,24 @@ if (import.meta.vitest) {
 				if (patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
 				if (patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
 			},
-			prepareImplement: async (s, ctx) => ({ branch: ctx.integrationBranch, sandboxIn: { slice: { id: s.id, title: s.title, body: s.body } } }),
-			landImplement: async (s, v, _c) => {
-				if (v.verdict === 'ready') {
-					s.state = 'CLOSED'
-					const real = state.slices.find((x) => x.id === s.id)
-					if (real) real.state = 'CLOSED'
-					return 'done'
-				}
-				if (v.verdict === 'no-work-needed') {
-					const real = state.slices.find((x) => x.id === s.id)
-					if (real) real.readyForAgent = false
-					return 'no-work'
-				}
-				return 'partial'
-			},
-			prepareReview: async () => {
-				throw new Error('review unsupported')
-			},
-			landReview: async () => 'done',
-			prepareAddress: async () => {
-				throw new Error('address unsupported')
-			},
-			landAddress: async () => 'done',
 			...overrides,
+		}
+	}
+
+	function noopGit(): GitOps {
+		return {
+			currentBranch: async () => 'fake-current',
+			branchExists: async () => true,
+			isMerged: async () => false,
+			checkout: async () => {},
+			deleteBranch: async () => {},
+			fetch: async () => {},
+			push: async () => {},
+			mergeNoFf: async () => {},
+			deleteRemoteBranch: async () => {},
+			createRemoteBranch: async () => {},
+			createLocalBranch: async () => {},
+			pushSetUpstream: async () => {},
 		}
 	}
 
@@ -200,7 +207,13 @@ if (import.meta.vitest) {
 	function makeDeps(storage: Storage, overrides: Partial<LoopDeps> = {}): LoopDeps {
 		return {
 			storage,
-			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
+			git: noopGit(),
+			// Default: `pr list` returns an empty array so PR-state enrichment is a clean no-op on
+			// prFlow=true fakes. Per-test gh overrides handle the create / list-with-results cases.
+			gh: async (args) => {
+				if (args[0] === 'pr' && args[1] === 'list') return { ok: true, stdout: '[]', stderr: '' }
+				return { ok: true, stdout: '', stderr: '' }
+			},
 			integrationBranch: 'integration',
 			spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
@@ -287,21 +300,23 @@ if (import.meta.vitest) {
 		test('a rejected slice (storage throws) is logged, added to skip set, not retried', async () => {
 			const a = makeSlice({ id: 'a' })
 			const b = makeSlice({ id: 'b' })
-			const storage = makeStorage({ slices: [a, b] }, {
-				prepareImplement: async (s) => {
-					if (s.id === 'a') throw new Error('docker unreachable')
-					return { branch: 'integration', sandboxIn: { slice: { id: s.id, title: s.title, body: s.body } } }
-				},
-			})
+			// Use a prFlow=true storage so prepareImplement calls git.createRemoteBranch — an
+			// injection seam for per-slice failure. (file-shape prepareImplement is pure.)
+			const storage = makeStorage({ slices: [a, b] }, { capabilities: { prFlow: true } })
+			const git = noopGit()
+			git.createRemoteBranch = async (newBranch) => {
+				if (newBranch.includes('slice-a')) throw new Error('docker unreachable')
+			}
 			const calls: string[] = []
 			const logs: string[] = []
 			await runLoop('p1', makeDeps(storage, {
+				git,
 				spawnSandbox: async ({ slice: s }) => {
 					calls.push(s.id)
 					return { verdict: 'partial', commits: 0 }
 				},
 				log: (m) => logs.push(m),
-				config: { usePrs: false, review: false, maxIterations: 3, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: true, review: false, maxIterations: 3, sliceStepCap: 1, maxConcurrent: null },
 			}))
 			// a fails in prepareImplement (no sandbox spawn); b spawns each iter, never reaches done because step-cap=1+partial
 			expect(calls.filter((id) => id === 'a')).toHaveLength(0)
@@ -349,24 +364,27 @@ if (import.meta.vitest) {
 
 	describe('processSlice', () => {
 		test('progress outcome refetches slice, continues inner step-cap loop, sees updated classification', async () => {
+			// On prFlow=true + usePrs=true, landImplement returns 'progress' after opening the draft
+			// PR. The gh stub mutates the slice to CLOSED on that pr-create call so the loop's refetch
+			// classifies as 'done' and the inner step-cap loop exits cleanly.
 			const slice = makeSlice({ id: 's1' })
 			const state = { slices: [slice] }
-			let landCalls = 0
-			const storage = makeStorage(state, {
-				landImplement: async (s) => {
-					landCalls++
-					// First land returns 'progress' after mutating the slice to CLOSED so the refetch
-					// classifies as 'done' and the inner loop exits cleanly.
-					const real = state.slices.find((x) => x.id === s.id)
-					if (real) real.state = 'CLOSED'
-					return 'progress'
-				},
-			})
+			const storage = makeStorage(state, { capabilities: { prFlow: true } })
+			let prCreateCount = 0
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {
 				spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
+				gh: async (args) => {
+					if (args[0] === 'pr' && args[1] === 'create') {
+						prCreateCount++
+						const real = state.slices.find((x) => x.id === slice.id)
+						if (real) real.state = 'CLOSED'
+					}
+					return { ok: true, stdout: '', stderr: '' }
+				},
+				config: { usePrs: true, review: false, maxIterations: 1, sliceStepCap: 5, maxConcurrent: null },
 			}))
 			expect(outcome).toBe('done')
-			expect(landCalls).toBe(1)
+			expect(prCreateCount).toBe(1)
 		})
 	})
 }

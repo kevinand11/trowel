@@ -1,3 +1,4 @@
+import { openDraftPr } from './pr-flow.ts'
 import type { PhaseCtx, Slice } from '../storages/types.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
 import { slug as slugify } from '../utils/slug.ts'
@@ -19,14 +20,11 @@ export async function reconcileSlices(gh: GhRunner, slices: Slice[], ctx: PhaseC
 		if (!slice.branchAhead || slice.prState !== null) continue
 		if (slice.state === 'CLOSED' || !slice.readyForAgent) continue
 		const sliceBranch = `prd-${ctx.prdId}/slice-${slice.id}-${slugify(slice.title)}`
-		const r = await gh([
-			'pr', 'create', '--draft',
-			'--title', slice.title,
-			'--head', sliceBranch,
-			'--base', ctx.integrationBranch,
-			'--body', `Closes #${slice.id}`,
-		])
-		if (!r.ok) throw new Error(`gh pr create failed for slice ${slice.id}: ${r.error.message}`)
+		try {
+			await openDraftPr(gh, slice, sliceBranch, ctx.integrationBranch)
+		} catch (e) {
+			throw new Error(`gh pr create failed for slice ${slice.id}: ${(e as Error).message}`)
+		}
 	}
 }
 

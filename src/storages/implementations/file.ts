@@ -4,8 +4,8 @@ import path from 'node:path'
 import { classifySlices } from '../../utils/bucket.ts'
 import { generateUniqueId } from '../../utils/id.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import type { SandboxOut } from '../../work/verdict.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = 'prd/'
 
@@ -14,7 +14,6 @@ type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; b
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
-	const log = deps.log ?? (() => {})
 	const requireGit = () => {
 		if (!deps.git) throw new Error('file storage phase methods require git ops to be wired')
 		return deps.git
@@ -120,7 +119,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		} catch {
 			return []
 		}
-		const summaries: Array<PrdSummary & { createdAt: string }> = []
+		const summaries: PrdSummary[] = []
 		for (const entry of entries) {
 			const storePath = path.join(deps.prdsDir, entry, 'store.json')
 			try {
@@ -138,8 +137,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				continue
 			}
 		}
-		summaries.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-		return summaries.map(({ createdAt: _, ...summary }) => summary)
+		return summaries
 	}
 
 	async function closePrd(id: string): Promise<void> {
@@ -243,48 +241,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 	}
 
-	async function prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-		// File storage has no slice branches; the implementer runs on the integration branch directly.
-		return {
-			branch: ctx.integrationBranch,
-			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
-		}
-	}
-
-	async function landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'ready') {
-			const git = requireGit()
-			await git.push(ctx.integrationBranch)
-			log(`${tag} pushed ${ctx.integrationBranch}`)
-			await updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
-			log(`${tag} closed slice`)
-			return 'done'
-		}
-		if (verdict.verdict === 'no-work-needed') {
-			await updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
-			log(`${tag} no-work-needed: cleared readyForAgent`)
-			return 'no-work'
-		}
-		return 'partial'
-	}
-
-	async function prepareReview(_slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
-		throw new Error('review is not supported on the file storage (no PR concept)')
-	}
-
-	async function landReview(_slice: Slice, _verdict: SandboxOut, _ctx: PhaseCtx): Promise<PhaseOutcome> {
-		throw new Error('review is not supported on the file storage (no PR concept)')
-	}
-
-	async function prepareAddress(_slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
-		throw new Error('address is not supported on the file storage (no PR concept)')
-	}
-
-	async function landAddress(_slice: Slice, _verdict: SandboxOut, _ctx: PhaseCtx): Promise<PhaseOutcome> {
-		throw new Error('address is not supported on the file storage (no PR concept)')
-	}
-
 	return {
 		name: 'file',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
@@ -298,12 +254,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		createSlice,
 		findSlices,
 		updateSlice,
-		prepareImplement,
-		landImplement,
-		prepareReview,
-		landReview,
-		prepareAddress,
-		landAddress,
 	}
 }
 
@@ -416,11 +366,15 @@ if (import.meta.vitest) {
 			}
 		}
 
+		function makePhaseDeps(f: Fixture, storage: Storage): PhaseDeps {
+			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log! }
+		}
+
 		test('prepareImplement: branch is the integration branch; sandboxIn carries the slice', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const prep = await storage.prepareImplement(makeOpenSlice(), {
+				const prep = await prepareImplement(makePhaseDeps(f, storage), makeOpenSlice(), {
 					prdId: 'p1',
 					integrationBranch: 'prd/p1-x',
 					config: { usePrs: false, review: false },
@@ -441,7 +395,8 @@ if (import.meta.vitest) {
 				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 				f.calls.git.length = 0
 
-				const outcome = await storage.landImplement(
+				const outcome = await landImplement(
+					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'ready', commits: 1 },
 					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
@@ -465,7 +420,8 @@ if (import.meta.vitest) {
 				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 				f.calls.git.length = 0
 
-				const outcome = await storage.landImplement(
+				const outcome = await landImplement(
+					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'no-work-needed', commits: 0 },
 					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
@@ -490,7 +446,8 @@ if (import.meta.vitest) {
 				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 				f.calls.git.length = 0
 
-				const outcome = await storage.landImplement(
+				const outcome = await landImplement(
+					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'partial', commits: 0 },
 					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
@@ -506,16 +463,17 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('prepareReview / landReview / prepareAddress / landAddress all throw on the file storage', async () => {
+		test('review and address phases throw with a capability-shaped error on file storage', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
 				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: false, review: false } }
-				await expect(storage.prepareReview(slice, ctx)).rejects.toThrow(/not supported on the file storage/)
-				await expect(storage.landReview(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file storage/)
-				await expect(storage.prepareAddress(slice, ctx)).rejects.toThrow(/not supported on the file storage/)
-				await expect(storage.landAddress(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file storage/)
+				const deps = makePhaseDeps(f, storage)
+				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/review requires capability 'prFlow'; storage 'file' does not declare it/)
+				await expect(landReview(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/review requires capability 'prFlow'; storage 'file' does not declare it/)
+				await expect(prepareAddress(deps, slice, ctx)).rejects.toThrow(/address requires capability 'prFlow'; storage 'file' does not declare it/)
+				await expect(landAddress(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/address requires capability 'prFlow'; storage 'file' does not declare it/)
 			} finally {
 				await teardown(f)
 			}
@@ -641,7 +599,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const open = await storage.listPrds({ state: 'open' })
 			expect(open).toHaveLength(1)
-			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'prd/bbbbbb-beta' })
+			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'prd/bbbbbb-beta', createdAt: '2026-05-11T00:00:00.000Z' })
 		})
 
 		test('returns both open and closed PRDs when called with { state: "all" }', async () => {
@@ -676,11 +634,10 @@ if (import.meta.vitest) {
 			expect(all.map((p) => p.id).sort()).toEqual(['aaaaaa', 'bbbbbb'])
 		})
 
-		test('returns PRDs sorted by createdAt descending (newest first)', async () => {
+		test('returns PRDs with their createdAt populated (consumer sorts; see `trowel list`)', async () => {
 			const dirs = [
 				{ name: 'aaaaaa-old', id: 'aaaaaa', slug: 'old', createdAt: '2026-05-01T00:00:00.000Z' },
 				{ name: 'bbbbbb-new', id: 'bbbbbb', slug: 'new', createdAt: '2026-05-12T00:00:00.000Z' },
-				{ name: 'cccccc-mid', id: 'cccccc', slug: 'mid', createdAt: '2026-05-07T00:00:00.000Z' },
 			]
 			for (const d of dirs) {
 				const dir = path.join(f.prdsDir, d.name)
@@ -692,8 +649,9 @@ if (import.meta.vitest) {
 			}
 
 			const storage = createFileStorage(f.deps)
-			const ordered = await storage.listPrds({ state: 'open' })
-			expect(ordered.map((p) => p.id)).toEqual(['bbbbbb', 'cccccc', 'aaaaaa'])
+			const out = await storage.listPrds({ state: 'open' })
+			expect(out.find((p) => p.id === 'aaaaaa')!.createdAt).toBe('2026-05-01T00:00:00.000Z')
+			expect(out.find((p) => p.id === 'bbbbbb')!.createdAt).toBe('2026-05-12T00:00:00.000Z')
 		})
 
 		test('returns only closed PRDs when called with { state: "closed" }', async () => {
@@ -725,7 +683,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const closed = await storage.listPrds({ state: 'closed' })
 			expect(closed).toHaveLength(1)
-			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'prd/aaaaaa-alpha' })
+			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'prd/aaaaaa-alpha', createdAt: '2026-05-11T00:00:00.000Z' })
 		})
 	})
 
