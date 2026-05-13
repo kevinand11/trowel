@@ -14,13 +14,11 @@ import type { Config } from '../schema.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { loadClaudeOauthToken, realLoadOauthTokenDeps } from '../utils/oauth-token.ts'
 import { exec, tryExec } from '../utils/shell.ts'
-import { slug as slugify } from '../utils/slug.ts'
 import { ensureSandboxImage } from '../work/image.ts'
-import { processFileSlice, runFileLoop } from '../work/loops/file.ts'
-import { type IssueLoopDeps, processIssueSlice, runIssueLoop } from '../work/loops/issue.ts'
+import { runLoop } from '../work/loop.ts'
 import { loadPrompt, type BackendKind, type Role } from '../work/prompts.ts'
 import { spawnSandbox, type Worktree } from '../work/sandbox.ts'
-import type { SandboxIn } from '../work/verdict.ts'
+import type { SandboxIn, SandboxOut } from '../work/verdict.ts'
 import { ensureTrowelDir } from '../work/worktrees.ts'
 
 const TROWEL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -61,9 +59,8 @@ export type LoopWiring = {
 	projectRoot: string
 	backend: Backend
 	integrationBranch: (prdId: string) => Promise<string>
-	runOnePhase: (prdId: string, slice: Slice) => Promise<void>
-	runFileLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
-	runIssueLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
+	runOnePhase: (prdId: string, slice: Slice, role: Role) => Promise<void>
+	runLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
 }
 
 /**
@@ -76,24 +73,6 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 	if (!projectRoot) throw new Error('no project root found')
 
 	const backendKind = opts.backend ?? config.backend
-	const backendDeps: BackendDeps = {
-		gh: realGhRunner,
-		repoRoot: projectRoot,
-		projectRoot,
-		baseBranch: config.baseBranch,
-		branchPrefix: config.branchPrefix,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		docMsg: config.commit.docMsg,
-		labels: config.labels,
-		closeOptions: config.close,
-		confirm: async () => false,
-	}
-	const backend = getBackend(backendKind, backendDeps)
-
-	await ensureTrowelDir(projectRoot)
-
-	const oauthToken = await loadClaudeOauthToken(projectRoot, realLoadOauthTokenDeps)
-	const sandboxEnv: Record<string, string> = oauthToken !== null ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}
 
 	const gitFetch = async (b: string) => {
 		const r = await tryExec('git', ['-C', projectRoot, 'fetch', '-q', 'origin', b])
@@ -121,11 +100,36 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 		const pushed = await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `refs/remotes/origin/${baseBranch}:refs/heads/${newBranch}`])
 		if (!pushed.ok) throw pushed.error
 	}
-	const findPrNumber = async (sliceBranch: string): Promise<number> => {
-		const r = await realGhRunner(['pr', 'list', '--head', sliceBranch, '--json', 'number', '--jq', '.[0].number'])
-		if (!r.ok || !r.stdout.trim()) throw new Error(`no PR found for head '${sliceBranch}'`)
-		return Number.parseInt(r.stdout.trim(), 10)
+
+	const log = (m: string) => process.stdout.write(`${m}\n`)
+
+	const backendDeps: BackendDeps = {
+		gh: realGhRunner,
+		repoRoot: projectRoot,
+		projectRoot,
+		baseBranch: config.baseBranch,
+		branchPrefix: config.branchPrefix,
+		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		docMsg: config.commit.docMsg,
+		labels: config.labels,
+		closeOptions: config.close,
+		confirm: async () => false,
+		git: {
+			fetch: gitFetch,
+			push: gitPush,
+			checkout: gitCheckout,
+			mergeNoFf: gitMergeNoFf,
+			deleteRemoteBranch: gitDeleteRemoteBranch,
+			createRemoteBranch: gitCreateRemoteBranch,
+		},
+		log,
 	}
+	const backend = getBackend(backendKind, backendDeps)
+
+	await ensureTrowelDir(projectRoot)
+
+	const oauthToken = await loadClaudeOauthToken(projectRoot, realLoadOauthTokenDeps)
+	const sandboxEnv: Record<string, string> = oauthToken !== null ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}
 
 	const createWorktree = async ({ branch }: { branch: string }): Promise<Worktree> => sandcastleCreateWorktree({
 			branchStrategy: { type: 'branch', branch },
@@ -185,84 +189,41 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 			randId: () => randomBytes(3).toString('hex'),
 		})
 
-	const log = (m: string) => process.stdout.write(`${m}\n`)
-
 	const integrationBranch = async (prdId: string): Promise<string> => {
 		const prd = await backend.findPrd(prdId)
 		if (!prd) throw new Error(`PRD '${prdId}' not found`)
 		return prd.branch
 	}
 
-	const runOnePhase = async (prdId: string, slice: Slice): Promise<void> => {
+	const runOnePhase = async (prdId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await integrationBranch(prdId)
-		if (backend.name === 'file') {
-			await processFileSlice(prdId, slice, {
-				backend,
-				integrationBranch: branch,
-				spawnSandbox: async ({ role, slice: s, sandboxIn }) => makeSpawnSandboxFor(prdId, branch)({ role, slice: s, branch, sandboxIn }),
-				gitPush,
-				log,
-			})
-		} else if (backend.name === 'issue') {
-			const loopDeps: IssueLoopDeps = {
-				backend,
-				prdId,
-				integrationBranch: branch,
-				gh: realGhRunner,
-				gitFetch,
-				gitPush,
-				gitCheckout,
-				gitMergeNoFf,
-				gitDeleteRemoteBranch,
-				findPrNumber,
-				spawnSandbox: makeSpawnSandboxFor(prdId, branch),
-				gitCreateRemoteBranch,
-				log,
-				slugify,
-				config: { usePrs: config.work.usePrs, sliceStepCap: 1, maxIterations: 1, maxConcurrent: 1 },
-			}
-			await processIssueSlice(slice, loopDeps)
-		} else {
-			throw new Error(`unknown backend: ${backend.name}`)
-		}
+		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review } }
+		const prep = role === 'implement'
+			? await backend.prepareImplement(slice, ctx)
+			: role === 'review'
+				? await backend.prepareReview(slice, ctx)
+				: await backend.prepareAddress(slice, ctx)
+		const verdict: SandboxOut = await makeSpawnSandboxFor(prdId, branch)({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
+		if (role === 'implement') await backend.landImplement(slice, verdict, ctx)
+		else if (role === 'review') await backend.landReview(slice, verdict, ctx)
+		else await backend.landAddress(slice, verdict, ctx)
 	}
 
-	const runFileLoopFor = async (prdId: string, branch: string): Promise<void> => {
-		await runFileLoop(prdId, {
+	const runLoopFor = async (prdId: string, branch: string): Promise<void> => {
+		await runLoop(prdId, {
 			backend,
 			integrationBranch: branch,
-			spawnSandbox: async ({ role, slice: s, sandboxIn }) => makeSpawnSandboxFor(prdId, branch)({ role, slice: s, branch, sandboxIn }),
-			gitPush,
+			spawnSandbox: makeSpawnSandboxFor(prdId, branch),
 			log,
-			config: { maxIterations: config.work.maxIterations, sliceStepCap: config.work.sliceStepCap },
+			config: {
+				usePrs: config.work.usePrs,
+				review: config.work.review,
+				maxIterations: config.work.maxIterations,
+				sliceStepCap: config.work.sliceStepCap,
+				maxConcurrent: config.sandbox.maxConcurrent,
+			},
 		})
 	}
 
-	const runIssueLoopFor = async (prdId: string, branch: string): Promise<void> => {
-		const loopDeps: IssueLoopDeps = {
-			backend,
-			prdId,
-			integrationBranch: branch,
-			gh: realGhRunner,
-			gitFetch,
-			gitPush,
-			gitCheckout,
-			gitMergeNoFf,
-			gitDeleteRemoteBranch,
-			findPrNumber,
-			spawnSandbox: makeSpawnSandboxFor(prdId, branch),
-			gitCreateRemoteBranch,
-			log,
-			slugify,
-			config: {
-				usePrs: config.work.usePrs,
-				sliceStepCap: config.work.sliceStepCap,
-				maxIterations: config.work.maxIterations,
-				maxConcurrent: config.sandbox.maxConcurrent,
-			},
-		}
-		await runIssueLoop(prdId, loopDeps)
-	}
-
-	return { config, projectRoot, backend, integrationBranch, runOnePhase, runFileLoopFor, runIssueLoopFor }
+	return { config, projectRoot, backend, integrationBranch, runOnePhase, runLoopFor }
 }

@@ -1,5 +1,7 @@
 # AFK loop is asymmetric across backends; two loop drivers, minimal Backend interface
 
+> **Superseded by:** [2026-05-12-unified-loop-via-backend-primitives.md](./2026-05-12-unified-loop-via-backend-primitives.md). The asymmetry that justified two drivers narrowed once `config.work.review` defaulted to `false` (see ADR `agent-review-opt-in`); the interface-bloat objection was resolved by gating unsupported methods through `classifySlice` and having them throw rather than no-op. The text below is kept for historical context.
+
 The **AFK loop** does not share a single state machine across **Backends**. The `issue` backend runs the full four-state per-slice machine (`implement` → `review` → `address` → `done`) with parallel agents, draft PRs, and label-driven transitions. The `file` backend runs a serial implementer-only pass: pop the next `ready` **Slice**, run an **Implementer** in a fresh **Sandbox** on the **Integration branch**, commit, push, mark the slice CLOSED, repeat.
 
 The two flows live in separate driver files:

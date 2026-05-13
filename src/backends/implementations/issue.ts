@@ -1,7 +1,9 @@
 import { classify } from '../../utils/bucket.ts'
 import type { GhResult, GhRunner } from '../../utils/gh-runner.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import { fetchPrFeedback } from '../../work/feedback.ts'
+import type { SandboxIn, SandboxOut } from '../../work/verdict.ts'
+import type { Backend, BackendDeps, BackendFactory, ClassifySliceConfig, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, ResumeState, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = ''
 
@@ -21,7 +23,7 @@ const DEFAULT_BRANCH_PREFIX = ''
  * See ADR `afk-loop-asymmetric-across-backends` for why this lives outside the
  * Backend interface (issue-only operation; the loop imports it directly).
  */
-export async function createSliceBranch(
+async function createSliceBranch(
 	deps: {
 		gitFetch: (branch: string) => Promise<void>
 		gitCreateRemoteBranch: (newBranch: string, baseBranch: string) => Promise<void>
@@ -208,9 +210,178 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		return summaries
 	}
 
+	async function reconcileSlices(slices: Slice[], ctx: PhaseCtx): Promise<void> {
+		for (const slice of slices) {
+			if (!slice.branchAhead || slice.prState !== null) continue
+			if (slice.state === 'CLOSED' || !slice.readyForAgent) continue
+			const sliceBranch = `prd-${ctx.prdId}/slice-${slice.id}-${slugify(slice.title)}`
+			await ghOrThrow([
+				'pr',
+				'create',
+				'--draft',
+				'--title',
+				slice.title,
+				'--head',
+				sliceBranch,
+				'--base',
+				ctx.integrationBranch,
+				'--body',
+				`Closes #${slice.id}`,
+			])
+		}
+	}
+
+	function classifySlice(slice: Slice, config: ClassifySliceConfig): ResumeState {
+		if (slice.state === 'CLOSED') return 'done'
+		if (!slice.readyForAgent) return 'done'
+		if (slice.prState === 'merged' || slice.prState === 'ready') return 'done'
+		// Review opt-out: a draft PR exists but the user doesn't want the agent to review it.
+		// Loop stops here; the human (or external CI) takes over.
+		if (slice.prState === 'draft' && !config.review) return 'done'
+		if (slice.bucket === 'blocked') return 'blocked'
+		if (slice.needsRevision) return 'address'
+		if (slice.prState === 'draft') return 'review'
+		// `branchAhead && !prState` is healed by `reconcileSlices` before classification; never reaches here.
+		return 'implement'
+	}
+
+	function sliceBranchFor(prdId: string, slice: Slice): string {
+		return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
+	}
+
+	async function findPrNumber(sliceBranch: string): Promise<number> {
+		const out = await ghOrThrow(['pr', 'list', '--head', sliceBranch, '--json', 'number', '--jq', '.[0].number'])
+		const trimmed = out.trim()
+		if (!trimmed) throw new Error(`no PR found for head '${sliceBranch}'`)
+		return Number.parseInt(trimmed, 10)
+	}
+
+	async function prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
+		const branch = await createSliceBranch(
+			{ gitFetch: deps.git.fetch, gitCreateRemoteBranch: deps.git.createRemoteBranch },
+			ctx.prdId,
+			slice.id,
+			slugify(slice.title),
+			ctx.integrationBranch,
+		)
+		return {
+			branch,
+			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
+		}
+	}
+
+	async function landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'partial') return 'partial'
+		if (verdict.verdict === 'no-work-needed') {
+			await updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
+			deps.log(`${tag} no-work-needed: cleared readyForAgent`)
+			return 'no-work'
+		}
+		if (verdict.verdict !== 'ready') return 'partial'
+
+		const branch = sliceBranchFor(ctx.prdId, slice)
+		await deps.git.push(branch)
+		deps.log(`${tag} pushed ${branch}`)
+
+		if (ctx.config.usePrs) {
+			await ghOrThrow([
+				'pr', 'create', '--draft',
+				'--title', slice.title,
+				'--head', branch,
+				'--base', ctx.integrationBranch,
+				'--body', `Closes #${slice.id}`,
+			])
+			deps.log(`${tag} opened draft PR for ${branch}`)
+			return 'progress'
+		}
+
+		// usePrs: false → host-side merge-and-close.
+		await deps.git.checkout(ctx.integrationBranch)
+		await deps.git.mergeNoFf(branch)
+		await deps.git.push(ctx.integrationBranch)
+		await deps.git.deleteRemoteBranch(branch)
+		deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
+		await ghOrThrow(['issue', 'close', slice.id])
+		deps.log(`${tag} closed sub-issue #${slice.id}`)
+		return 'done'
+	}
+
+	async function prepareReview(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
+		const branch = sliceBranchFor(ctx.prdId, slice)
+		const prNumber = await findPrNumber(branch)
+		const sandboxIn: SandboxIn = {
+			slice: { id: slice.id, title: slice.title, body: slice.body },
+			pr: { number: prNumber, branch },
+		}
+		return { branch, sandboxIn }
+	}
+
+	async function landReview(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'partial') return 'partial'
+		const branch = sliceBranchFor(ctx.prdId, slice)
+
+		if (verdict.verdict === 'ready') {
+			if (verdict.commits > 0) {
+				await deps.git.push(branch)
+				deps.log(`${tag} pushed ${branch}`)
+			}
+			const prNumber = await findPrNumber(branch)
+			await ghOrThrow(['pr', 'ready', String(prNumber)])
+			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
+			return 'progress'
+		}
+		if (verdict.verdict === 'needs-revision') {
+			if (verdict.commits > 0) {
+				await deps.git.push(branch)
+				deps.log(`${tag} pushed ${branch}`)
+			}
+			await updateSlice(ctx.prdId, slice.id, { needsRevision: true })
+			deps.log(`${tag} flagged needsRevision`)
+			return 'progress'
+		}
+		return 'partial'
+	}
+
+	async function prepareAddress(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
+		const branch = sliceBranchFor(ctx.prdId, slice)
+		const prNumber = await findPrNumber(branch)
+		const feedback = await fetchPrFeedback(prNumber, { gh: deps.gh })
+		const sandboxIn: SandboxIn = {
+			slice: { id: slice.id, title: slice.title, body: slice.body },
+			pr: { number: prNumber, branch },
+			feedback,
+		}
+		return { branch, sandboxIn }
+	}
+
+	async function landAddress(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'partial') return 'partial'
+		const branch = sliceBranchFor(ctx.prdId, slice)
+
+		if (verdict.verdict === 'ready') {
+			if (verdict.commits > 0) {
+				await deps.git.push(branch)
+				deps.log(`${tag} pushed ${branch}`)
+			}
+			await updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+			deps.log(`${tag} cleared needsRevision`)
+			return 'progress'
+		}
+		if (verdict.verdict === 'no-work-needed') {
+			await updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+			deps.log(`${tag} no-work-needed: cleared needsRevision`)
+			return 'no-work'
+		}
+		return 'partial'
+	}
+
 	return {
 		name: 'issue',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
+		maxConcurrent: null,
 		createPrd,
 		branchForExisting,
 		findPrd,
@@ -219,6 +390,14 @@ export const createIssueBackend: BackendFactory = (deps: BackendDeps): Backend =
 		createSlice,
 		findSlices,
 		updateSlice,
+		classifySlice,
+		reconcileSlices,
+		prepareImplement,
+		landImplement,
+		prepareReview,
+		landReview,
+		prepareAddress,
+		landAddress,
 	}
 
 	async function updateSlice(_prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -260,7 +439,7 @@ if (import.meta.vitest) {
 
 	type MockSpec = { match: (args: string[]) => boolean; respond: GhResult | ((args: string[]) => GhResult) }
 
-	function makeDeps(mocks: MockSpec[]): { deps: BackendDeps; calls: string[][] } {
+	function makeDeps(mocks: MockSpec[]): { deps: BackendDeps; calls: string[][]; gitCalls: Array<[string, ...string[]]>; logCalls: string[] } {
 		const calls: string[][] = []
 		const gh: GhRunner = async (args: string[]) => {
 			calls.push(args)
@@ -268,6 +447,8 @@ if (import.meta.vitest) {
 			if (!m) return { ok: false, error: new Error(`unmocked gh call: ${args.join(' ')}`) }
 			return typeof m.respond === 'function' ? m.respond(args) : m.respond
 		}
+		const gitCalls: Array<[string, ...string[]]> = []
+		const logCalls: string[] = []
 		const deps: BackendDeps = {
 			gh,
 			repoRoot: '/tmp/x',
@@ -279,9 +460,410 @@ if (import.meta.vitest) {
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
+			git: {
+				fetch: async (b) => { gitCalls.push(['fetch', b]) },
+				push: async (b) => { gitCalls.push(['push', b]) },
+				checkout: async (b) => { gitCalls.push(['checkout', b]) },
+				mergeNoFf: async (b) => { gitCalls.push(['mergeNoFf', b]) },
+				deleteRemoteBranch: async (b) => { gitCalls.push(['deleteRemoteBranch', b]) },
+				createRemoteBranch: async (n, b) => { gitCalls.push(['createRemoteBranch', n, b]) },
+			},
+			log: (m) => { logCalls.push(m) },
 		}
-		return { deps, calls }
+		return { deps, calls, gitCalls, logCalls }
 	}
+
+	describe('issue backend: shape', () => {
+		test('declares maxConcurrent = null (issue backend supports concurrent implementers via per-slice branches; cap comes from user config)', () => {
+			const { deps } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			expect(backend.maxConcurrent).toBeNull()
+		})
+	})
+
+	describe('issue backend: classifySlice', () => {
+		function makeSlice(overrides: Partial<Slice> = {}): Slice {
+			return {
+				id: '145',
+				title: 't',
+				body: 'b',
+				state: 'OPEN',
+				readyForAgent: true,
+				needsRevision: false,
+				bucket: 'ready',
+				blockedBy: [],
+				prState: null,
+				branchAhead: false,
+				...overrides,
+			}
+		}
+
+		function backend(): Backend {
+			const { deps } = makeDeps([])
+			return createIssueBackend(deps)
+		}
+
+		test('CLOSED → done', () => {
+			expect(backend().classifySlice(makeSlice({ state: 'CLOSED' }), { usePrs: true, review: true })).toBe('done')
+		})
+
+		test('!readyForAgent → done', () => {
+			expect(backend().classifySlice(makeSlice({ readyForAgent: false }), { usePrs: true, review: true })).toBe('done')
+		})
+
+		test('prState merged → done', () => {
+			expect(backend().classifySlice(makeSlice({ prState: 'merged' }), { usePrs: true, review: true })).toBe('done')
+		})
+
+		test('prState ready → done', () => {
+			expect(backend().classifySlice(makeSlice({ prState: 'ready' }), { usePrs: true, review: true })).toBe('done')
+		})
+
+		test('prState draft with review: false → done (review opt-out: loop stops at the draft PR)', () => {
+			expect(backend().classifySlice(makeSlice({ prState: 'draft' }), { usePrs: true, review: false })).toBe('done')
+		})
+
+		test('prState draft with review: true → review (agent reviewer fires)', () => {
+			expect(backend().classifySlice(makeSlice({ prState: 'draft' }), { usePrs: true, review: true })).toBe('review')
+		})
+
+		test('blocked bucket → blocked (takes precedence over implement, after the done short-circuits)', () => {
+			expect(backend().classifySlice(makeSlice({ bucket: 'blocked', blockedBy: ['144'] }), { usePrs: true, review: true })).toBe('blocked')
+		})
+
+		test('needsRevision with a draft PR and review: true → address (addresser handles reviewer feedback)', () => {
+			expect(backend().classifySlice(makeSlice({ needsRevision: true, prState: 'draft' }), { usePrs: true, review: true })).toBe('address')
+		})
+
+		test('open slice with no PR yet → implement', () => {
+			expect(backend().classifySlice(makeSlice(), { usePrs: true, review: true })).toBe('implement')
+		})
+	})
+
+	describe('issue backend: phase primitives', () => {
+		function makeOpenSlice(overrides: Partial<Slice> = {}): Slice {
+			return {
+				id: '145',
+				title: 'Session Middleware',
+				body: 'wire JWT',
+				state: 'OPEN',
+				readyForAgent: true,
+				needsRevision: false,
+				bucket: 'ready',
+				blockedBy: [],
+				prState: null,
+				branchAhead: false,
+				...overrides,
+			}
+		}
+
+		test('prepareImplement: creates slice branch via git, returns {branch, sandboxIn}', async () => {
+			const { deps, gitCalls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			const prep = await backend.prepareImplement(makeOpenSlice(), {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: true, review: false },
+			})
+			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
+			expect(prep.sandboxIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
+			expect(gitCalls).toContainEqual(['createRemoteBranch', 'prd-142/slice-145-session-middleware', 'prds-issue-142'])
+			expect(gitCalls).toContainEqual(['fetch', 'prd-142/slice-145-session-middleware'])
+		})
+
+		test('landImplement + usePrs=true + ready: pushes slice branch and opens a draft PR; returns progress', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'pr' && a[1] === 'create', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landImplement(
+				makeOpenSlice(),
+				{ verdict: 'ready', commits: 1 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
+			)
+			expect(outcome).toBe('progress')
+			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
+			expect(calls).toContainEqual([
+				'pr', 'create', '--draft',
+				'--title', 'Session Middleware',
+				'--head', 'prd-142/slice-145-session-middleware',
+				'--base', 'prds-issue-142',
+				'--body', 'Closes #145',
+			])
+		})
+
+		test('landImplement + usePrs=false + ready: pushes slice, checks out integration, merges --no-ff, pushes integration, deletes slice branch, closes sub-issue; returns done', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'close', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landImplement(
+				makeOpenSlice(),
+				{ verdict: 'ready', commits: 1 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false } },
+			)
+			expect(outcome).toBe('done')
+			expect(gitCalls).toEqual([
+				['push', 'prd-142/slice-145-session-middleware'],
+				['checkout', 'prds-issue-142'],
+				['mergeNoFf', 'prd-142/slice-145-session-middleware'],
+				['push', 'prds-issue-142'],
+				['deleteRemoteBranch', 'prd-142/slice-145-session-middleware'],
+			])
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
+			expect(calls).toContainEqual(['issue', 'close', '145'])
+		})
+
+		test('landImplement + no-work-needed: clears readyForAgent via gh label edit, returns no-work', async () => {
+			const { deps, calls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landImplement(
+				makeOpenSlice(),
+				{ verdict: 'no-work-needed', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
+			)
+			expect(outcome).toBe('no-work')
+			expect(calls).toContainEqual(['issue', 'edit', '145', '--remove-label', 'ready-for-agent'])
+		})
+
+		test('landImplement + partial: returns partial, no side effects', async () => {
+			const { deps, calls, gitCalls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landImplement(
+				makeOpenSlice(),
+				{ verdict: 'partial', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
+			)
+			expect(outcome).toBe('partial')
+			expect(gitCalls).toEqual([])
+			expect(calls).toEqual([])
+		})
+
+		test('prepareReview: looks up PR number for the slice branch, builds sandboxIn with {pr, slice}', async () => {
+			const { deps, calls } = makeDeps([
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const prep = await backend.prepareReview(makeOpenSlice(), {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: true, review: true },
+			})
+			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
+			expect(prep.sandboxIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
+			expect(prep.sandboxIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'list')).toBeDefined()
+		})
+
+		test('landReview + ready (commits > 0): pushes slice branch, then runs `gh pr ready <num>`; returns progress', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
+				{ match: (a) => a[0] === 'pr' && a[1] === 'ready', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landReview(
+				makeOpenSlice({ prState: 'draft' }),
+				{ verdict: 'ready', commits: 2 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('progress')
+			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
+			expect(calls).toContainEqual(['pr', 'ready', '168'])
+		})
+
+		test('landReview + ready (commits === 0): skips push, runs `gh pr ready <num>`', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
+				{ match: (a) => a[0] === 'pr' && a[1] === 'ready', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landReview(
+				makeOpenSlice({ prState: 'draft' }),
+				{ verdict: 'ready', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('progress')
+			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
+			expect(calls).toContainEqual(['pr', 'ready', '168'])
+		})
+
+		test('landReview + needs-revision: flips slice.needsRevision via gh label edit; does NOT mark PR ready', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landReview(
+				makeOpenSlice({ prState: 'draft' }),
+				{ verdict: 'needs-revision', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('progress')
+			expect(calls).toContainEqual(['issue', 'edit', '145', '--add-label', 'needs-revision'])
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'ready')).toBeUndefined()
+			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
+		})
+
+		test('landReview + partial: returns partial, no side effects', async () => {
+			const { deps, calls, gitCalls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landReview(
+				makeOpenSlice({ prState: 'draft' }),
+				{ verdict: 'partial', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('partial')
+			expect(gitCalls).toEqual([])
+			expect(calls).toEqual([])
+		})
+
+		test('prepareAddress: finds PR, fetches feedback, packs both into sandboxIn', async () => {
+			const { deps } = makeDeps([
+				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
+				{ match: (a) => a[0] === 'api' && (a[1] ?? '').endsWith('/comments'), respond: { ok: true, stdout: '[]', stderr: '' } },
+				{ match: (a) => a[0] === 'pr' && a[1] === 'view' && a.includes('reviews'), respond: { ok: true, stdout: '{"reviews":[]}', stderr: '' } },
+				{ match: (a) => a[0] === 'pr' && a[1] === 'view' && a.includes('comments'), respond: { ok: true, stdout: '{"comments":[]}', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const prep = await backend.prepareAddress(makeOpenSlice({ prState: 'draft', needsRevision: true }), {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: true, review: true },
+			})
+			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
+			expect(prep.sandboxIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
+			expect(prep.sandboxIn.feedback).toEqual([])
+		})
+
+		test('landAddress + ready (commits > 0): pushes slice branch, clears needsRevision, returns progress', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landAddress(
+				makeOpenSlice({ prState: 'draft', needsRevision: true }),
+				{ verdict: 'ready', commits: 3 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('progress')
+			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
+			expect(calls).toContainEqual(['issue', 'edit', '145', '--remove-label', 'needs-revision'])
+		})
+
+		test('landAddress + no-work-needed: clears needsRevision, returns no-work, no push', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landAddress(
+				makeOpenSlice({ prState: 'draft', needsRevision: true }),
+				{ verdict: 'no-work-needed', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('no-work')
+			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
+			expect(calls).toContainEqual(['issue', 'edit', '145', '--remove-label', 'needs-revision'])
+		})
+
+		test('landAddress + partial: returns partial, no side effects', async () => {
+			const { deps, calls, gitCalls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			const outcome = await backend.landAddress(
+				makeOpenSlice({ prState: 'draft', needsRevision: true }),
+				{ verdict: 'partial', commits: 0 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+			)
+			expect(outcome).toBe('partial')
+			expect(gitCalls).toEqual([])
+			expect(calls).toEqual([])
+		})
+	})
+
+	describe('issue backend: reconcileSlices', () => {
+		function makeSlice(overrides: Partial<Slice> = {}): Slice {
+			return {
+				id: '145',
+				title: 'Session Middleware',
+				body: 'b',
+				state: 'OPEN',
+				readyForAgent: true,
+				needsRevision: false,
+				bucket: 'ready',
+				blockedBy: [],
+				prState: null,
+				branchAhead: false,
+				...overrides,
+			}
+		}
+
+		test('opens a draft PR for a slice with branchAhead && !prState (the self-heal case)', async () => {
+			const { deps, calls } = makeDeps([
+				{ match: (a) => a[0] === 'pr' && a[1] === 'create', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const backend = createIssueBackend(deps)
+			const slices = [makeSlice({ branchAhead: true })]
+
+			await backend.reconcileSlices(slices, {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: true, review: false },
+			})
+
+			expect(calls).toContainEqual([
+				'pr',
+				'create',
+				'--draft',
+				'--title',
+				'Session Middleware',
+				'--head',
+				'prd-142/slice-145-session-middleware',
+				'--base',
+				'prds-issue-142',
+				'--body',
+				'Closes #145',
+			])
+		})
+
+		test('does not open a PR for a slice that already has one (prState !== null)', async () => {
+			const { deps, calls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			await backend.reconcileSlices([makeSlice({ branchAhead: true, prState: 'draft' })], {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: true, review: false },
+			})
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
+		})
+
+		test('does not open a PR for a slice without commits ahead (branchAhead === false)', async () => {
+			const { deps, calls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			await backend.reconcileSlices([makeSlice({ branchAhead: false, prState: null })], {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: true, review: false },
+			})
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
+		})
+
+		test('skips CLOSED or !readyForAgent slices (the loop wouldn\'t touch them anyway)', async () => {
+			const { deps, calls } = makeDeps([])
+			const backend = createIssueBackend(deps)
+			await backend.reconcileSlices(
+				[
+					makeSlice({ id: '1', state: 'CLOSED', branchAhead: true }),
+					makeSlice({ id: '2', readyForAgent: false, branchAhead: true }),
+				],
+				{
+					prdId: '142',
+					integrationBranch: 'prds-issue-142',
+					config: { usePrs: true, review: false },
+				},
+			)
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
+		})
+	})
 
 	describe('issue backend: createPrd', () => {
 		test('calls issue create + issue develop and returns {id, branch}', async () => {

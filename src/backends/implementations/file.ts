@@ -5,7 +5,8 @@ import { classify } from '../../utils/bucket.ts'
 import { generateUniqueId } from '../../utils/id.ts'
 import { exec } from '../../utils/shell.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import type { Backend, BackendDeps, BackendFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import type { SandboxOut } from '../../work/verdict.ts'
+import type { Backend, BackendDeps, BackendFactory, ClassifySliceConfig, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, ResumeState, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = 'prd/'
 
@@ -258,9 +259,62 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 	}
 
+	function classifySlice(slice: Slice, _config: ClassifySliceConfig): ResumeState {
+		if (slice.state === 'CLOSED') return 'done'
+		if (!slice.readyForAgent) return 'done'
+		if (slice.bucket === 'blocked') return 'blocked'
+		return 'implement'
+	}
+
+	async function reconcileSlices(_slices: Slice[], _ctx: PhaseCtx): Promise<void> {
+		// File backend has no PR concept; nothing to reconcile.
+	}
+
+	async function prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
+		// File backend has no slice branches; the implementer runs on the integration branch directly.
+		return {
+			branch: ctx.integrationBranch,
+			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
+		}
+	}
+
+	async function landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'ready') {
+			await deps.git.push(ctx.integrationBranch)
+			deps.log(`${tag} pushed ${ctx.integrationBranch}`)
+			await updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+			deps.log(`${tag} closed slice`)
+			return 'done'
+		}
+		if (verdict.verdict === 'no-work-needed') {
+			await updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
+			deps.log(`${tag} no-work-needed: cleared readyForAgent`)
+			return 'no-work'
+		}
+		return 'partial'
+	}
+
+	async function prepareReview(_slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
+		throw new Error('review is not supported on the file backend (no PR concept)')
+	}
+
+	async function landReview(_slice: Slice, _verdict: SandboxOut, _ctx: PhaseCtx): Promise<PhaseOutcome> {
+		throw new Error('review is not supported on the file backend (no PR concept)')
+	}
+
+	async function prepareAddress(_slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
+		throw new Error('address is not supported on the file backend (no PR concept)')
+	}
+
+	async function landAddress(_slice: Slice, _verdict: SandboxOut, _ctx: PhaseCtx): Promise<PhaseOutcome> {
+		throw new Error('address is not supported on the file backend (no PR concept)')
+	}
+
 	return {
 		name: 'file',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
+		maxConcurrent: 1,
 		createPrd,
 		branchForExisting,
 		findPrd,
@@ -269,6 +323,14 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		createSlice,
 		findSlices,
 		updateSlice,
+		classifySlice,
+		reconcileSlices,
+		prepareImplement,
+		landImplement,
+		prepareReview,
+		landReview,
+		prepareAddress,
+		landAddress,
 	}
 }
 
@@ -279,7 +341,7 @@ if (import.meta.vitest) {
 	const { tmpdir } = await import('node:os')
 	const { exec } = await import('../../utils/shell.ts')
 
-	type Fixture = { work: string; bare: string; prdsDir: string; deps: BackendDeps }
+	type Fixture = { work: string; bare: string; prdsDir: string; deps: BackendDeps; calls: { git: Array<[string, ...string[]]>; log: string[] } }
 
 	async function setup(): Promise<Fixture> {
 		const bare = await mkdtemp(path.join(tmpdir(), 'trowel-file-bare-'))
@@ -292,6 +354,7 @@ if (import.meta.vitest) {
 		await exec('git', ['-C', work, 'commit', '-q', '--allow-empty', '-m', 'init'])
 		await exec('git', ['-C', work, 'push', '-q', '-u', 'origin', 'main'])
 		const prdsDir = path.join(work, 'docs', 'prds')
+		const calls: { git: Array<[string, ...string[]]>; log: string[] } = { git: [], log: [] }
 		const deps: BackendDeps = {
 			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
 			repoRoot: work,
@@ -303,8 +366,17 @@ if (import.meta.vitest) {
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
+			git: {
+				fetch: async (b) => { calls.git.push(['fetch', b]) },
+				push: async (b) => { calls.git.push(['push', b]) },
+				checkout: async (b) => { calls.git.push(['checkout', b]) },
+				mergeNoFf: async (b) => { calls.git.push(['mergeNoFf', b]) },
+				deleteRemoteBranch: async (b) => { calls.git.push(['deleteRemoteBranch', b]) },
+				createRemoteBranch: async (n, b) => { calls.git.push(['createRemoteBranch', n, b]) },
+			},
+			log: (m) => { calls.log.push(m) },
 		}
-		return { work, bare, prdsDir, deps }
+		return { work, bare, prdsDir, deps, calls }
 	}
 
 	async function teardown(f: Fixture | undefined) {
@@ -321,6 +393,207 @@ if (import.meta.vitest) {
 			return false
 		}
 	}
+
+	describe('file backend: shape', () => {
+		test('declares maxConcurrent = 1 (commits land directly on the integration branch; no parallel implementers)', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				expect(backend.maxConcurrent).toBe(1)
+			} finally {
+				await teardown(f)
+			}
+		})
+	})
+
+	describe('file backend: classifySlice', () => {
+		function makeSlice(overrides: Partial<Slice> = {}): Slice {
+			return {
+				id: 's1',
+				title: 't',
+				body: 'b',
+				state: 'OPEN',
+				readyForAgent: true,
+				needsRevision: false,
+				bucket: 'ready',
+				blockedBy: [],
+				prState: null,
+				branchAhead: false,
+				...overrides,
+			}
+		}
+
+		async function backend(): Promise<Backend> {
+			const f = await setup()
+			return createFileBackend(f.deps)
+		}
+
+		test('CLOSED slice → done', async () => {
+			const b = await backend()
+			expect(b.classifySlice(makeSlice({ state: 'CLOSED', bucket: 'done' }), { usePrs: true, review: false })).toBe('done')
+		})
+
+		test('!readyForAgent → done (the slice is a draft waiting on the user)', async () => {
+			const b = await backend()
+			expect(b.classifySlice(makeSlice({ readyForAgent: false, bucket: 'draft' }), { usePrs: false, review: false })).toBe('done')
+		})
+
+		test('blocked bucket → blocked', async () => {
+			const b = await backend()
+			expect(b.classifySlice(makeSlice({ blockedBy: ['s0'], bucket: 'blocked' }), { usePrs: false, review: false })).toBe('blocked')
+		})
+
+		test('ready slice → implement (file backend has no PR concept; review/address are unreachable)', async () => {
+			const b = await backend()
+			expect(b.classifySlice(makeSlice({ bucket: 'ready' }), { usePrs: false, review: false })).toBe('implement')
+		})
+
+		test('config flags are ignored on the file backend (no PR; no review)', async () => {
+			const b = await backend()
+			expect(b.classifySlice(makeSlice({ bucket: 'ready' }), { usePrs: true, review: true })).toBe('implement')
+		})
+	})
+
+	describe('file backend: reconcileSlices', () => {
+		test('is a no-op (file backend has no PR concept; nothing to reconcile)', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				await expect(
+					backend.reconcileSlices([], {
+						prdId: 'p1',
+						integrationBranch: 'prd/p1-x',
+						config: { usePrs: false, review: false },
+					}),
+				).resolves.toBeUndefined()
+			} finally {
+				await teardown(f)
+			}
+		})
+	})
+
+	describe('file backend: phase primitives', () => {
+		function makeOpenSlice(overrides: Partial<Slice> = {}): Slice {
+			return {
+				id: 's1',
+				title: 'Implement A',
+				body: 'spec',
+				state: 'OPEN',
+				readyForAgent: true,
+				needsRevision: false,
+				bucket: 'ready',
+				blockedBy: [],
+				prState: null,
+				branchAhead: false,
+				...overrides,
+			}
+		}
+
+		test('prepareImplement: branch is the integration branch; sandboxIn carries the slice', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				const prep = await backend.prepareImplement(makeOpenSlice(), {
+					prdId: 'p1',
+					integrationBranch: 'prd/p1-x',
+					config: { usePrs: false, review: false },
+				})
+				expect(prep.branch).toBe('prd/p1-x')
+				expect(prep.sandboxIn.slice).toEqual({ id: 's1', title: 'Implement A', body: 'spec' })
+			} finally {
+				await teardown(f)
+			}
+		})
+
+		test('landImplement + ready: pushes integration, closes slice, returns done', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				const result = await backend.createPrd({ title: 'X', body: 'b' })
+				const slice = await backend.createSlice(result.id, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				await backend.updateSlice(result.id, slice.id, { readyForAgent: true })
+				f.calls.git.length = 0
+
+				const outcome = await backend.landImplement(
+					{ ...slice, readyForAgent: true },
+					{ verdict: 'ready', commits: 1 },
+					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
+				)
+
+				expect(outcome).toBe('done')
+				expect(f.calls.git).toContainEqual(['push', result.branch])
+				const after = await backend.findSlices(result.id)
+				expect(after[0]!.state).toBe('CLOSED')
+			} finally {
+				await teardown(f)
+			}
+		})
+
+		test('landImplement + no-work-needed: clears readyForAgent, returns no-work, does not push', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				const result = await backend.createPrd({ title: 'X', body: 'b' })
+				const slice = await backend.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
+				await backend.updateSlice(result.id, slice.id, { readyForAgent: true })
+				f.calls.git.length = 0
+
+				const outcome = await backend.landImplement(
+					{ ...slice, readyForAgent: true },
+					{ verdict: 'no-work-needed', commits: 0 },
+					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
+				)
+
+				expect(outcome).toBe('no-work')
+				expect(f.calls.git.find((c) => c[0] === 'push')).toBeUndefined()
+				const after = await backend.findSlices(result.id)
+				expect(after[0]!.state).toBe('OPEN')
+				expect(after[0]!.readyForAgent).toBe(false)
+			} finally {
+				await teardown(f)
+			}
+		})
+
+		test('landImplement + partial: no host action, returns partial', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				const result = await backend.createPrd({ title: 'X', body: 'b' })
+				const slice = await backend.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
+				await backend.updateSlice(result.id, slice.id, { readyForAgent: true })
+				f.calls.git.length = 0
+
+				const outcome = await backend.landImplement(
+					{ ...slice, readyForAgent: true },
+					{ verdict: 'partial', commits: 0 },
+					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
+				)
+
+				expect(outcome).toBe('partial')
+				expect(f.calls.git).toEqual([])
+				const after = await backend.findSlices(result.id)
+				expect(after[0]!.state).toBe('OPEN')
+				expect(after[0]!.readyForAgent).toBe(true)
+			} finally {
+				await teardown(f)
+			}
+		})
+
+		test('prepareReview / landReview / prepareAddress / landAddress all throw on the file backend', async () => {
+			const f = await setup()
+			try {
+				const backend = createFileBackend(f.deps)
+				const slice = makeOpenSlice()
+				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: false, review: false } }
+				await expect(backend.prepareReview(slice, ctx)).rejects.toThrow(/not supported on the file backend/)
+				await expect(backend.landReview(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file backend/)
+				await expect(backend.prepareAddress(slice, ctx)).rejects.toThrow(/not supported on the file backend/)
+				await expect(backend.landAddress(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file backend/)
+			} finally {
+				await teardown(f)
+			}
+		})
+	})
 
 	describe('file backend: createPrd', () => {
 		let f: Fixture

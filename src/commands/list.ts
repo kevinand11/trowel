@@ -71,6 +71,14 @@ export async function list(filter: PrdState, opts: { backend?: string }): Promis
 		process.exit(1)
 	}
 	const backendKind = opts.backend ?? config.backend
+	const noopGit = {
+		fetch: async () => {},
+		push: async () => {},
+		checkout: async () => {},
+		mergeNoFf: async () => {},
+		deleteRemoteBranch: async () => {},
+		createRemoteBranch: async () => {},
+	}
 	const backendDeps: BackendDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
@@ -82,6 +90,8 @@ export async function list(filter: PrdState, opts: { backend?: string }): Promis
 		labels: config.labels,
 		closeOptions: config.close,
 		confirm: async () => false,
+		git: noopGit,
+		log: () => {},
 	}
 	const backend = getBackend(backendKind, backendDeps)
 	try {
@@ -180,6 +190,15 @@ if (import.meta.vitest) {
 			return {
 				name: 'fake',
 				defaultBranchPrefix: '',
+				maxConcurrent: null,
+				classifySlice: () => 'done',
+				reconcileSlices: async () => {},
+				prepareImplement: async () => { throw new Error('not used in test') },
+				landImplement: async () => 'done' as const,
+				prepareReview: async () => { throw new Error('not used in test') },
+				landReview: async () => 'done' as const,
+				prepareAddress: async () => { throw new Error('not used in test') },
+				landAddress: async () => 'done' as const,
 				createPrd: async () => {
 					throw new Error('nyi')
 				},

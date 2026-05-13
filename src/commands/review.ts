@@ -7,7 +7,7 @@ export async function review(prdId: string, sliceId: string): Promise<void> {
 		const wiring = await buildLoopWiring({})
 		await runReview(prdId, sliceId, {
 			backend: wiring.backend,
-			runOnePhase: (slice) => wiring.runOnePhase(prdId, slice),
+			runOnePhase: (slice) => wiring.runOnePhase(prdId, slice, 'review'),
 			stderr: (s) => process.stderr.write(s),
 		})
 	} catch (e) {
@@ -62,6 +62,15 @@ if (import.meta.vitest) {
 		return {
 			name,
 			defaultBranchPrefix: '',
+			maxConcurrent: null,
+			classifySlice: () => 'done',
+			reconcileSlices: async () => {},
+			prepareImplement: async () => { throw new Error('not used in test') },
+			landImplement: async () => 'done' as const,
+			prepareReview: async () => { throw new Error('not used in test') },
+			landReview: async () => 'done' as const,
+			prepareAddress: async () => { throw new Error('not used in test') },
+			landAddress: async () => 'done' as const,
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),

@@ -16,6 +16,14 @@ export function getBackend(kind: string, deps: BackendDeps): Backend {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
+	const noopGit = {
+		fetch: async () => {},
+		push: async () => {},
+		checkout: async () => {},
+		mergeNoFf: async () => {},
+		deleteRemoteBranch: async () => {},
+		createRemoteBranch: async () => {},
+	}
 	const testDeps: BackendDeps = {
 		gh: async () => ({ ok: true, stdout: '', stderr: '' }),
 		repoRoot: '/tmp/x',
@@ -27,6 +35,8 @@ if (import.meta.vitest) {
 		labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },
 		confirm: async () => false,
+		git: noopGit,
+		log: () => {},
 	}
 
 	describe('getBackend', () => {

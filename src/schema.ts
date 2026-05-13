@@ -80,6 +80,7 @@ export const partialConfigPipe = () =>
 				maxIterations: v.optional(v.number()),
 				sliceStepCap: v.optional(v.number()),
 				usePrs: v.optional(v.boolean()),
+				review: v.optional(v.boolean()),
 				worktreeCleanupAge: v.optional(v.string()),
 			}),
 		),
@@ -143,6 +144,7 @@ export type Config = {
 		maxIterations: number
 		sliceStepCap: number
 		usePrs: boolean
+		review: boolean
 		worktreeCleanupAge: string
 	}
 }
@@ -211,6 +213,7 @@ export const defaultConfig: Config = {
 		maxIterations: 50,
 		sliceStepCap: 5,
 		usePrs: true,
+		review: false,
 		worktreeCleanupAge: '24h',
 	},
 }
@@ -281,6 +284,10 @@ if (import.meta.vitest) {
 			expect(defaultConfig.work.sliceStepCap).toBe(5)
 			expect(defaultConfig.work.usePrs).toBe(true)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
+		})
+
+		test('work.review defaults to false (agent reviewer is opt-in)', () => {
+			expect(defaultConfig.work.review).toBe(false)
 		})
 
 		test('every preconditions check is on by default', () => {
@@ -377,6 +384,15 @@ if (import.meta.vitest) {
 		test('accepts work.usePrs as a boolean', () => {
 			expect(v.validate(partialConfigPipe(), { work: { usePrs: false } }).valid).toBe(true)
 			expect(v.validate(partialConfigPipe(), { work: { usePrs: true } }).valid).toBe(true)
+		})
+
+		test('accepts work.review as a boolean', () => {
+			expect(v.validate(partialConfigPipe(), { work: { review: false } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { work: { review: true } }).valid).toBe(true)
+		})
+
+		test('rejects work.review when non-boolean', () => {
+			expect(v.validate(partialConfigPipe(), { work: { review: 'sometimes' } }).valid).toBe(false)
 		})
 
 		test('rejects work.maxIterations when non-numeric', () => {

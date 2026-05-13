@@ -110,6 +110,14 @@ export async function close(prdId: string, opts: { backend?: string }): Promise<
 	const backendKind = opts.backend ?? config.backend
 	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
 
+	const noopBackendGit = {
+		fetch: async () => {},
+		push: async () => {},
+		checkout: async () => {},
+		mergeNoFf: async () => {},
+		deleteRemoteBranch: async () => {},
+		createRemoteBranch: async () => {},
+	}
 	const backendDeps: BackendDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
@@ -121,6 +129,8 @@ export async function close(prdId: string, opts: { backend?: string }): Promise<
 		labels: config.labels,
 		closeOptions: config.close,
 		confirm: promptConfirm,
+		git: noopBackendGit,
+		log: () => {},
 	}
 	const backend = getBackend(backendKind, backendDeps)
 
@@ -185,6 +195,15 @@ if (import.meta.vitest) {
 		const backend: Backend = {
 			name: 'fake',
 			defaultBranchPrefix: '',
+			maxConcurrent: null,
+			classifySlice: () => 'done',
+			reconcileSlices: async () => {},
+			prepareImplement: async () => { throw new Error('not used in test') },
+			landImplement: async () => 'done' as const,
+			prepareReview: async () => { throw new Error('not used in test') },
+			landReview: async () => 'done' as const,
+			prepareAddress: async () => { throw new Error('not used in test') },
+			landAddress: async () => 'done' as const,
 			createPrd: async () => {
 				throw new Error('not implemented')
 			},
