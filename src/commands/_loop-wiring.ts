@@ -178,6 +178,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const runLoopFor = async (prdId: string, branch: string): Promise<void> => {
 		await runLoop(prdId, {
 			storage,
+			gh: realGhRunner,
 			integrationBranch: branch,
 			spawnSandbox: makeSpawnSandboxFor(prdId, branch),
 			log,

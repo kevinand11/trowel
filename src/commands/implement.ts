@@ -61,8 +61,7 @@ if (import.meta.vitest) {
 			name,
 			defaultBranchPrefix: '',
 			maxConcurrent: null,
-			classifySlice: () => 'done',
-			reconcileSlices: async () => {},
+			capabilities: { prFlow: false },
 			prepareImplement: async () => { throw new Error('not used in test') },
 			landImplement: async () => 'done' as const,
 			prepareReview: async () => { throw new Error('not used in test') },
@@ -73,7 +72,7 @@ if (import.meta.vitest) {
 			branchForExisting: async () => 'x',
 			findPrd: async (id) => (hasPrd ? { id, branch: 'b', title: 't', state: 'OPEN' } : null),
 			listPrds: async () => [],
-			close: async () => {},
+			closePrd: async () => {},
 			createSlice: async () => {
 				throw new Error('not used')
 			},

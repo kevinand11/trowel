@@ -41,7 +41,7 @@ async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 	}
 
 	if (prd.state === 'OPEN') {
-		await rt.storage.close(prdId)
+		await rt.storage.closePrd(prdId)
 	} else {
 		rt.stdout(`PRD '${prdId}' already closed in store.\n`)
 	}
@@ -153,8 +153,7 @@ if (import.meta.vitest) {
 			name: 'fake',
 			defaultBranchPrefix: '',
 			maxConcurrent: null,
-			classifySlice: () => 'done',
-			reconcileSlices: async () => {},
+			capabilities: { prFlow: false },
 			prepareImplement: async () => { throw new Error('not used in test') },
 			landImplement: async () => 'done' as const,
 			prepareReview: async () => { throw new Error('not used in test') },
@@ -174,8 +173,8 @@ if (import.meta.vitest) {
 				return { ...state.prd }
 			},
 			listPrds: async () => (state.prd && state.prd.state === 'OPEN' ? [state.prd] : []),
-			close: async (id) => {
-				calls.push(`close(${id})`)
+			closePrd: async (id) => {
+				calls.push(`closePrd(${id})`)
 				if (state.prd && state.prd.id === id) state.prd.state = 'CLOSED'
 			},
 			createSlice: async () => {
@@ -278,7 +277,7 @@ if (import.meta.vitest) {
 				git,
 				listOpenPrs: async () => [],
 			})
-			expect(calls).not.toContain('close(42)')
+			expect(calls).not.toContain('closePrd(42)')
 			expect(stdoutBuf).toMatch(/already closed/i)
 		})
 
@@ -340,7 +339,7 @@ if (import.meta.vitest) {
 			expect(confirmMsg).toContain('s3')
 			expect(confirmMsg).not.toContain('s2')
 			expect(state.slices.every((s) => s.state === 'CLOSED')).toBe(true)
-			expect(calls).toContain('close(42)')
+			expect(calls).toContain('closePrd(42)')
 		})
 
 		test('declining the warn → no auto-close, no storage.close, no branch ops', async () => {
@@ -365,7 +364,7 @@ if (import.meta.vitest) {
 			})
 			expect(state.slices[0]!.state).toBe('OPEN')
 			expect(state.prd!.state).toBe('OPEN')
-			expect(bCalls).not.toContain('close(42)')
+			expect(bCalls).not.toContain('closePrd(42)')
 			expect(gCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(stdoutBuf).toMatch(/aborted/i)
 		})
@@ -392,7 +391,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [],
 			})
 			expect(confirmCalled).toBe(0)
-			expect(calls).toContain('close(42)')
+			expect(calls).toContain('closePrd(42)')
 		})
 	})
 
@@ -419,7 +418,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [],
 			})
 			expect(state.prd!.state).toBe('CLOSED')
-			expect(bCalls).toContain('close(42)')
+			expect(bCalls).toContain('closePrd(42)')
 			expect(gCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(gitState.branches.has('42-feature')).toBe(true)
 			expect(gitState.current).toBe('main')

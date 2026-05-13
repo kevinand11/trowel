@@ -88,7 +88,7 @@ export type PreparedPhase = {
 }
 
 /**
- * Loop dispatch state for one slice. Computed by `Storage.classifySlice`.
+ * Loop dispatch state for one slice. Computed by `classify` in `src/work/classify.ts`.
  *
  * - `'done'` — slice has nothing more for the loop to do (closed, !readyForAgent, PR merged/ready,
  *   or PR draft with `config.review: false`). The loop skips it.
@@ -98,7 +98,8 @@ export type PreparedPhase = {
  * - `'address'` — run the addresser sandbox next (issue storage only; only reachable with `usePrs && review`).
  *
  * The `'create-pr-then-review'` recovery state from the prior loop design is gone — that path now lives
- * inside `reconcileSlices`, which heals branch-ahead-no-PR drift before each iteration's `findSlices`.
+ * inside `reconcileSlices` (`src/work/reconcile.ts`), which heals branch-ahead-no-PR drift before each
+ * iteration's `findSlices`.
  */
 export type ResumeState = 'done' | 'blocked' | 'implement' | 'review' | 'address'
 
@@ -147,12 +148,22 @@ export interface Storage {
 	 */
 	readonly maxConcurrent: number | null
 
+	/**
+	 * Declarative capabilities a storage exposes to the loop and to config validation.
+	 *
+	 * - `prFlow` — the storage participates in a PR-based lifecycle (slice branches, draft PRs,
+	 *   reviewer/addresser roles). File storage: `false`. Issue storage: `true`.
+	 *   The loop's phase dispatch and `reconcileSlices` are no-ops on `prFlow: false` storages.
+	 *   Config validation (step 4) will reject `config.work.usePrs: true` against a non-`prFlow` storage.
+	 */
+	readonly capabilities: { prFlow: boolean }
+
 	// PRD lifecycle
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
 	branchForExisting(id: string): Promise<string>
 	findPrd(id: string): Promise<PrdRecord | null>
 	listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]>
-	close(id: string): Promise<void>
+	closePrd(id: string): Promise<void>
 
 	// Slice lifecycle
 	createSlice(prdId: string, spec: SliceSpec): Promise<Slice>
@@ -160,34 +171,15 @@ export interface Storage {
 	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
 
 	/**
-	 * Decide what the loop should do next for this slice. Takes a `ClassifiedSlice` because routing
-	 * requires the lifecycle bucket alongside the slice's persistence fields. Pure: reads slice
-	 * fields, bucket, and config flags only.
-	 * The file storage's classifier never returns `'review'` or `'address'` (no PR concept).
-	 */
-	classifySlice(slice: ClassifiedSlice, config: ClassifySliceConfig): ResumeState
-
-	/**
-	 * Heal cross-process drift on each outer-loop iteration. The issue storage opens draft PRs for any
-	 * slice with `branchAhead && !prState` (a prior run died after pushing but before `gh pr create`).
-	 * The file storage implements this as a no-op — reconciliation isn't a missing capability, it just
-	 * has nothing to reconcile.
-	 *
-	 * Contract: the loop calls `findSlices`, passes the result here, then re-calls `findSlices` to see
-	 * post-reconcile state. Taking slices as input (rather than internally calling `findSlices`) keeps
-	 * this method pure with respect to storage internals and trivially testable.
-	 */
-	reconcileSlices(slices: Slice[], ctx: PhaseCtx): Promise<void>
-
-	/**
-	 * Per-role phase primitives. The loop dispatches via `classifySlice`:
+	 * Per-role phase primitives. The loop dispatches via `classify` (`src/work/classify.ts`):
 	 *   - For each phase the classifier emits, the loop calls `prepare<Role>` (which may create branches,
 	 *     fetch PR data, build a `SandboxIn`), spawns the sandbox itself, then calls `land<Role>` with
 	 *     the verdict to apply gh/git side effects.
 	 *   - Methods unreachable on a given storage (e.g. `prepareReview` on file storage) throw.
-	 *     The throw is a runtime invariant: `classifySlice` on that storage never returns the matching
-	 *     state, so the loop never calls the method. Per-phase commands (`trowel review`) that bypass
-	 *     `classifySlice` propagate the throw as a "not supported on this storage" error.
+	 *     The throw is a runtime invariant: `classify` on file-storage slices (always `prState: null`)
+	 *     never returns the matching state, so the loop never calls the method. Per-phase commands
+	 *     (`trowel review`) that bypass the classifier propagate the throw as a "not supported on this
+	 *     storage" error.
 	 */
 	prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase>
 	landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome>

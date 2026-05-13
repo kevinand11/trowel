@@ -1,7 +1,10 @@
+import { classify } from './classify.ts'
 import type { Role } from './prompts.ts'
+import { reconcileSlices } from './reconcile.ts'
 import type { SandboxIn, SandboxOut } from './verdict.ts'
 import type { ClassifiedSlice, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
+import type { GhRunner } from '../utils/gh-runner.ts'
 
 export type LoopConfig = {
 	usePrs: boolean
@@ -13,6 +16,7 @@ export type LoopConfig = {
 
 export type LoopDeps = {
 	storage: Storage
+	gh: GhRunner
 	integrationBranch: string
 	spawnSandbox: (args: { role: Role; slice: Slice; branch: string; sandboxIn: SandboxIn }) => Promise<SandboxOut>
 	log: (msg: string) => void
@@ -41,9 +45,9 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 
 	for (let iter = 0; iter < config.maxIterations; iter++) {
 		const before = await storage.findSlices(prdId)
-		await storage.reconcileSlices(before, ctxOf())
+		await reconcileSlices(deps.gh, before, ctxOf())
 		const slices = classifySlices(await storage.findSlices(prdId))
-		const actionable = slices.filter((s) => !failed.has(s.id) && storage.classifySlice(s, ctxOf().config) !== 'done')
+		const actionable = slices.filter((s) => !failed.has(s.id) && classify(s, ctxOf().config) !== 'done')
 		if (actionable.length === 0) {
 			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
 			return
@@ -75,14 +79,14 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 	}
 	const tag = `[work prd-${prdId} slice-${initial.id}]`
 
-	if (storage.classifySlice(initial, ctx.config) === 'blocked') {
+	if (classify(initial, ctx.config) === 'blocked') {
 		deps.log(`${tag} blocked by [${initial.blockedBy.join(', ')}]; skipping`)
 		return 'no-work'
 	}
 
 	let slice: ClassifiedSlice = initial
 	for (let step = 0; step < config.sliceStepCap; step++) {
-		const state = storage.classifySlice(slice, ctx.config)
+		const state = classify(slice, ctx.config)
 		if (state === 'done') return 'done'
 		if (state === 'blocked') return 'no-work'
 		if (!SANDBOX_ROLES.has(state)) {
@@ -126,25 +130,19 @@ if (import.meta.vitest) {
 
 	type FakeState = {
 		slices: Slice[]
-		classify?: (s: ClassifiedSlice, c: { usePrs: boolean; review: boolean }) => ResumeState
 	}
 
 	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
-		const defaultClassify = (s: ClassifiedSlice): ResumeState => {
-			if (s.state === 'CLOSED') return 'done'
-			if (!s.readyForAgent) return 'done'
-			if (s.bucket === 'blocked') return 'blocked'
-			return 'implement'
-		}
 		return {
 			name: 'fake',
 			defaultBranchPrefix: '',
 			maxConcurrent: null,
+			capabilities: { prFlow: false },
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async () => null,
 			listPrds: async () => [],
-			close: async () => {},
+			closePrd: async () => {},
 			createSlice: async () => {
 				throw new Error('unused')
 			},
@@ -156,8 +154,6 @@ if (import.meta.vitest) {
 				if (patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
 				if (patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
 			},
-			classifySlice: state.classify ?? defaultClassify,
-			reconcileSlices: async () => {},
 			prepareImplement: async (s, ctx) => ({ branch: ctx.integrationBranch, sandboxIn: { slice: { id: s.id, title: s.title, body: s.body } } }),
 			landImplement: async (s, v, _c) => {
 				if (v.verdict === 'ready') {
@@ -204,6 +200,7 @@ if (import.meta.vitest) {
 	function makeDeps(storage: Storage, overrides: Partial<LoopDeps> = {}): LoopDeps {
 		return {
 			storage,
+			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
 			integrationBranch: 'integration',
 			spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
@@ -353,19 +350,23 @@ if (import.meta.vitest) {
 	describe('processSlice', () => {
 		test('progress outcome refetches slice, continues inner step-cap loop, sees updated classification', async () => {
 			const slice = makeSlice({ id: 's1' })
-			const storage = makeStorage({ slices: [slice] }, {
-				landImplement: async () => 'progress',
+			const state = { slices: [slice] }
+			let landCalls = 0
+			const storage = makeStorage(state, {
+				landImplement: async (s) => {
+					landCalls++
+					// First land returns 'progress' after mutating the slice to CLOSED so the refetch
+					// classifies as 'done' and the inner loop exits cleanly.
+					const real = state.slices.find((x) => x.id === s.id)
+					if (real) real.state = 'CLOSED'
+					return 'progress'
+				},
 			})
-			let classifyCount = 0
-			storage.classifySlice = () => {
-				classifyCount++
-				return classifyCount === 1 ? 'implement' : 'done'
-			}
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {
 				spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 			}))
 			expect(outcome).toBe('done')
-			expect(classifyCount).toBeGreaterThanOrEqual(2)
+			expect(landCalls).toBe(1)
 		})
 	})
 }

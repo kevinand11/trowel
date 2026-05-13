@@ -3,7 +3,7 @@ import type { GhResult, GhRunner } from '../../utils/gh-runner.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { fetchPrFeedback } from '../../work/feedback.ts'
 import type { SandboxIn, SandboxOut } from '../../work/verdict.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ClassifySliceConfig, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, ResumeState, Slice, SlicePatch, SlicePrState, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SlicePrState, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = ''
 
@@ -169,7 +169,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		}
 	}
 
-	async function close(id: string): Promise<void> {
+	async function closePrd(id: string): Promise<void> {
 		// Idempotent: if the issue is already closed, no-op.
 		const viewResult = await gh(['issue', 'view', id, '--json', 'state'])
 		if (viewResult.ok) {
@@ -204,41 +204,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			summaries.push({ id, title: issue.title, branch })
 		}
 		return summaries
-	}
-
-	async function reconcileSlices(slices: Slice[], ctx: PhaseCtx): Promise<void> {
-		for (const slice of slices) {
-			if (!slice.branchAhead || slice.prState !== null) continue
-			if (slice.state === 'CLOSED' || !slice.readyForAgent) continue
-			const sliceBranch = `prd-${ctx.prdId}/slice-${slice.id}-${slugify(slice.title)}`
-			await ghOrThrow([
-				'pr',
-				'create',
-				'--draft',
-				'--title',
-				slice.title,
-				'--head',
-				sliceBranch,
-				'--base',
-				ctx.integrationBranch,
-				'--body',
-				`Closes #${slice.id}`,
-			])
-		}
-	}
-
-	function classifySlice(slice: ClassifiedSlice, config: ClassifySliceConfig): ResumeState {
-		if (slice.state === 'CLOSED') return 'done'
-		if (!slice.readyForAgent) return 'done'
-		if (slice.prState === 'merged' || slice.prState === 'ready') return 'done'
-		// Review opt-out: a draft PR exists but the user doesn't want the agent to review it.
-		// Loop stops here; the human (or external CI) takes over.
-		if (slice.prState === 'draft' && !config.review) return 'done'
-		if (slice.bucket === 'blocked') return 'blocked'
-		if (slice.needsRevision) return 'address'
-		if (slice.prState === 'draft') return 'review'
-		// `branchAhead && !prState` is healed by `reconcileSlices` before classification; never reaches here.
-		return 'implement'
 	}
 
 	function sliceBranchFor(prdId: string, slice: Slice): string {
@@ -382,16 +347,15 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		name: 'issue',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
 		maxConcurrent: null,
+		capabilities: { prFlow: true },
 		createPrd,
 		branchForExisting,
 		findPrd,
 		listPrds,
-		close,
+		closePrd,
 		createSlice,
 		findSlices,
 		updateSlice,
-		classifySlice,
-		reconcileSlices,
 		prepareImplement,
 		landImplement,
 		prepareReview,
@@ -484,64 +448,11 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			expect(storage.maxConcurrent).toBeNull()
 		})
-	})
 
-	describe('issue storage: classifySlice', () => {
-		function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
-			return {
-				id: '145',
-				title: 't',
-				body: 'b',
-				state: 'OPEN',
-				readyForAgent: true,
-				needsRevision: false,
-				bucket: 'ready',
-				blockedBy: [],
-				prState: null,
-				branchAhead: false,
-				...overrides,
-			}
-		}
-
-		function storage(): Storage {
+		test('declares capabilities.prFlow = true (full PR-based lifecycle)', () => {
 			const { deps } = makeDeps([])
-			return createIssueStorage(deps)
-		}
-
-		test('CLOSED → done', () => {
-			expect(storage().classifySlice(makeSlice({ state: 'CLOSED' }), { usePrs: true, review: true })).toBe('done')
-		})
-
-		test('!readyForAgent → done', () => {
-			expect(storage().classifySlice(makeSlice({ readyForAgent: false }), { usePrs: true, review: true })).toBe('done')
-		})
-
-		test('prState merged → done', () => {
-			expect(storage().classifySlice(makeSlice({ prState: 'merged' }), { usePrs: true, review: true })).toBe('done')
-		})
-
-		test('prState ready → done', () => {
-			expect(storage().classifySlice(makeSlice({ prState: 'ready' }), { usePrs: true, review: true })).toBe('done')
-		})
-
-		test('prState draft with review: false → done (review opt-out: loop stops at the draft PR)', () => {
-			expect(storage().classifySlice(makeSlice({ prState: 'draft' }), { usePrs: true, review: false })).toBe('done')
-		})
-
-		test('prState draft with review: true → review (agent reviewer fires)', () => {
-			expect(storage().classifySlice(makeSlice({ prState: 'draft' }), { usePrs: true, review: true })).toBe('review')
-		})
-
-		test('blocked bucket → blocked (takes precedence over implement, after the done short-circuits)', () => {
-			expect(storage().classifySlice(makeSlice({ bucket: 'blocked', blockedBy: ['144'] }), { usePrs: true, review: true })).toBe('blocked')
-		})
-
-		test('needsRevision with a draft PR and review: true → address (addresser handles reviewer feedback)', () => {
-			expect(storage().classifySlice(makeSlice({ needsRevision: true, prState: 'draft' }), { usePrs: true, review: true })).toBe('address')
-		})
-
-		test('open slice with no PR yet → implement', () => {
-			expect(storage().classifySlice(makeSlice(), { usePrs: true, review: true })).toBe('implement')
+			const storage = createIssueStorage(deps)
+			expect(storage.capabilities.prFlow).toBe(true)
 		})
 	})
 
@@ -782,91 +693,6 @@ if (import.meta.vitest) {
 			expect(outcome).toBe('partial')
 			expect(gitCalls).toEqual([])
 			expect(calls).toEqual([])
-		})
-	})
-
-	describe('issue storage: reconcileSlices', () => {
-		function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
-			return {
-				id: '145',
-				title: 'Session Middleware',
-				body: 'b',
-				state: 'OPEN',
-				readyForAgent: true,
-				needsRevision: false,
-				bucket: 'ready',
-				blockedBy: [],
-				prState: null,
-				branchAhead: false,
-				...overrides,
-			}
-		}
-
-		test('opens a draft PR for a slice with branchAhead && !prState (the self-heal case)', async () => {
-			const { deps, calls } = makeDeps([
-				{ match: (a) => a[0] === 'pr' && a[1] === 'create', respond: { ok: true, stdout: '', stderr: '' } },
-			])
-			const storage = createIssueStorage(deps)
-			const slices = [makeSlice({ branchAhead: true })]
-
-			await storage.reconcileSlices(slices, {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: false },
-			})
-
-			expect(calls).toContainEqual([
-				'pr',
-				'create',
-				'--draft',
-				'--title',
-				'Session Middleware',
-				'--head',
-				'prd-142/slice-145-session-middleware',
-				'--base',
-				'prds-issue-142',
-				'--body',
-				'Closes #145',
-			])
-		})
-
-		test('does not open a PR for a slice that already has one (prState !== null)', async () => {
-			const { deps, calls } = makeDeps([])
-			const storage = createIssueStorage(deps)
-			await storage.reconcileSlices([makeSlice({ branchAhead: true, prState: 'draft' })], {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: false },
-			})
-			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
-		})
-
-		test('does not open a PR for a slice without commits ahead (branchAhead === false)', async () => {
-			const { deps, calls } = makeDeps([])
-			const storage = createIssueStorage(deps)
-			await storage.reconcileSlices([makeSlice({ branchAhead: false, prState: null })], {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: false },
-			})
-			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
-		})
-
-		test('skips CLOSED or !readyForAgent slices (the loop wouldn\'t touch them anyway)', async () => {
-			const { deps, calls } = makeDeps([])
-			const storage = createIssueStorage(deps)
-			await storage.reconcileSlices(
-				[
-					makeSlice({ id: '1', state: 'CLOSED', branchAhead: true }),
-					makeSlice({ id: '2', readyForAgent: false, branchAhead: true }),
-				],
-				{
-					prdId: '142',
-					integrationBranch: 'prds-issue-142',
-					config: { usePrs: true, review: false },
-				},
-			)
-			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
 		})
 	})
 
@@ -1461,7 +1287,7 @@ if (import.meta.vitest) {
 				},
 			])
 			const storage = createIssueStorage(deps)
-			await storage.close('42')
+			await storage.closePrd('42')
 			expect(calls.find((c) => c[0] === 'issue' && c[1] === 'close')).toEqual(['issue', 'close', '42'])
 			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'list')).toBeUndefined()
 		})
@@ -1474,7 +1300,7 @@ if (import.meta.vitest) {
 				},
 			])
 			const storage = createIssueStorage(deps)
-			await storage.close('42')
+			await storage.closePrd('42')
 			expect(calls.find((c) => c[0] === 'issue' && c[1] === 'close')).toBeUndefined()
 		})
 
@@ -1488,7 +1314,7 @@ if (import.meta.vitest) {
 			])
 			deps.closeOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
-			await storage.close('42')
+			await storage.closePrd('42')
 			expect(calls.find((c) => c[0] === 'issue' && c[1] === 'close')).toEqual([
 				'issue',
 				'close',

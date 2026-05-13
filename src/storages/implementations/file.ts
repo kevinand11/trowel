@@ -5,7 +5,7 @@ import { classifySlices } from '../../utils/bucket.ts'
 import { generateUniqueId } from '../../utils/id.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import type { SandboxOut } from '../../work/verdict.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ClassifySliceConfig, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, ResumeState, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = 'prd/'
 
@@ -142,7 +142,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return summaries.map(({ createdAt: _, ...summary }) => summary)
 	}
 
-	async function close(id: string): Promise<void> {
+	async function closePrd(id: string): Promise<void> {
 		const dir = await findPrdDir(id)
 		const storePath = path.join(dir, 'store.json')
 		const store: PrdStore = JSON.parse(await readFile(storePath, 'utf8'))
@@ -243,17 +243,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 	}
 
-	function classifySlice(slice: ClassifiedSlice, _config: ClassifySliceConfig): ResumeState {
-		if (slice.state === 'CLOSED') return 'done'
-		if (!slice.readyForAgent) return 'done'
-		if (slice.bucket === 'blocked') return 'blocked'
-		return 'implement'
-	}
-
-	async function reconcileSlices(_slices: Slice[], _ctx: PhaseCtx): Promise<void> {
-		// File storage has no PR concept; nothing to reconcile.
-	}
-
 	async function prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
 		// File storage has no slice branches; the implementer runs on the integration branch directly.
 		return {
@@ -300,16 +289,15 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		name: 'file',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
 		maxConcurrent: 1,
+		capabilities: { prFlow: false },
 		createPrd,
 		branchForExisting,
 		findPrd,
 		listPrds,
-		close,
+		closePrd,
 		createSlice,
 		findSlices,
 		updateSlice,
-		classifySlice,
-		reconcileSlices,
 		prepareImplement,
 		landImplement,
 		prepareReview,
@@ -399,68 +387,12 @@ if (import.meta.vitest) {
 				await teardown(f)
 			}
 		})
-	})
 
-	describe('file storage: classifySlice', () => {
-		function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
-			return {
-				id: 's1',
-				title: 't',
-				body: 'b',
-				state: 'OPEN',
-				readyForAgent: true,
-				needsRevision: false,
-				bucket: 'ready',
-				blockedBy: [],
-				prState: null,
-				branchAhead: false,
-				...overrides,
-			}
-		}
-
-		async function storage(): Promise<Storage> {
-			const f = await setup()
-			return createFileStorage(f.deps)
-		}
-
-		test('CLOSED slice → done', async () => {
-			const b = await storage()
-			expect(b.classifySlice(makeSlice({ state: 'CLOSED', bucket: 'done' }), { usePrs: true, review: false })).toBe('done')
-		})
-
-		test('!readyForAgent → done (the slice is a draft waiting on the user)', async () => {
-			const b = await storage()
-			expect(b.classifySlice(makeSlice({ readyForAgent: false, bucket: 'draft' }), { usePrs: false, review: false })).toBe('done')
-		})
-
-		test('blocked bucket → blocked', async () => {
-			const b = await storage()
-			expect(b.classifySlice(makeSlice({ blockedBy: ['s0'], bucket: 'blocked' }), { usePrs: false, review: false })).toBe('blocked')
-		})
-
-		test('ready slice → implement (file storage has no PR concept; review/address are unreachable)', async () => {
-			const b = await storage()
-			expect(b.classifySlice(makeSlice({ bucket: 'ready' }), { usePrs: false, review: false })).toBe('implement')
-		})
-
-		test('config flags are ignored on the file storage (no PR; no review)', async () => {
-			const b = await storage()
-			expect(b.classifySlice(makeSlice({ bucket: 'ready' }), { usePrs: true, review: true })).toBe('implement')
-		})
-	})
-
-	describe('file storage: reconcileSlices', () => {
-		test('is a no-op (file storage has no PR concept; nothing to reconcile)', async () => {
+		test('declares capabilities.prFlow = false (no PR concept; reviewer/addresser are unreachable)', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				await expect(
-					storage.reconcileSlices([], {
-						prdId: 'p1',
-						integrationBranch: 'prd/p1-x',
-						config: { usePrs: false, review: false },
-					}),
-				).resolves.toBeUndefined()
+				expect(storage.capabilities.prFlow).toBe(false)
 			} finally {
 				await teardown(f)
 			}
@@ -809,7 +741,7 @@ if (import.meta.vitest) {
 		test('sets closedAt in store.json without auto-committing the change', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id, branch } = await storage.createPrd({ title: 'Alpha', body: 'a' })
-			await storage.close(id)
+			await storage.closePrd(id)
 			const storePath = path.join(f.prdsDir, `${id}-alpha`, 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8'))
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
@@ -826,11 +758,11 @@ if (import.meta.vitest) {
 		test('idempotent: re-running close on a closed PRD is a no-op', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await storage.createPrd({ title: 'Alpha', body: 'a' })
-			await storage.close(id)
+			await storage.closePrd(id)
 			const storePath = path.join(f.prdsDir, `${id}-alpha`, 'store.json')
 			const firstClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
 			const commitCountBefore = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
-			await storage.close(id)
+			await storage.closePrd(id)
 			const secondClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
 			expect(secondClosedAt).toBe(firstClosedAt)
 			const commitCountAfter = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
@@ -1044,7 +976,7 @@ if (import.meta.vitest) {
 			const deps: StorageDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'never' } }
 			const storage = createFileStorage(deps)
 			const { id, branch } = await storage.createPrd({ title: 'Beta', body: 'b' })
-			await storage.close(id)
+			await storage.closePrd(id)
 			expect(await storage.findPrd(id)).toEqual({ id, branch, title: 'Beta', state: 'CLOSED' })
 		})
 	})
