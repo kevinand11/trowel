@@ -103,6 +103,9 @@ function validateCapabilities(config: Config): void {
 	if (config.work.review && !config.work.usePrs) {
 		throw new Error(`config.work.review requires config.work.usePrs: true (there is no PR for the reviewer to operate on otherwise)`)
 	}
+	if (config.work.usePrs && !config.work.perSliceBranches) {
+		throw new Error(`config.work.usePrs requires config.work.perSliceBranches: true (there is no slice branch to open a PR against otherwise)`)
+	}
 	if (config.work.usePrs) {
 		const caps = storageCapabilities[config.storage]
 		if (!caps) throw new Error(`config.storage '${config.storage}' is not a registered storage`)
@@ -228,6 +231,16 @@ if (import.meta.vitest) {
 			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', work: { usePrs: true, review: true } })
 			const resolved = await loadConfig(project, home)
 			expect(resolved.config.work.review).toBe(true)
+		})
+
+		test('rejects usePrs: true with perSliceBranches: false (no slice branch to PR against)', async () => {
+			await writeLayer(path.join(project, '.trowel', 'config.json'), {
+				storage: 'issue',
+				work: { usePrs: true, perSliceBranches: false },
+			})
+			await expect(loadConfig(project, home)).rejects.toThrow(
+				/config\.work\.usePrs requires config\.work\.perSliceBranches: true/,
+			)
 		})
 	})
 }

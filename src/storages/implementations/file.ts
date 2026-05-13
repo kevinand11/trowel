@@ -244,7 +244,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	return {
 		name: 'file',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
-		maxConcurrent: 1,
 		capabilities: { prFlow: false },
 		createPrd,
 		branchForExisting,
@@ -328,16 +327,6 @@ if (import.meta.vitest) {
 	}
 
 	describe('file storage: shape', () => {
-		test('declares maxConcurrent = 1 (commits land directly on the integration branch; no parallel implementers)', async () => {
-			const f = await setup()
-			try {
-				const storage = createFileStorage(f.deps)
-				expect(storage.maxConcurrent).toBe(1)
-			} finally {
-				await teardown(f)
-			}
-		})
-
 		test('declares capabilities.prFlow = false (no PR concept; reviewer/addresser are unreachable)', async () => {
 			const f = await setup()
 			try {
@@ -377,7 +366,7 @@ if (import.meta.vitest) {
 				const prep = await prepareImplement(makePhaseDeps(f, storage), makeOpenSlice(), {
 					prdId: 'p1',
 					integrationBranch: 'prd/p1-x',
-					config: { usePrs: false, review: false },
+					config: { usePrs: false, review: false, perSliceBranches: false },
 				})
 				expect(prep.branch).toBe('prd/p1-x')
 				expect(prep.sandboxIn.slice).toEqual({ id: 's1', title: 'Implement A', body: 'spec' })
@@ -399,7 +388,7 @@ if (import.meta.vitest) {
 					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'ready', commits: 1 },
-					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
+					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false, perSliceBranches: false } },
 				)
 
 				expect(outcome).toBe('done')
@@ -424,7 +413,7 @@ if (import.meta.vitest) {
 					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'no-work-needed', commits: 0 },
-					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
+					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false, perSliceBranches: false } },
 				)
 
 				expect(outcome).toBe('no-work')
@@ -450,7 +439,7 @@ if (import.meta.vitest) {
 					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'partial', commits: 0 },
-					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
+					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false, perSliceBranches: false } },
 				)
 
 				expect(outcome).toBe('partial')
@@ -463,12 +452,86 @@ if (import.meta.vitest) {
 			}
 		})
 
+		test('prepareImplement + perSliceBranches:true: creates slice branch via git, sandboxIn carries the slice', async () => {
+			const f = await setup()
+			try {
+				const storage = createFileStorage(f.deps)
+				const { id: prdId, branch } = await storage.createPrd({ title: 'X', body: 'b' })
+				const slice = await storage.createSlice(prdId, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				f.calls.git.length = 0
+
+				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, bucket: 'ready' } as ClassifiedSlice, {
+					prdId,
+					integrationBranch: branch,
+					config: { usePrs: false, review: false, perSliceBranches: true },
+				})
+				expect(prep.branch).toBe(`prd-${prdId}/slice-${slice.id}-implement-a`)
+				expect(f.calls.git).toContainEqual(['createRemoteBranch', prep.branch, branch])
+				expect(f.calls.git).toContainEqual(['fetch', prep.branch])
+			} finally {
+				await teardown(f)
+			}
+		})
+
+		test('landImplement + perSliceBranches:true + usePrs:false + ready: slice branch → host-merge → updateSlice CLOSED; returns done', async () => {
+			const f = await setup()
+			try {
+				const storage = createFileStorage(f.deps)
+				const { id: prdId, branch: integration } = await storage.createPrd({ title: 'X', body: 'b' })
+				const slice = await storage.createSlice(prdId, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
+				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
+				// Replace the spy git with a recording no-op for this matrix cell — we want to assert the
+				// call sequence, not exercise real git state on a synthetic slice branch.
+				const calls: Array<[string, ...string[]]> = []
+				const recordingGit = {
+					fetch: async (b: string) => { calls.push(['fetch', b]) },
+					push: async (b: string) => { calls.push(['push', b]) },
+					checkout: async (b: string) => { calls.push(['checkout', b]) },
+					mergeNoFf: async (b: string) => { calls.push(['mergeNoFf', b]) },
+					deleteRemoteBranch: async (b: string) => { calls.push(['deleteRemoteBranch', b]) },
+					createRemoteBranch: async (n: string, b: string) => { calls.push(['createRemoteBranch', n, b]) },
+					createLocalBranch: async () => {},
+					pushSetUpstream: async () => {},
+					currentBranch: async () => integration,
+					branchExists: async () => true,
+					isMerged: async () => false,
+					deleteBranch: async () => {},
+				}
+				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log! }
+
+				const outcome = await landImplement(
+					deps,
+					{ ...slice, readyForAgent: true } as Slice,
+					{ verdict: 'ready', commits: 1 },
+					{ prdId, integrationBranch: integration, config: { usePrs: false, review: false, perSliceBranches: true } },
+				)
+
+				expect(outcome).toBe('done')
+				expect(calls.map((c) => c[0])).toEqual([
+					'push',
+					'checkout',
+					'mergeNoFf',
+					'push',
+					'deleteRemoteBranch',
+				])
+				expect(calls).toContainEqual(['push', sliceBranch])
+				expect(calls).toContainEqual(['checkout', integration])
+				expect(calls).toContainEqual(['mergeNoFf', sliceBranch])
+				expect(calls).toContainEqual(['deleteRemoteBranch', sliceBranch])
+				const after = await storage.findSlices(prdId)
+				expect(after[0]!.state).toBe('CLOSED')
+			} finally {
+				await teardown(f)
+			}
+		})
+
 		test('review and address phases throw with a capability-shaped error on file storage', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
-				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: false, review: false } }
+				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: false, review: false, perSliceBranches: false } }
 				const deps = makePhaseDeps(f, storage)
 				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/review requires capability 'prFlow'; storage 'file' does not declare it/)
 				await expect(landReview(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/review requires capability 'prFlow'; storage 'file' does not declare it/)

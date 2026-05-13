@@ -164,7 +164,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 
 	const runOnePhase = async (prdId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await integrationBranch(prdId)
-		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review } }
+		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
 		const phaseDeps: PhaseDeps = { storage, git, gh: realGhRunner, log }
 		const prep = role === 'implement'
 			? await prepareImplement(phaseDeps, slice, ctx)
@@ -188,6 +188,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 			config: {
 				usePrs: config.work.usePrs,
 				review: config.work.review,
+				perSliceBranches: config.work.perSliceBranches,
 				maxIterations: config.work.maxIterations,
 				sliceStepCap: config.work.sliceStepCap,
 				maxConcurrent: config.sandbox.maxConcurrent,

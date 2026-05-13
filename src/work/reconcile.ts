@@ -59,7 +59,7 @@ if (import.meta.vitest) {
 	const ctx: PhaseCtx = {
 		prdId: '142',
 		integrationBranch: 'prds-issue-142',
-		config: { usePrs: true, review: false },
+		config: { usePrs: true, review: false, perSliceBranches: true },
 	}
 
 	describe('reconcileSlices', () => {

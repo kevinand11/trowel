@@ -190,7 +190,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	return {
 		name: 'issue',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
-		maxConcurrent: null,
 		capabilities: { prFlow: true },
 		createPrd,
 		branchForExisting,
@@ -281,12 +280,6 @@ if (import.meta.vitest) {
 	}
 
 	describe('issue storage: shape', () => {
-		test('declares maxConcurrent = null (issue storage supports concurrent implementers via per-slice branches; cap comes from user config)', () => {
-			const { deps } = makeDeps([])
-			const storage = createIssueStorage(deps)
-			expect(storage.maxConcurrent).toBeNull()
-		})
-
 		test('declares capabilities.prFlow = true (full PR-based lifecycle)', () => {
 			const { deps } = makeDeps([])
 			const storage = createIssueStorage(deps)
@@ -321,7 +314,7 @@ if (import.meta.vitest) {
 			const prep = await prepareImplement(phaseDeps(deps, storage), makeOpenSlice(), {
 				prdId: '142',
 				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: false },
+				config: { usePrs: true, review: false, perSliceBranches: true },
 			})
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
 			expect(prep.sandboxIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
@@ -338,7 +331,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'ready', commits: 1 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
@@ -360,7 +353,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'ready', commits: 1 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('done')
 			expect(gitCalls).toEqual([
@@ -374,6 +367,35 @@ if (import.meta.vitest) {
 			expect(calls).toContainEqual(['issue', 'close', '145'])
 		})
 
+		test('landImplement + perSliceBranches:false + ready: pushes integration directly, closes sub-issue via updateSlice; returns done', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
+				{ match: (a) => a[0] === 'issue' && a[1] === 'close', respond: { ok: true, stdout: '', stderr: '' } },
+			])
+			const storage = createIssueStorage(deps)
+			const outcome = await landImplement(
+				phaseDeps(deps, storage),
+				makeOpenSlice(),
+				{ verdict: 'ready', commits: 1 },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false, perSliceBranches: false } },
+			)
+			expect(outcome).toBe('done')
+			expect(gitCalls).toEqual([['push', 'prds-issue-142']])
+			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'create')).toBeUndefined()
+			expect(calls).toContainEqual(['issue', 'close', '145'])
+		})
+
+		test('prepareImplement + perSliceBranches:false: runs on the integration branch; no git ops', async () => {
+			const { deps, gitCalls } = makeDeps([])
+			const storage = createIssueStorage(deps)
+			const prep = await prepareImplement(phaseDeps(deps, storage), makeOpenSlice(), {
+				prdId: '142',
+				integrationBranch: 'prds-issue-142',
+				config: { usePrs: false, review: false, perSliceBranches: false },
+			})
+			expect(prep.branch).toBe('prds-issue-142')
+			expect(gitCalls).toEqual([])
+		})
+
 		test('landImplement + no-work-needed: clears readyForAgent via gh label edit, returns no-work', async () => {
 			const { deps, calls } = makeDeps([
 				{ match: (a) => a[0] === 'issue' && a[1] === 'edit', respond: { ok: true, stdout: '', stderr: '' } },
@@ -383,7 +405,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'no-work-needed', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('no-work')
 			expect(calls).toContainEqual(['issue', 'edit', '145', '--remove-label', 'ready-for-agent'])
@@ -396,7 +418,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice(),
 				{ verdict: 'partial', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('partial')
 			expect(gitCalls).toEqual([])
@@ -411,7 +433,7 @@ if (import.meta.vitest) {
 			const prep = await prepareReview(phaseDeps(deps, storage), makeOpenSlice(), {
 				prdId: '142',
 				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: true },
+				config: { usePrs: true, review: true, perSliceBranches: true },
 			})
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
 			expect(prep.sandboxIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
@@ -429,7 +451,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'ready', commits: 2 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
@@ -446,7 +468,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'ready', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('progress')
 			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
@@ -462,7 +484,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'needs-revision', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('progress')
 			expect(calls).toContainEqual(['issue', 'edit', '145', '--add-label', 'needs-revision'])
@@ -477,7 +499,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft' }),
 				{ verdict: 'partial', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('partial')
 			expect(gitCalls).toEqual([])
@@ -495,7 +517,7 @@ if (import.meta.vitest) {
 			const prep = await prepareAddress(phaseDeps(deps, storage), makeOpenSlice({ prState: 'draft', needsRevision: true }), {
 				prdId: '142',
 				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: true },
+				config: { usePrs: true, review: true, perSliceBranches: true },
 			})
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
 			expect(prep.sandboxIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
@@ -511,7 +533,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft', needsRevision: true }),
 				{ verdict: 'ready', commits: 3 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
@@ -527,7 +549,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft', needsRevision: true }),
 				{ verdict: 'no-work-needed', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('no-work')
 			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
@@ -541,7 +563,7 @@ if (import.meta.vitest) {
 				phaseDeps(deps, storage),
 				makeOpenSlice({ prState: 'draft', needsRevision: true }),
 				{ verdict: 'partial', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true } },
+				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
 			)
 			expect(outcome).toBe('partial')
 			expect(gitCalls).toEqual([])

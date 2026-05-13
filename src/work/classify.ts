@@ -52,44 +52,44 @@ if (import.meta.vitest) {
 
 	describe('classify', () => {
 		test('CLOSED → done', () => {
-			expect(classify(makeSlice({ state: 'CLOSED', bucket: 'done' }), { usePrs: true, review: true })).toBe('done')
+			expect(classify(makeSlice({ state: 'CLOSED', bucket: 'done' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
 		})
 
 		test('!readyForAgent → done (slice is a draft waiting on the user)', () => {
-			expect(classify(makeSlice({ readyForAgent: false, bucket: 'draft' }), { usePrs: false, review: false })).toBe('done')
+			expect(classify(makeSlice({ readyForAgent: false, bucket: 'draft' }), { usePrs: false, review: false, perSliceBranches: true })).toBe('done')
 		})
 
 		test('prState merged → done', () => {
-			expect(classify(makeSlice({ prState: 'merged' }), { usePrs: true, review: true })).toBe('done')
+			expect(classify(makeSlice({ prState: 'merged' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
 		})
 
 		test('prState ready → done (awaiting human merge)', () => {
-			expect(classify(makeSlice({ prState: 'ready' }), { usePrs: true, review: true })).toBe('done')
+			expect(classify(makeSlice({ prState: 'ready' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
 		})
 
 		test('prState draft with review: false → done (review opt-out: loop stops at the draft PR)', () => {
-			expect(classify(makeSlice({ prState: 'draft' }), { usePrs: true, review: false })).toBe('done')
+			expect(classify(makeSlice({ prState: 'draft' }), { usePrs: true, review: false, perSliceBranches: true })).toBe('done')
 		})
 
 		test('prState draft with review: true → review (agent reviewer fires)', () => {
-			expect(classify(makeSlice({ prState: 'draft' }), { usePrs: true, review: true })).toBe('review')
+			expect(classify(makeSlice({ prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('review')
 		})
 
 		test('blocked bucket → blocked (takes precedence over implement, after the done short-circuits)', () => {
-			expect(classify(makeSlice({ bucket: 'blocked', blockedBy: ['s0'] }), { usePrs: true, review: true })).toBe('blocked')
+			expect(classify(makeSlice({ bucket: 'blocked', blockedBy: ['s0'] }), { usePrs: true, review: true, perSliceBranches: true })).toBe('blocked')
 		})
 
 		test('needsRevision with a draft PR and review: true → address (addresser handles reviewer feedback)', () => {
-			expect(classify(makeSlice({ needsRevision: true, prState: 'draft' }), { usePrs: true, review: true })).toBe('address')
+			expect(classify(makeSlice({ needsRevision: true, prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('address')
 		})
 
 		test('open slice with no PR yet → implement', () => {
-			expect(classify(makeSlice(), { usePrs: true, review: true })).toBe('implement')
+			expect(classify(makeSlice(), { usePrs: true, review: true, perSliceBranches: true })).toBe('implement')
 		})
 
 		test('file-storage shape (prState null, no PR concept): ready → implement; config flags inert', () => {
-			expect(classify(makeSlice({ bucket: 'ready' }), { usePrs: false, review: false })).toBe('implement')
-			expect(classify(makeSlice({ bucket: 'ready' }), { usePrs: true, review: true })).toBe('implement')
+			expect(classify(makeSlice({ bucket: 'ready' }), { usePrs: false, review: false, perSliceBranches: true })).toBe('implement')
+			expect(classify(makeSlice({ bucket: 'ready' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('implement')
 		})
 	})
 }

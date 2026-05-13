@@ -109,7 +109,7 @@ export type PreparedPhase = {
  */
 export type ResumeState = 'done' | 'blocked' | 'implement' | 'review' | 'address'
 
-export type ClassifySliceConfig = { usePrs: boolean; review: boolean }
+export type ClassifySliceConfig = { usePrs: boolean; review: boolean; perSliceBranches: boolean }
 
 /**
  * Per-loop-invocation context passed to storage methods that need to act against a specific PRD's
@@ -147,12 +147,6 @@ export type StorageFactory = (deps: StorageDeps) => Storage
 export interface Storage {
 	readonly name: string
 	readonly defaultBranchPrefix: string
-	/**
-	 * Declarative concurrency cap. The loop uses `min(config.sandbox.maxConcurrent, storage.maxConcurrent ?? Infinity)`.
-	 * `null` = unbounded (user config wins). File storage declares 1 because its implementer commits
-	 * land directly on the integration branch (no slice branches); parallel implementers would race.
-	 */
-	readonly maxConcurrent: number | null
 
 	/**
 	 * Declarative capabilities a storage exposes to the loop and to config validation.

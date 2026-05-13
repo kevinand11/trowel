@@ -74,6 +74,7 @@ export const partialConfigPipe = () =>
 				sliceStepCap: v.optional(v.number()),
 				usePrs: v.optional(v.boolean()),
 				review: v.optional(v.boolean()),
+				perSliceBranches: v.optional(v.boolean()),
 				worktreeCleanupAge: v.optional(v.string()),
 			}),
 		),
@@ -133,6 +134,7 @@ export type Config = {
 		sliceStepCap: number
 		usePrs: boolean
 		review: boolean
+		perSliceBranches: boolean
 		worktreeCleanupAge: string
 	}
 }
@@ -199,6 +201,10 @@ export const defaultConfig: Config = {
 		// Users who switch to a `prFlow` storage (e.g. `issue`) and want PRs flip both flags.
 		usePrs: false,
 		review: false,
+		// Default true: every workflow runs each slice on its own branch, then host-merges (no PRs)
+		// or opens a draft PR (with `usePrs: true`). Set false to keep the old file-style
+		// integration-direct behavior (one branch per PRD, implementers serialize).
+		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
 	},
 }
@@ -273,6 +279,10 @@ if (import.meta.vitest) {
 
 		test('work.review defaults to false (agent reviewer is opt-in)', () => {
 			expect(defaultConfig.work.review).toBe(false)
+		})
+
+		test('work.perSliceBranches defaults to true (slice-branches by default; host-merges on non-prFlow storages)', () => {
+			expect(defaultConfig.work.perSliceBranches).toBe(true)
 		})
 
 		test('every preconditions check is on by default', () => {
@@ -374,6 +384,11 @@ if (import.meta.vitest) {
 		test('accepts work.review as a boolean', () => {
 			expect(v.validate(partialConfigPipe(), { work: { review: false } }).valid).toBe(true)
 			expect(v.validate(partialConfigPipe(), { work: { review: true } }).valid).toBe(true)
+		})
+
+		test('accepts work.perSliceBranches as a boolean', () => {
+			expect(v.validate(partialConfigPipe(), { work: { perSliceBranches: true } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { work: { perSliceBranches: false } }).valid).toBe(true)
 		})
 
 		test('rejects work.review when non-boolean', () => {

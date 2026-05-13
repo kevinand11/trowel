@@ -63,7 +63,6 @@ if (import.meta.vitest) {
 		return {
 			name,
 			defaultBranchPrefix: '',
-			maxConcurrent: null,
 			capabilities: { prFlow: false },
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',

@@ -30,22 +30,16 @@ function requirePrFlow(storage: Storage, role: 'review' | 'address'): void {
 	}
 }
 
-async function ghOrThrow(gh: GhRunner, args: string[]): Promise<string> {
-	const r = await gh(args)
-	if (!r.ok) throw r.error
-	return r.stdout
-}
-
 /**
  * Prepare the implementer sandbox.
  *
- * - `prFlow: false` (file shape): implementer runs on the integration branch directly — no per-slice
- *   branch (commits land in-place via push at land time).
- * - `prFlow: true` (issue shape): create a per-slice remote branch from the integration branch and
+ * - `perSliceBranches: false`: implementer runs on the integration branch directly — no per-slice
+ *   branch (commits land in-place via push at land time). Used by the legacy file-storage workflow.
+ * - `perSliceBranches: true`: create a per-slice remote branch from the integration branch and
  *   fetch it so the worktree can check it out.
  */
 export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	if (!deps.storage.capabilities.prFlow) {
+	if (!ctx.config.perSliceBranches) {
 		return {
 			branch: ctx.integrationBranch,
 			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
@@ -63,16 +57,20 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 /**
  * Apply the implementer's verdict.
  *
- * Verdict dispatch (both shapes):
+ * Verdict dispatch (all matrix cells):
  * - `partial` → return `'partial'`, no side effects.
  * - `no-work-needed` → clear `readyForAgent` via storage, return `'no-work'`.
  *
- * `ready` handling diverges:
- * - `prFlow: false`: push the integration branch, close the slice in storage, return `'done'`.
- * - `prFlow: true` + `usePrs: true`: push the slice branch, open a draft PR, return `'progress'`.
- *   The next loop iteration's `findSlices` will see the PR and dispatch the reviewer.
- * - `prFlow: true` + `usePrs: false`: push the slice branch, host-side merge `--no-ff` into the
- *   integration branch, push and delete the slice branch, close the sub-issue, return `'done'`.
+ * `ready` handling dispatches on (perSliceBranches × usePrs):
+ * - `perSliceBranches: false`, `usePrs: false`: push integration, close the slice via
+ *   `updateSlice({state: 'CLOSED'})`, return `'done'`. (`usePrs: true` is impossible without
+ *   slice branches — rejected at config load.)
+ * - `perSliceBranches: true`, `usePrs: false`: push slice branch, host-side merge `--no-ff` into
+ *   the integration branch, push and delete the slice branch, close the slice via storage,
+ *   return `'done'`.
+ * - `perSliceBranches: true`, `usePrs: true`: push slice branch, open a draft PR, return
+ *   `'progress'`. The next loop iteration's `findSlices` sees the PR and dispatches the reviewer.
+ *   Requires `prFlow` capability; enforced at config load and defensively re-checked here.
  */
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
@@ -84,7 +82,7 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Sand
 	}
 	if (verdict.verdict !== 'ready') return 'partial'
 
-	if (!deps.storage.capabilities.prFlow) {
+	if (!ctx.config.perSliceBranches) {
 		await deps.git.push(ctx.integrationBranch)
 		deps.log(`${tag} pushed ${ctx.integrationBranch}`)
 		await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
@@ -97,6 +95,9 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Sand
 	deps.log(`${tag} pushed ${branch}`)
 
 	if (ctx.config.usePrs) {
+		if (!deps.storage.capabilities.prFlow) {
+			throw new Error(`usePrs requires capability 'prFlow'; storage '${deps.storage.name}' does not declare it`)
+		}
 		await openDraftPr(deps.gh, slice, branch, ctx.integrationBranch)
 		deps.log(`${tag} opened draft PR for ${branch}`)
 		return 'progress'
@@ -108,8 +109,8 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Sand
 	await deps.git.push(ctx.integrationBranch)
 	await deps.git.deleteRemoteBranch(branch)
 	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
-	await ghOrThrow(deps.gh, ['issue', 'close', slice.id])
-	deps.log(`${tag} closed sub-issue #${slice.id}`)
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+	deps.log(`${tag} closed slice`)
 	return 'done'
 }
 
