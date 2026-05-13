@@ -3,7 +3,7 @@ import path from 'node:path'
 
 import type { Role } from './prompts.ts'
 import { parseVerdict, type SandboxIn, type SandboxOut } from './verdict.ts'
-import type { Slice } from '../backends/types.ts'
+import type { Slice } from '../storages/types.ts'
 
 export type SpawnSandboxArgs = {
 	role: Role
@@ -59,7 +59,6 @@ if (import.meta.vitest) {
 			state: 'OPEN',
 			readyForAgent: true,
 			needsRevision: false,
-			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
 			branchAhead: false,

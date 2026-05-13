@@ -1,14 +1,14 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
-import type { Backend } from '../backends/types.ts'
+import type { Storage } from '../storages/types.ts'
 
 type WorkRuntime = {
-	backend: Backend
+	storage: Storage
 	runLoop: (prdId: string, integrationBranch: string) => Promise<void>
 	stdout: (s: string) => void
 }
 
 async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
-	const prd = await rt.backend.findPrd(prdId)
+	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 	await rt.runLoop(prdId, prd.branch)
 }
@@ -18,11 +18,11 @@ async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
  * The `runAgent` callback inside spawnSandbox is intentionally unimplemented; it needs
  * `@ai-hero/sandcastle` integration (see TODO Section 1, Phase E).
  */
-export async function work(prdId: string, opts: { backend?: string }): Promise<void> {
+export async function work(prdId: string, opts: { storage?: string }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
 		await runWork(prdId, {
-			backend: wiring.backend,
+			storage: wiring.storage,
 			runLoop: wiring.runLoopFor,
 			stdout: (s) => process.stdout.write(s),
 		})
@@ -35,7 +35,7 @@ export async function work(prdId: string, opts: { backend?: string }): Promise<v
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function makeBackend(name: string, prd: { branch: string; title: string } | null): Backend {
+	function makeStorage(name: string, prd: { branch: string; title: string } | null): Storage {
 		return {
 			name,
 			defaultBranchPrefix: '',
@@ -62,11 +62,11 @@ if (import.meta.vitest) {
 	}
 
 	describe('runWork', () => {
-		test('calls runLoop with prdId and the PRD\'s integration branch (no per-backend dispatch)', async () => {
-			const backend = makeBackend('file', { branch: 'prd/abc123-feature', title: 'Feature' })
+		test('calls runLoop with prdId and the PRD\'s integration branch (no per-storage dispatch)', async () => {
+			const storage = makeStorage('file', { branch: 'prd/abc123-feature', title: 'Feature' })
 			const calls: Array<{ prdId: string; branch: string }> = []
 			await runWork('abc123', {
-				backend,
+				storage,
 				runLoop: async (prdId, branch) => {
 					calls.push({ prdId, branch })
 				},
@@ -75,11 +75,11 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([{ prdId: 'abc123', branch: 'prd/abc123-feature' }])
 		})
 
-		test('also calls runLoop on the issue backend (no per-backend dispatch)', async () => {
-			const backend = makeBackend('issue', { branch: 'prds-issue-142', title: 'SSO' })
+		test('also calls runLoop on the issue storage (no per-storage dispatch)', async () => {
+			const storage = makeStorage('issue', { branch: 'prds-issue-142', title: 'SSO' })
 			const calls: Array<{ prdId: string; branch: string }> = []
 			await runWork('142', {
-				backend,
+				storage,
 				runLoop: async (prdId, branch) => {
 					calls.push({ prdId, branch })
 				},
@@ -89,10 +89,10 @@ if (import.meta.vitest) {
 		})
 
 		test('throws when PRD is not found', async () => {
-			const backend = makeBackend('file', null)
+			const storage = makeStorage('file', null)
 			await expect(
 				runWork('zzz', {
-					backend,
+					storage,
 					runLoop: async () => {},
 					stdout: () => {},
 				}),

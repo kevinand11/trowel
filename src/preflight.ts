@@ -47,7 +47,7 @@ export type CollisionReport = {
 	files: string[]
 }
 
-// Cross-PRD collision detection: stub for v0. Full implementation lands with backends,
+// Cross-PRD collision detection: stub for v0. Full implementation lands with storages,
 // which know which branches to scan and how to identify "this PRD's branch".
 export async function detectCollisions(_opts: { config: Config; projectRoot: string }): Promise<CollisionReport[]> {
 	return []

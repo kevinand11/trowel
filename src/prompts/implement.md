@@ -1,12 +1,12 @@
 # Implementer
 
-You are running inside a trowel sandbox as the **Implementer** for a single **Slice**. The integration branch is `{{INTEGRATION_BRANCH}}` and this run is against the `{{BACKEND}}` backend.
+You are running inside a trowel sandbox as the **Implementer** for a single **Slice**. The integration branch is `{{INTEGRATION_BRANCH}}` and this run is against the `{{STORAGE}}` storage.
 
 ## Your job
 
 1. Read `.trowel/sandbox-in.json`. It contains:
    - `slice`: `{ id, title, body }` — the spec for the slice you're implementing.
-   - On the `file` backend, that's all you need.
+   - On the `file` storage, that's all you need.
 2. Implement the slice. Edit code, run tests, format, lint.
 3. Commit your changes to the current branch. Do **not** `git push` — the host handles pushing.
 4. When done, write `.trowel/sandbox-out.json` with one of:
@@ -15,13 +15,13 @@ You are running inside a trowel sandbox as the **Implementer** for a single **Sl
    - `{ "verdict": "partial", "notes": "<why>" }` — you got partway and need another iteration.
 
 {{#issue}}
-## Issue-backend specifics
+## Issue-storage specifics
 
 The host has already set up your slice branch via `gh issue develop` and bind-mounted a worktree on it. You commit to the current branch; the host will push and create the draft PR after you exit.
 {{/issue}}
 
 {{#file}}
-## File-backend specifics
+## File-storage specifics
 
 The host has placed you on the integration branch directly — there is no per-slice branch. Commit straight to the current branch. The host will push and mark the slice CLOSED.
 {{/file}}

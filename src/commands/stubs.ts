@@ -1,5 +1,5 @@
 /**
- * Shared stubs for commands whose real implementation is deferred to per-backend
+ * Shared stubs for commands whose real implementation is deferred to per-storage
  * grilling sessions or the sandcastle port. Each prints a clear "not implemented"
  * message and exits non-zero.
  */
@@ -9,8 +9,8 @@ function notImplemented(commandName: string, reason: string): never {
 	process.exit(1)
 }
 
-export async function start(opts: { prd?: string; backend?: string }): Promise<void> {
-	notImplemented('start', `Requires a backend implementation. Backends are deferred to per-backend grilling. Opts: ${JSON.stringify(opts)}`)
+export async function start(opts: { prd?: string; storage?: string }): Promise<void> {
+	notImplemented('start', `Requires a storage implementation. Storages are deferred to per-storage grilling. Opts: ${JSON.stringify(opts)}`)
 }
 
 export async function diagnose(desc: string): Promise<void> {

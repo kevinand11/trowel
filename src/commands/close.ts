@@ -2,24 +2,16 @@ import path from 'node:path'
 
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
-import { getBackend } from '../backends/registry.ts'
-import type { Backend, BackendDeps, DeleteBranchPolicy } from '../backends/types.ts'
 import { loadConfig } from '../config.ts'
+import { getStorage } from '../storages/registry.ts'
+import type { Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
-import { tryExec } from '../utils/shell.ts'
+import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
 
 type OpenPr = { number: number; url: string }
 
-type GitOps = {
-	currentBranch: () => Promise<string>
-	branchExists: (branch: string) => Promise<boolean>
-	isMerged: (branch: string, base: string) => Promise<boolean>
-	checkout: (branch: string) => Promise<void>
-	deleteBranch: (branch: string) => Promise<void>
-}
-
 type CloseRuntime = {
-	backend: Backend
+	storage: Storage
 	baseBranch: string
 	deleteBranchPolicy: DeleteBranchPolicy
 	confirm: (msg: string) => Promise<boolean>
@@ -31,10 +23,10 @@ type CloseRuntime = {
 async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
 
-	const prd = await rt.backend.findPrd(prdId)
+	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 
-	const slices = await rt.backend.findSlices(prdId)
+	const slices = await rt.storage.findSlices(prdId)
 	const openSlices = slices.filter((s) => s.state === 'OPEN')
 	if (openSlices.length > 0) {
 		const ids = openSlices.map((s) => s.id).join(', ')
@@ -44,12 +36,12 @@ async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 			return
 		}
 		for (const s of openSlices) {
-			await rt.backend.updateSlice(prdId, s.id, { state: 'CLOSED' })
+			await rt.storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
 		}
 	}
 
 	if (prd.state === 'OPEN') {
-		await rt.backend.close(prdId)
+		await rt.storage.close(prdId)
 	} else {
 		rt.stdout(`PRD '${prdId}' already closed in store.\n`)
 	}
@@ -100,64 +92,30 @@ async function maybeDeleteBranch(branch: string, backTo: string, rt: CloseRuntim
 	}
 }
 
-export async function close(prdId: string, opts: { backend?: string }): Promise<void> {
+export async function close(prdId: string, opts: { storage?: string }): Promise<void> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel close: no project root found\n')
 		process.exit(1)
 	}
 
-	const backendKind = opts.backend ?? config.backend
+	const storageKind = opts.storage ?? config.storage
 	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
 
-	const noopBackendGit = {
-		fetch: async () => {},
-		push: async () => {},
-		checkout: async () => {},
-		mergeNoFf: async () => {},
-		deleteRemoteBranch: async () => {},
-		createRemoteBranch: async () => {},
-	}
-	const backendDeps: BackendDeps = {
+	const git = createRepoGit(projectRoot)
+	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
 		baseBranch: config.baseBranch,
 		branchPrefix: config.branchPrefix,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		docMsg: config.commit.docMsg,
 		labels: config.labels,
 		closeOptions: config.close,
 		confirm: promptConfirm,
-		git: noopBackendGit,
-		log: () => {},
+		git,
 	}
-	const backend = getBackend(backendKind, backendDeps)
-
-	const git: GitOps = {
-		currentBranch: async () => {
-			const r = await tryExec('git', ['-C', projectRoot, 'rev-parse', '--abbrev-ref', 'HEAD'])
-			return r.ok ? r.stdout.trim() : ''
-		},
-		branchExists: async (b) => {
-			const local = await tryExec('git', ['-C', projectRoot, 'branch', '--list', b])
-			if (local.ok && local.stdout.trim() !== '') return true
-			const remote = await tryExec('git', ['-C', projectRoot, 'ls-remote', '--heads', 'origin', b])
-			return remote.ok && remote.stdout.trim() !== ''
-		},
-		isMerged: async (b, base) => {
-			const r = await tryExec('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', b, `origin/${base}`])
-			return r.ok
-		},
-		checkout: async (b) => {
-			const r = await tryExec('git', ['-C', projectRoot, 'checkout', '-q', b])
-			if (!r.ok) throw r.error
-		},
-		deleteBranch: async (b) => {
-			await tryExec('git', ['-C', projectRoot, 'branch', '-q', '-D', b])
-			await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `:${b}`])
-		},
-	}
+	const storage = getStorage(storageKind, storageDeps)
 
 	const listOpenPrs = async (baseBranch: string): Promise<OpenPr[]> => {
 		const r = await realGhRunner(['pr', 'list', '--base', baseBranch, '--state', 'open', '--json', 'number,url'])
@@ -167,7 +125,7 @@ export async function close(prdId: string, opts: { backend?: string }): Promise<
 
 	try {
 		await runClose(prdId, {
-			backend,
+			storage,
 			baseBranch: config.baseBranch,
 			deleteBranchPolicy: config.close.deleteBranch,
 			confirm: promptConfirm,
@@ -183,16 +141,15 @@ export async function close(prdId: string, opts: { backend?: string }): Promise<
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { classify } = await import('../utils/bucket.ts')
 
-	type FakeBackendState = {
+	type FakeStorageState = {
 		prd: { id: string; branch: string; title: string; state: 'OPEN' | 'CLOSED' } | null
 		slices: Array<{ id: string; title: string; body: string; state: 'OPEN' | 'CLOSED'; readyForAgent: boolean; needsRevision: boolean }>
 	}
 
-	function fakeBackend(state: FakeBackendState): { backend: Backend; calls: string[] } {
+	function fakeStorage(state: FakeStorageState): { storage: Storage; calls: string[] } {
 		const calls: string[] = []
-		const backend: Backend = {
+		const storage: Storage = {
 			name: 'fake',
 			defaultBranchPrefix: '',
 			maxConcurrent: null,
@@ -231,7 +188,6 @@ if (import.meta.vitest) {
 					blockedBy: [],
 					prState: null,
 					branchAhead: false,
-					bucket: classify(s, { hasOpenPr: false, unmetDepIds: [] }),
 				}))
 			},
 			updateSlice: async (_pid, sliceId, patch) => {
@@ -242,7 +198,7 @@ if (import.meta.vitest) {
 				if (s && patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
 			},
 		}
-		return { backend, calls }
+		return { storage, calls }
 	}
 
 	type GitState = {
@@ -265,19 +221,27 @@ if (import.meta.vitest) {
 				calls.push(`deleteBranch(${b})`)
 				state.branches.delete(b)
 			},
+			// unused in close tests; the GitOps shape is the canonical 12-method bag
+			fetch: async () => {},
+			push: async () => {},
+			mergeNoFf: async () => {},
+			deleteRemoteBranch: async () => {},
+			createRemoteBranch: async () => {},
+			createLocalBranch: async () => {},
+			pushSetUpstream: async () => {},
 		}
 		return { git, calls }
 	}
 
 	describe('close: PRD not found', () => {
-		test('throws when backend.findPrd returns null', async () => {
-			const state: FakeBackendState = { prd: null, slices: [] }
+		test('throws when storage.findPrd returns null', async () => {
+			const state: FakeStorageState = { prd: null, slices: [] }
 			const gitState: GitState = { current: 'main', branches: new Set(['main']), mergedAncestors: new Map() }
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			await expect(
 				runClose('99', {
-					backend,
+					storage,
 					baseBranch: 'main',
 					deleteBranchPolicy: 'never',
 					confirm: async () => false,
@@ -290,8 +254,8 @@ if (import.meta.vitest) {
 	})
 
 	describe('close: idempotent on already-closed PRD', () => {
-		test('does not call backend.close when prd state is CLOSED', async () => {
-			const state: FakeBackendState = {
+		test('does not call storage.close when prd state is CLOSED', async () => {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'CLOSED' },
 				slices: [],
 			}
@@ -300,11 +264,11 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature']),
 				mergedAncestors: new Map(),
 			}
-			const { backend, calls } = fakeBackend(state)
+			const { storage, calls } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			let stdoutBuf = ''
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => false,
@@ -319,7 +283,7 @@ if (import.meta.vitest) {
 		})
 
 		test('still attempts branch delete on a closed PRD when branch still exists', async () => {
-			const state: FakeBackendState = {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'CLOSED' },
 				slices: [],
 			}
@@ -328,10 +292,10 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature']),
 				mergedAncestors: new Map([['42-feature', ['main']]]),
 			}
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => false,
@@ -347,7 +311,7 @@ if (import.meta.vitest) {
 		const baseSlice = { title: 'X', body: '', readyForAgent: false, needsRevision: false }
 
 		test('warns with slice ids and confirms before auto-closing', async () => {
-			const state: FakeBackendState = {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
 				slices: [
 					{ id: 's1', ...baseSlice, state: 'OPEN' },
@@ -356,11 +320,11 @@ if (import.meta.vitest) {
 				],
 			}
 			const gitState: GitState = { current: 'main', branches: new Set(['main', '42-feature']), mergedAncestors: new Map() }
-			const { backend, calls } = fakeBackend(state)
+			const { storage, calls } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			let confirmMsg = ''
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async (m) => {
@@ -379,17 +343,17 @@ if (import.meta.vitest) {
 			expect(calls).toContain('close(42)')
 		})
 
-		test('declining the warn → no auto-close, no backend.close, no branch ops', async () => {
-			const state: FakeBackendState = {
+		test('declining the warn → no auto-close, no storage.close, no branch ops', async () => {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
 				slices: [{ id: 's1', ...baseSlice, state: 'OPEN' }],
 			}
 			const gitState: GitState = { current: 'main', branches: new Set(['main', '42-feature']), mergedAncestors: new Map() }
-			const { backend, calls: bCalls } = fakeBackend(state)
+			const { storage, calls: bCalls } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			let stdoutBuf = ''
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => false,
@@ -406,17 +370,17 @@ if (import.meta.vitest) {
 			expect(stdoutBuf).toMatch(/aborted/i)
 		})
 
-		test('no open slices → no prompt, proceeds straight to backend.close', async () => {
-			const state: FakeBackendState = {
+		test('no open slices → no prompt, proceeds straight to storage.close', async () => {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
 				slices: [{ id: 's1', ...baseSlice, state: 'CLOSED' }],
 			}
 			const gitState: GitState = { current: 'main', branches: new Set(['main', '42-feature']), mergedAncestors: new Map() }
-			const { backend, calls } = fakeBackend(state)
+			const { storage, calls } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			let confirmCalled = 0
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => {
@@ -433,8 +397,8 @@ if (import.meta.vitest) {
 	})
 
 	describe('close: tracer (PRD open, no slices, policy=never)', () => {
-		test('calls backend.close, leaves branch intact, returns user to BACK_TO', async () => {
-			const state: FakeBackendState = {
+		test('calls storage.close, leaves branch intact, returns user to BACK_TO', async () => {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'Feature', state: 'OPEN' },
 				slices: [],
 			}
@@ -443,10 +407,10 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature']),
 				mergedAncestors: new Map(),
 			}
-			const { backend, calls: bCalls } = fakeBackend(state)
+			const { storage, calls: bCalls } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => false,
@@ -463,7 +427,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('close: branch deletion policy', () => {
-		function happyState(): { state: FakeBackendState; gitState: GitState } {
+		function happyState(): { state: FakeStorageState; gitState: GitState } {
 			return {
 				state: { prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' }, slices: [] },
 				gitState: {
@@ -476,11 +440,11 @@ if (import.meta.vitest) {
 
 		test("policy='always' + merged + no open PRs → deletes without confirm", async () => {
 			const { state, gitState } = happyState()
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			let confirmCalls = 0
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => {
@@ -498,11 +462,11 @@ if (import.meta.vitest) {
 
 		test("policy='prompt' → asks once; user declines → no delete", async () => {
 			const { state, gitState } = happyState()
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			const msgs: string[] = []
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'prompt',
 				confirm: async (m) => {
@@ -521,11 +485,11 @@ if (import.meta.vitest) {
 
 		test("policy='prompt' + accept → deletes; merged so no extra warnings", async () => {
 			const { state, gitState } = happyState()
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			const msgs: string[] = []
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'prompt',
 				confirm: async (m) => {
@@ -542,11 +506,11 @@ if (import.meta.vitest) {
 
 		test("policy='never' → never prompts and never deletes", async () => {
 			const { state, gitState } = happyState()
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			let confirmCalls = 0
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => {
@@ -563,12 +527,12 @@ if (import.meta.vitest) {
 
 		test('open slice PRs → warn + confirm before delete; decline → keep branch', async () => {
 			const { state, gitState } = happyState()
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			const msgs: string[] = []
 			let stdoutBuf = ''
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async (m) => {
@@ -589,11 +553,11 @@ if (import.meta.vitest) {
 		test('unmerged branch → warn + confirm; decline → keep branch', async () => {
 			const { state, gitState } = happyState()
 			gitState.mergedAncestors = new Map() // branch not merged
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			const msgs: string[] = []
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async (m) => {
@@ -611,10 +575,10 @@ if (import.meta.vitest) {
 		test('unmerged + accept → deletes', async () => {
 			const { state, gitState } = happyState()
 			gitState.mergedAncestors = new Map()
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
@@ -628,7 +592,7 @@ if (import.meta.vitest) {
 
 	describe('close: BACK_TO restoration', () => {
 		test('currently on integration branch + delete → switches to baseBranch + stays there', async () => {
-			const state: FakeBackendState = {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
 				slices: [],
 			}
@@ -637,11 +601,11 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature']),
 				mergedAncestors: new Map([['42-feature', ['main']]]),
 			}
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			let stdoutBuf = ''
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
@@ -657,7 +621,7 @@ if (import.meta.vitest) {
 		})
 
 		test('currently on baseBranch → no checkout calls', async () => {
-			const state: FakeBackendState = {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
 				slices: [],
 			}
@@ -666,10 +630,10 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature']),
 				mergedAncestors: new Map([['42-feature', ['main']]]),
 			}
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
@@ -681,7 +645,7 @@ if (import.meta.vitest) {
 		})
 
 		test('currently on unrelated branch + delete integration → restores user to BACK_TO branch', async () => {
-			const state: FakeBackendState = {
+			const state: FakeStorageState = {
 				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
 				slices: [],
 			}
@@ -690,10 +654,10 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature', 'experiment']),
 				mergedAncestors: new Map([['42-feature', ['main']]]),
 			}
-			const { backend } = fakeBackend(state)
+			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
 			await runClose('42', {
-				backend,
+				storage,
 				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,

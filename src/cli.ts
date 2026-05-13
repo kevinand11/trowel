@@ -21,7 +21,7 @@ export function run(): void {
 		.command('start')
 		.description('Start a new PRD: grill, create artifacts, branch, slice')
 		.option('--prd <id>', 'Resume an existing PRD by id')
-		.option('--backend <kind>', 'Override project backend')
+		.option('--storage <kind>', 'Override project storage')
 		.action(async (opts) => {
 			await stubs.start(opts)
 		})
@@ -30,7 +30,7 @@ export function run(): void {
 		.command('work')
 		.description('Run the AFK loop on a PRD\'s open slices')
 		.argument('<prd-id>')
-		.option('--backend <kind>', 'Override project backend')
+		.option('--storage <kind>', 'Override project storage')
 		.action(async (prdId: string, opts) => {
 			await work(prdId, opts)
 		})
@@ -39,7 +39,7 @@ export function run(): void {
 		.command('close')
 		.description('Close a PRD and tidy branches/orphans')
 		.argument('<prd-id>')
-		.option('--backend <kind>', 'Override project backend')
+		.option('--storage <kind>', 'Override project storage')
 		.action(async (prdId: string, opts) => {
 			await close(prdId, opts)
 		})
@@ -48,7 +48,7 @@ export function run(): void {
 		.command('status')
 		.description('Show a PRD\'s current state (done / in-flight / ready slices)')
 		.argument('<prd-id>')
-		.option('--backend <kind>', 'Override project backend')
+		.option('--storage <kind>', 'Override project storage')
 		.action(async (prdId: string, opts) => {
 			await status(prdId, opts)
 		})
@@ -67,14 +67,14 @@ export function run(): void {
 		.command('prds')
 		.description('List PRDs in this project')
 		.option('--state <kind>', 'Filter by state: open | closed | all', 'open')
-		.option('--backend <kind>', 'Override project backend')
-		.action(async (opts: { state: string; backend?: string }) => {
+		.option('--storage <kind>', 'Override project storage')
+		.action(async (opts: { state: string; storage?: string }) => {
 			const validStates: PrdState[] = ['open', 'closed', 'all']
 			if (!validStates.includes(opts.state as PrdState)) {
 				process.stderr.write(`trowel list prds: invalid --state '${opts.state}' (expected open | closed | all)\n`)
 				process.exit(1)
 			}
-			await list(opts.state as PrdState, { backend: opts.backend })
+			await list(opts.state as PrdState, { storage: opts.storage })
 		})
 
 	program

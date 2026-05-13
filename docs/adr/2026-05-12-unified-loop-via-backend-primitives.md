@@ -1,6 +1,8 @@
 # Unified AFK loop driver; Backend exposes per-role primitives
 
 > **Supersedes:** [2026-05-11-afk-loop-asymmetric-across-backends.md](./2026-05-11-afk-loop-asymmetric-across-backends.md).
+>
+> **Superseded by:** [2026-05-13-storage-behavior-separation.md](./2026-05-13-storage-behavior-separation.md). The per-role primitives (`prepare<Role>` / `land<Role>` / `classifySlice` / `reconcileSlices`) move off the **Backend** (renamed **Storage**) into the loop driver itself; storage becomes pure persistence. The "throw on unsupported phase" runtime invariant goes away because storages no longer expose phase methods at all — phase enablement is driven by user **Flags** gated by storage **Capabilities** (`prFlow`). The text below describes the previous design.
 
 The **AFK loop** runs from a single driver in `src/work/loop.ts`. It iterates the actionable **Slice** queue, calls `Backend.classifySlice(slice, config)` to pick the next role for that slice, calls the backend's `prepare<Role>` method to set up the **Slice branch** and `SandboxIn`, spawns the **Sandbox** itself, then calls the backend's `land<Role>` method to apply the **Verdict**. The previously-separate `src/work/loops/file.ts` and `src/work/loops/issue.ts` files are deleted.
 

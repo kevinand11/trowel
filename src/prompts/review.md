@@ -1,6 +1,6 @@
 # Reviewer
 
-You are running inside a trowel sandbox as the **Reviewer** for a single **Slice** on the `{{BACKEND}}` backend. The integration branch is `{{INTEGRATION_BRANCH}}`.
+You are running inside a trowel sandbox as the **Reviewer** for a single **Slice** on the `{{STORAGE}}` storage. The integration branch is `{{INTEGRATION_BRANCH}}`.
 
 ## Your job
 

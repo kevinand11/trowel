@@ -80,8 +80,8 @@ export async function loadConfig(cwd: string = process.cwd(), home: string = hom
 	// Derive collision branchPattern if empty.
 	// Build a fresh object instead of mutating — `config.collision` may share
 	// a reference with `defaultConfig.collision` when no layer touched it.
-	// branchPrefix may be null (means "use backend default"); we leave the
-	// pattern empty in that case — callers resolve against the backend.
+	// branchPrefix may be null (means "use storage default"); we leave the
+	// pattern empty in that case — callers resolve against the storage.
 	if (!config.collision.branchPattern && config.branchPrefix !== null) {
 		config = {
 			...config,
@@ -150,7 +150,7 @@ if (import.meta.vitest) {
 
 		test('returns hard-coded defaults when no config files exist', async () => {
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.backend).toBe('file')
+			expect(resolved.config.storage).toBe('file')
 			expect(resolved.loaded).toEqual([])
 		})
 
@@ -177,8 +177,8 @@ if (import.meta.vitest) {
 			expect(resolved.config.baseBranch).toBe('private-branch')
 		})
 
-		test('rejects an invalid backend in a layer file', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { backend: 'mongo' })
+		test('rejects an invalid storage in a layer file', async () => {
+			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'mongo' })
 			await expect(loadConfig(project, home)).rejects.toThrow(/Invalid config at/)
 		})
 

@@ -1,5 +1,7 @@
 # Backends own slice bucket classification
 
+> **Superseded by:** [2026-05-13-storage-behavior-separation.md](./2026-05-13-storage-behavior-separation.md). Under the storage / behavior split, bucket classification moves from the storage to the AFK-loop driver. The storage's `findSlices` returns a raw `Slice` without a `bucket` field; the loop computes the bucket from the raw slice plus PR-state queries (when `usePrs: true`). The text below describes the previous design.
+
 `trowel status <prd-id>` groups slices into mutually-exclusive **Buckets** that describe a slice's position in its lifecycle. The bucket is assigned by the backend inside `findSlices`, not by the status command. `Slice` gains a `bucket` field as part of the interface contract; status reads it and renders.
 
 The six buckets, evaluated top-to-bottom (first match wins):

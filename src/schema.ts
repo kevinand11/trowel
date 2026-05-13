@@ -1,10 +1,10 @@
 import { v, type DeepPartial, type PipeOutput } from 'valleyed'
 
-import { backendFactories } from './backends/registry.ts'
+import { storageFactories } from './storages/registry.ts'
 
 export const partialConfigPipe = () =>
 	v.object({
-		backend: v.optional(v.in(Object.keys(backendFactories))),
+		storage: v.optional(v.in(Object.keys(storageFactories))),
 		branchPrefix: v.optional(v.nullable(v.string())),
 		baseBranch: v.optional(v.string()),
 		docs: v.optional(
@@ -13,13 +13,6 @@ export const partialConfigPipe = () =>
 				adrDir: v.optional(v.string()),
 				contextMapPath: v.optional(v.string()),
 				prdsDir: v.optional(v.string()),
-			}),
-		),
-		commit: v.optional(
-			v.object({
-				convention: v.optional(v.in(['conventional', 'none'] as const)),
-				docMsg: v.optional(v.string()),
-				sign: v.optional(v.boolean()),
 			}),
 		),
 		phases: v.optional(
@@ -89,7 +82,7 @@ export const partialConfigPipe = () =>
 export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
-	backend: string
+	storage: string
 	branchPrefix: string | null
 	baseBranch: string
 	docs: {
@@ -97,11 +90,6 @@ export type Config = {
 		adrDir: string
 		contextMapPath: string
 		prdsDir: string
-	}
-	commit: {
-		convention: 'conventional' | 'none'
-		docMsg: string
-		sign: boolean
 	}
 	phases: {
 		grill: boolean
@@ -158,7 +146,7 @@ export type InitableLayer = Exclude<ConfigLayer, 'default'>
 
 // Hard-coded defaults — the 'default' layer. Every field present.
 export const defaultConfig: Config = {
-	backend: 'file',
+	storage: 'file',
 	branchPrefix: null,
 	baseBranch: 'main',
 	docs: {
@@ -166,11 +154,6 @@ export const defaultConfig: Config = {
 		adrDir: 'docs/adr',
 		contextMapPath: 'docs/CONTEXT-MAP.md',
 		prdsDir: 'docs/prds',
-	},
-	commit: {
-		convention: 'conventional',
-		docMsg: 'docs(prd-${id}): land context for ${title}',
-		sign: false,
 	},
 	phases: {
 		grill: true,
@@ -247,11 +230,11 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
 	describe('defaultConfig', () => {
-		test('uses file as the default backend', () => {
-			expect(defaultConfig.backend).toBe('file')
+		test('uses file as the default storage', () => {
+			expect(defaultConfig.storage).toBe('file')
 		})
 
-		test('branchPrefix is null by default (backend supplies its own)', () => {
+		test('branchPrefix is null by default (storage supplies its own)', () => {
 			expect(defaultConfig.branchPrefix).toBeNull()
 		})
 
@@ -304,8 +287,8 @@ if (import.meta.vitest) {
 		})
 
 		test('overrides a primitive value at the top level', () => {
-			const result = mergePartial(defaultConfig, { backend: 'issue' })
-			expect(result.backend).toBe('issue')
+			const result = mergePartial(defaultConfig, { storage: 'issue' })
+			expect(result.storage).toBe('issue')
 			expect(result.baseBranch).toBe(defaultConfig.baseBranch)
 		})
 
@@ -333,7 +316,7 @@ if (import.meta.vitest) {
 
 		test('does not mutate the base', () => {
 			const baseSnapshot = JSON.parse(JSON.stringify(defaultConfig))
-			mergePartial(defaultConfig, { backend: 'issue', agent: { model: 'sonnet' } })
+			mergePartial(defaultConfig, { storage: 'issue', agent: { model: 'sonnet' } })
 			expect(defaultConfig).toEqual(baseSnapshot)
 		})
 	})
@@ -400,8 +383,8 @@ if (import.meta.vitest) {
 			expect(result.valid).toBe(false)
 		})
 
-		test('rejects an unknown backend value', () => {
-			const result = v.validate(partialConfigPipe(), { backend: 'mongo' })
+		test('rejects an unknown storage value', () => {
+			const result = v.validate(partialConfigPipe(), { storage: 'mongo' })
 			expect(result.valid).toBe(false)
 		})
 

@@ -1,9 +1,9 @@
 import path from 'node:path'
 
-import { getBackend } from '../backends/registry.ts'
-import type { Backend, BackendDeps, PrdSummary, Slice } from '../backends/types.ts'
 import { loadConfig } from '../config.ts'
-import type { Bucket } from '../utils/bucket.ts'
+import { getStorage } from '../storages/registry.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, PrdSummary } from '../storages/types.ts'
+import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
@@ -13,7 +13,7 @@ export type PrdState = 'open' | 'closed' | 'all'
 type PrdListRow = {
 	summary: PrdSummary
 	state: 'OPEN' | 'CLOSED'
-	slices: Slice[]
+	slices: ClassifiedSlice[]
 }
 
 function renderList(rows: PrdListRow[], filter: PrdState): string {
@@ -47,16 +47,16 @@ function formatCounts(counts: Record<Bucket, number>): string {
 }
 
 type ListRuntime = {
-	backend: Backend
+	storage: Storage
 	stdout: (s: string) => void
 }
 
 async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
-	const summaries = await rt.backend.listPrds({ state: filter })
+	const summaries = await rt.storage.listPrds({ state: filter })
 	const rows: PrdListRow[] = await Promise.all(
 		summaries.map(async (summary) => {
-			const slices = await rt.backend.findSlices(summary.id)
-			const found = await rt.backend.findPrd(summary.id)
+			const slices = classifySlices(await rt.storage.findSlices(summary.id))
+			const found = await rt.storage.findPrd(summary.id)
 			const state: 'OPEN' | 'CLOSED' = found?.state ?? 'OPEN'
 			return { summary, state, slices }
 		}),
@@ -64,39 +64,28 @@ async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
 	rt.stdout(renderList(rows, filter))
 }
 
-export async function list(filter: PrdState, opts: { backend?: string }): Promise<void> {
+export async function list(filter: PrdState, opts: { storage?: string }): Promise<void> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel list: no project root found\n')
 		process.exit(1)
 	}
-	const backendKind = opts.backend ?? config.backend
-	const noopGit = {
-		fetch: async () => {},
-		push: async () => {},
-		checkout: async () => {},
-		mergeNoFf: async () => {},
-		deleteRemoteBranch: async () => {},
-		createRemoteBranch: async () => {},
-	}
-	const backendDeps: BackendDeps = {
+	const storageKind = opts.storage ?? config.storage
+	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
 		baseBranch: config.baseBranch,
 		branchPrefix: config.branchPrefix,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		docMsg: config.commit.docMsg,
 		labels: config.labels,
 		closeOptions: config.close,
-		confirm: async () => false,
-		git: noopGit,
-		log: () => {},
+		// list is read-only: no git, no confirm, no log needed.
 	}
-	const backend = getBackend(backendKind, backendDeps)
+	const storage = getStorage(storageKind, storageDeps)
 	try {
 		await runListPrds(filter, {
-			backend,
+			storage,
 			stdout: (s) => process.stdout.write(s),
 		})
 	} catch (error) {
@@ -108,7 +97,7 @@ export async function list(filter: PrdState, opts: { backend?: string }): Promis
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function fakeSlice(overrides: Partial<Slice> = {}): Slice {
+	function fakeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
 			id: 's1',
 			title: 'A slice',
@@ -186,7 +175,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('runListPrds', () => {
-		function fakeBackend(overrides: Partial<Backend>): Backend {
+		function fakeStorage(overrides: Partial<Storage>): Storage {
 			return {
 				name: 'fake',
 				defaultBranchPrefix: '',
@@ -217,21 +206,21 @@ if (import.meta.vitest) {
 			}
 		}
 
-		test('passes the filter through to backend.listPrds', async () => {
+		test('passes the filter through to storage.listPrds', async () => {
 			let receivedState: PrdState | null = null
-			const backend = fakeBackend({
+			const storage = fakeStorage({
 				listPrds: async (opts) => {
 					receivedState = opts.state
 					return []
 				},
 			})
 			const captured: string[] = []
-			await runListPrds('closed', { backend, stdout: (s) => captured.push(s) })
+			await runListPrds('closed', { storage, stdout: (s) => captured.push(s) })
 			expect(receivedState).toBe('closed')
 		})
 
 		test('aborts the whole command when one findSlices rejects', async () => {
-			const backend = fakeBackend({
+			const storage = fakeStorage({
 				listPrds: async () => [
 					{ id: 'a', title: 'A', branch: 'b/a' },
 					{ id: 'b', title: 'B', branch: 'b/b' },
@@ -242,7 +231,7 @@ if (import.meta.vitest) {
 					return []
 				},
 			})
-			await expect(runListPrds('open', { backend, stdout: () => {} })).rejects.toThrow(/rate limited/)
+			await expect(runListPrds('open', { storage, stdout: () => {} })).rejects.toThrow(/rate limited/)
 		})
 	})
 }

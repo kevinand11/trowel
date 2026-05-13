@@ -5,13 +5,13 @@ import path from 'node:path'
 import { confirm, input, select } from '@inquirer/prompts'
 import { v } from 'valleyed'
 
-import { backendFactories } from '../backends/registry.ts'
 import { pathForLayer } from '../config.ts'
 import { resolveProjectRoot } from '../project.ts'
 import { partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
+import { storageFactories } from '../storages/registry.ts'
 
 type InitPrompts = {
-	backend: (current: string) => Promise<string>
+	storage: (current: string) => Promise<string>
 	branchPrefix: (current: string) => Promise<string>
 	confirm: (msg: string) => Promise<boolean>
 }
@@ -49,12 +49,12 @@ async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 
 	const existing = await readExisting(filePath)
 
-	const currentBackend = existing?.backend ?? 'file'
-	const backendAnswer = await opts.prompts.backend(currentBackend)
+	const currentStorage = existing?.storage ?? 'file'
+	const storageAnswer = await opts.prompts.storage(currentStorage)
 
-	const merged: Record<string, unknown> = { ...(existing ?? {}), backend: backendAnswer }
+	const merged: Record<string, unknown> = { ...(existing ?? {}), storage: storageAnswer }
 
-	if (backendAnswer === 'issue') {
+	if (storageAnswer === 'issue') {
 		const currentPrefix = existing?.branchPrefix ?? 'prds-issue-'
 		merged.branchPrefix = await opts.prompts.branchPrefix(currentPrefix)
 	}
@@ -79,12 +79,12 @@ export async function init(layerArg: string): Promise<void> {
 		process.exit(1)
 	}
 
-	const backendChoices = Object.keys(backendFactories).map((name) => ({ name, value: name }))
+	const storageChoices = Object.keys(storageFactories).map((name) => ({ name, value: name }))
 	const prompts: InitPrompts = {
-		backend: (current) =>
+		storage: (current) =>
 			select({
-				message: 'Backend',
-				choices: backendChoices,
+				message: 'Storage',
+				choices: storageChoices,
 				default: current,
 			}),
 		branchPrefix: (current) =>
@@ -142,9 +142,9 @@ if (import.meta.vitest) {
 		await rm(path.dirname(f.home), { recursive: true, force: true })
 	}
 
-	function fixedPrompts(backend: string, branchPrefix: string, confirm: boolean): InitPrompts {
+	function fixedPrompts(storage: string, branchPrefix: string, confirm: boolean): InitPrompts {
 		return {
-			backend: async () => backend,
+			storage: async () => storage,
 			branchPrefix: async () => branchPrefix,
 			confirm: async () => confirm,
 		}
@@ -159,7 +159,7 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('writes a sparse file with just the chosen backend at <projectRoot>/.trowel/config.json', async () => {
+		test('writes a sparse file with just the chosen storage at <projectRoot>/.trowel/config.json', async () => {
 			const result = await runInit({
 				layer: 'project',
 				cwd: f.project,
@@ -170,11 +170,11 @@ if (import.meta.vitest) {
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.project, '.trowel', 'config.json'))
 			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toEqual({ backend: 'file' })
+			expect(JSON.parse(raw)).toEqual({ storage: 'file' })
 		})
 	})
 
-	describe('init: branchPrefix prompt is conditional on backend', () => {
+	describe('init: branchPrefix prompt is conditional on storage', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -183,14 +183,14 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('backend=file → branchPrefix prompt is NOT called; no branchPrefix in output', async () => {
+		test('storage=file → branchPrefix prompt is NOT called; no branchPrefix in output', async () => {
 			let prefixCalled = 0
 			await runInit({
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					backend: async () => 'file',
+					storage: async () => 'file',
 					branchPrefix: async () => {
 						prefixCalled++
 						return 'should-not-be-stored'
@@ -204,14 +204,14 @@ if (import.meta.vitest) {
 			expect(written).not.toHaveProperty('branchPrefix')
 		})
 
-		test("backend=issue → branchPrefix prompt is called with 'prds-issue-' as default; value stored", async () => {
+		test("storage=issue → branchPrefix prompt is called with 'prds-issue-' as default; value stored", async () => {
 			let prefixDefault = ''
 			await runInit({
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					backend: async () => 'issue',
+					storage: async () => 'issue',
 					branchPrefix: async (current) => {
 						prefixDefault = current
 						return 'prds-issue-'
@@ -222,13 +222,13 @@ if (import.meta.vitest) {
 			})
 			expect(prefixDefault).toBe('prds-issue-')
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written).toEqual({ backend: 'issue', branchPrefix: 'prds-issue-' })
+			expect(written).toEqual({ storage: 'issue', branchPrefix: 'prds-issue-' })
 		})
 
-		test('backend=issue + existing branchPrefix → prompt uses existing as default', async () => {
+		test('storage=issue + existing branchPrefix → prompt uses existing as default', async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ backend: 'issue', branchPrefix: 'feat/' }), 'utf8')
+			await write(configPath, JSON.stringify({ storage: 'issue', branchPrefix: 'feat/' }), 'utf8')
 
 			let prefixDefault = ''
 			await runInit({
@@ -236,7 +236,7 @@ if (import.meta.vitest) {
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					backend: async () => 'issue',
+					storage: async () => 'issue',
 					branchPrefix: async (current) => {
 						prefixDefault = current
 						return current
@@ -269,7 +269,7 @@ if (import.meta.vitest) {
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.home, '.trowel', 'projects', f.project.replace(/^\//, ''), 'config.json'))
 			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toEqual({ backend: 'file' })
+			expect(JSON.parse(raw)).toEqual({ storage: 'file' })
 		})
 	})
 
@@ -297,15 +297,15 @@ if (import.meta.vitest) {
 
 			const merged = JSON.parse(await read(configPath, 'utf8'))
 			expect(merged).toMatchObject({
-				backend: 'issue',
+				storage: 'issue',
 				agent: { model: 'sonnet' },
 			})
 		})
 
-		test('passes existing backend value to the backend prompt as default', async () => {
+		test('passes existing storage value to the storage prompt as default', async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ backend: 'issue' }), 'utf8')
+			await write(configPath, JSON.stringify({ storage: 'issue' }), 'utf8')
 
 			let promptDefault: string | undefined
 			await runInit({
@@ -313,7 +313,7 @@ if (import.meta.vitest) {
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					backend: async (current) => {
+					storage: async (current) => {
 						promptDefault = current
 						return 'issue'
 					},
@@ -363,7 +363,7 @@ if (import.meta.vitest) {
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.home, '.trowel', 'config.json'))
 			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toEqual({ backend: 'file' })
+			expect(JSON.parse(raw)).toEqual({ storage: 'file' })
 		})
 
 		test('user declines confirm → file is not written, returns wrote=false', async () => {
@@ -386,7 +386,7 @@ if (import.meta.vitest) {
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					backend: async () => 'issue',
+					storage: async () => 'issue',
 					branchPrefix: async () => '',
 					confirm: async (m) => {
 						confirmMsg = m
@@ -395,14 +395,14 @@ if (import.meta.vitest) {
 				},
 				stdout: () => {},
 			})
-			expect(confirmMsg).toContain('"backend": "issue"')
+			expect(confirmMsg).toContain('"storage": "issue"')
 			expect(confirmMsg).toContain(path.join(f.project, '.trowel', 'config.json'))
 		})
 
 		test('rejects an existing file with an invalid config', async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ backend: 'mongo' }), 'utf8')
+			await write(configPath, JSON.stringify({ storage: 'mongo' }), 'utf8')
 
 			await expect(
 				runInit({

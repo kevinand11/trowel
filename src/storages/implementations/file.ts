@@ -1,20 +1,24 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { classify } from '../../utils/bucket.ts'
+import { classifySlices } from '../../utils/bucket.ts'
 import { generateUniqueId } from '../../utils/id.ts'
-import { exec } from '../../utils/shell.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import type { SandboxOut } from '../../work/verdict.ts'
-import type { Backend, BackendDeps, BackendFactory, ClassifySliceConfig, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, ResumeState, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ClassifySliceConfig, PhaseCtx, PhaseOutcome, PreparedPhase, PrdRecord, PrdSpec, PrdSummary, ResumeState, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 const DEFAULT_BRANCH_PREFIX = 'prd/'
 
 type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 
-export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend => {
+export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
+	const log = deps.log ?? (() => {})
+	const requireGit = () => {
+		if (!deps.git) throw new Error('file storage phase methods require git ops to be wired')
+		return deps.git
+	}
 
 	async function prdIdIsAvailable(candidate: string): Promise<boolean> {
 		let entries: string[]
@@ -81,6 +85,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 	}
 
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
+		const git = requireGit()
 		const slug = slugify(spec.title)
 		const id = await generateUniqueId(prdIdIsAvailable, deps.generateId ? { gen: deps.generateId } : {})
 		const dir = path.join(deps.prdsDir, `${id}-${slug}`)
@@ -97,16 +102,8 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 		await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-		await exec('git', ['-C', deps.repoRoot, 'checkout', '-q', '-b', branch, deps.baseBranch])
-
-		const relToRepo = path.relative(deps.repoRoot, dir)
-		const isInsideRepo = !relToRepo.startsWith('..') && !path.isAbsolute(relToRepo)
-		if (isInsideRepo) {
-			await exec('git', ['-C', deps.repoRoot, 'add', relToRepo])
-			const msg = deps.docMsg.replace(/\$\{id\}/g, id).replace(/\$\{title\}/g, spec.title)
-			await exec('git', ['-C', deps.repoRoot, 'commit', '-q', '-m', msg])
-		}
-		await exec('git', ['-C', deps.repoRoot, 'push', '-q', '-u', 'origin', branch])
+		await git.createLocalBranch(branch, deps.baseBranch)
+		await git.pushSetUpstream(branch)
 
 		return { id, branch }
 	}
@@ -152,13 +149,6 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		if (store.closedAt !== null) return // idempotent: already closed in store
 		store.closedAt = new Date().toISOString()
 		await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
-
-		const relToRepo = path.relative(deps.repoRoot, dir)
-		const isInsideRepo = !relToRepo.startsWith('..') && !path.isAbsolute(relToRepo)
-		if (isInsideRepo) {
-			await exec('git', ['-C', deps.repoRoot, 'add', path.join(relToRepo, 'store.json')])
-			await exec('git', ['-C', deps.repoRoot, 'commit', '-q', '-m', `docs(prd-${id}): close`])
-		}
 	}
 
 	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
@@ -181,8 +171,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 		await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-		const raw = sliceFromStore(store, spec.body)
-		return { ...raw, bucket: classify(raw, { hasOpenPr: false, unmetDepIds: [] }) }
+		return sliceFromStore(store, spec.body)
 	}
 
 	async function findSlices(prdId: string): Promise<Slice[]> {
@@ -198,23 +187,18 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		} catch {
 			return []
 		}
-		const raw: Array<Omit<Slice, 'bucket'>> = []
+		const result: Slice[] = []
 		for (const entry of entries) {
 			const dir = path.join(slicesPath, entry)
 			try {
 				const store: SliceStore = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
 				const body = await readFile(path.join(dir, 'README.md'), 'utf8')
-				raw.push(sliceFromStore(store, body))
+				result.push(sliceFromStore(store, body))
 			} catch {
 				continue
 			}
 		}
-		const doneIds = new Set(raw.filter((r) => r.state === 'CLOSED').map((r) => r.id))
-		return raw.map((r) => {
-			const unmetDepIds = r.blockedBy.filter((d) => !doneIds.has(d))
-			const bucket = classify(r, { hasOpenPr: false, unmetDepIds })
-			return { ...r, bucket }
-		})
+		return result
 	}
 
 	async function updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -259,7 +243,7 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 		}
 	}
 
-	function classifySlice(slice: Slice, _config: ClassifySliceConfig): ResumeState {
+	function classifySlice(slice: ClassifiedSlice, _config: ClassifySliceConfig): ResumeState {
 		if (slice.state === 'CLOSED') return 'done'
 		if (!slice.readyForAgent) return 'done'
 		if (slice.bucket === 'blocked') return 'blocked'
@@ -267,11 +251,11 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 	}
 
 	async function reconcileSlices(_slices: Slice[], _ctx: PhaseCtx): Promise<void> {
-		// File backend has no PR concept; nothing to reconcile.
+		// File storage has no PR concept; nothing to reconcile.
 	}
 
 	async function prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-		// File backend has no slice branches; the implementer runs on the integration branch directly.
+		// File storage has no slice branches; the implementer runs on the integration branch directly.
 		return {
 			branch: ctx.integrationBranch,
 			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
@@ -281,34 +265,35 @@ export const createFileBackend: BackendFactory = (deps: BackendDeps): Backend =>
 	async function landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 		if (verdict.verdict === 'ready') {
-			await deps.git.push(ctx.integrationBranch)
-			deps.log(`${tag} pushed ${ctx.integrationBranch}`)
+			const git = requireGit()
+			await git.push(ctx.integrationBranch)
+			log(`${tag} pushed ${ctx.integrationBranch}`)
 			await updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
-			deps.log(`${tag} closed slice`)
+			log(`${tag} closed slice`)
 			return 'done'
 		}
 		if (verdict.verdict === 'no-work-needed') {
 			await updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
-			deps.log(`${tag} no-work-needed: cleared readyForAgent`)
+			log(`${tag} no-work-needed: cleared readyForAgent`)
 			return 'no-work'
 		}
 		return 'partial'
 	}
 
 	async function prepareReview(_slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
-		throw new Error('review is not supported on the file backend (no PR concept)')
+		throw new Error('review is not supported on the file storage (no PR concept)')
 	}
 
 	async function landReview(_slice: Slice, _verdict: SandboxOut, _ctx: PhaseCtx): Promise<PhaseOutcome> {
-		throw new Error('review is not supported on the file backend (no PR concept)')
+		throw new Error('review is not supported on the file storage (no PR concept)')
 	}
 
 	async function prepareAddress(_slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
-		throw new Error('address is not supported on the file backend (no PR concept)')
+		throw new Error('address is not supported on the file storage (no PR concept)')
 	}
 
 	async function landAddress(_slice: Slice, _verdict: SandboxOut, _ctx: PhaseCtx): Promise<PhaseOutcome> {
-		throw new Error('address is not supported on the file backend (no PR concept)')
+		throw new Error('address is not supported on the file storage (no PR concept)')
 	}
 
 	return {
@@ -341,7 +326,7 @@ if (import.meta.vitest) {
 	const { tmpdir } = await import('node:os')
 	const { exec } = await import('../../utils/shell.ts')
 
-	type Fixture = { work: string; bare: string; prdsDir: string; deps: BackendDeps; calls: { git: Array<[string, ...string[]]>; log: string[] } }
+	type Fixture = { work: string; bare: string; prdsDir: string; deps: StorageDeps; calls: { git: Array<[string, ...string[]]>; log: string[] } }
 
 	async function setup(): Promise<Fixture> {
 		const bare = await mkdtemp(path.join(tmpdir(), 'trowel-file-bare-'))
@@ -355,25 +340,35 @@ if (import.meta.vitest) {
 		await exec('git', ['-C', work, 'push', '-q', '-u', 'origin', 'main'])
 		const prdsDir = path.join(work, 'docs', 'prds')
 		const calls: { git: Array<[string, ...string[]]>; log: string[] } = { git: [], log: [] }
-		const deps: BackendDeps = {
+		const { createRepoGit } = await import('../../utils/git-ops.ts')
+		const realGit = createRepoGit(work)
+		// Spy wrapper: each method records its call name + args, then delegates to the real bag
+		// so file-storage tests can assert against both call sequence AND real git state.
+		const git = {
+			fetch: async (b: string) => { calls.git.push(['fetch', b]); await realGit.fetch(b) },
+			push: async (b: string) => { calls.git.push(['push', b]); await realGit.push(b) },
+			checkout: async (b: string) => { calls.git.push(['checkout', b]); await realGit.checkout(b) },
+			mergeNoFf: async (b: string) => { calls.git.push(['mergeNoFf', b]); await realGit.mergeNoFf(b) },
+			deleteRemoteBranch: async (b: string) => { calls.git.push(['deleteRemoteBranch', b]); await realGit.deleteRemoteBranch(b) },
+			createRemoteBranch: async (n: string, b: string) => { calls.git.push(['createRemoteBranch', n, b]); await realGit.createRemoteBranch(n, b) },
+			createLocalBranch: async (n: string, b: string) => { calls.git.push(['createLocalBranch', n, b]); await realGit.createLocalBranch(n, b) },
+			pushSetUpstream: async (b: string) => { calls.git.push(['pushSetUpstream', b]); await realGit.pushSetUpstream(b) },
+			currentBranch: async () => { const r = await realGit.currentBranch(); calls.git.push(['currentBranch']); return r },
+			branchExists: async (b: string) => { const r = await realGit.branchExists(b); calls.git.push(['branchExists', b]); return r },
+			isMerged: async (b: string, base: string) => { const r = await realGit.isMerged(b, base); calls.git.push(['isMerged', b, base]); return r },
+			deleteBranch: async (b: string) => { calls.git.push(['deleteBranch', b]); await realGit.deleteBranch(b) },
+		}
+		const deps: StorageDeps = {
 			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
 			repoRoot: work,
 			projectRoot: work,
 			baseBranch: 'main',
 			branchPrefix: null,
 			prdsDir,
-			docMsg: 'docs(prd-${id}): land context for ${title}',
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
-			git: {
-				fetch: async (b) => { calls.git.push(['fetch', b]) },
-				push: async (b) => { calls.git.push(['push', b]) },
-				checkout: async (b) => { calls.git.push(['checkout', b]) },
-				mergeNoFf: async (b) => { calls.git.push(['mergeNoFf', b]) },
-				deleteRemoteBranch: async (b) => { calls.git.push(['deleteRemoteBranch', b]) },
-				createRemoteBranch: async (n, b) => { calls.git.push(['createRemoteBranch', n, b]) },
-			},
+			git,
 			log: (m) => { calls.log.push(m) },
 		}
 		return { work, bare, prdsDir, deps, calls }
@@ -394,20 +389,20 @@ if (import.meta.vitest) {
 		}
 	}
 
-	describe('file backend: shape', () => {
+	describe('file storage: shape', () => {
 		test('declares maxConcurrent = 1 (commits land directly on the integration branch; no parallel implementers)', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
-				expect(backend.maxConcurrent).toBe(1)
+				const storage = createFileStorage(f.deps)
+				expect(storage.maxConcurrent).toBe(1)
 			} finally {
 				await teardown(f)
 			}
 		})
 	})
 
-	describe('file backend: classifySlice', () => {
-		function makeSlice(overrides: Partial<Slice> = {}): Slice {
+	describe('file storage: classifySlice', () => {
+		function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 			return {
 				id: 's1',
 				title: 't',
@@ -423,44 +418,44 @@ if (import.meta.vitest) {
 			}
 		}
 
-		async function backend(): Promise<Backend> {
+		async function storage(): Promise<Storage> {
 			const f = await setup()
-			return createFileBackend(f.deps)
+			return createFileStorage(f.deps)
 		}
 
 		test('CLOSED slice → done', async () => {
-			const b = await backend()
+			const b = await storage()
 			expect(b.classifySlice(makeSlice({ state: 'CLOSED', bucket: 'done' }), { usePrs: true, review: false })).toBe('done')
 		})
 
 		test('!readyForAgent → done (the slice is a draft waiting on the user)', async () => {
-			const b = await backend()
+			const b = await storage()
 			expect(b.classifySlice(makeSlice({ readyForAgent: false, bucket: 'draft' }), { usePrs: false, review: false })).toBe('done')
 		})
 
 		test('blocked bucket → blocked', async () => {
-			const b = await backend()
+			const b = await storage()
 			expect(b.classifySlice(makeSlice({ blockedBy: ['s0'], bucket: 'blocked' }), { usePrs: false, review: false })).toBe('blocked')
 		})
 
-		test('ready slice → implement (file backend has no PR concept; review/address are unreachable)', async () => {
-			const b = await backend()
+		test('ready slice → implement (file storage has no PR concept; review/address are unreachable)', async () => {
+			const b = await storage()
 			expect(b.classifySlice(makeSlice({ bucket: 'ready' }), { usePrs: false, review: false })).toBe('implement')
 		})
 
-		test('config flags are ignored on the file backend (no PR; no review)', async () => {
-			const b = await backend()
+		test('config flags are ignored on the file storage (no PR; no review)', async () => {
+			const b = await storage()
 			expect(b.classifySlice(makeSlice({ bucket: 'ready' }), { usePrs: true, review: true })).toBe('implement')
 		})
 	})
 
-	describe('file backend: reconcileSlices', () => {
-		test('is a no-op (file backend has no PR concept; nothing to reconcile)', async () => {
+	describe('file storage: reconcileSlices', () => {
+		test('is a no-op (file storage has no PR concept; nothing to reconcile)', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
+				const storage = createFileStorage(f.deps)
 				await expect(
-					backend.reconcileSlices([], {
+					storage.reconcileSlices([], {
 						prdId: 'p1',
 						integrationBranch: 'prd/p1-x',
 						config: { usePrs: false, review: false },
@@ -472,8 +467,8 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file backend: phase primitives', () => {
-		function makeOpenSlice(overrides: Partial<Slice> = {}): Slice {
+	describe('file storage: phase primitives', () => {
+		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 			return {
 				id: 's1',
 				title: 'Implement A',
@@ -492,8 +487,8 @@ if (import.meta.vitest) {
 		test('prepareImplement: branch is the integration branch; sandboxIn carries the slice', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
-				const prep = await backend.prepareImplement(makeOpenSlice(), {
+				const storage = createFileStorage(f.deps)
+				const prep = await storage.prepareImplement(makeOpenSlice(), {
 					prdId: 'p1',
 					integrationBranch: 'prd/p1-x',
 					config: { usePrs: false, review: false },
@@ -508,13 +503,13 @@ if (import.meta.vitest) {
 		test('landImplement + ready: pushes integration, closes slice, returns done', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
-				const result = await backend.createPrd({ title: 'X', body: 'b' })
-				const slice = await backend.createSlice(result.id, { title: 'Implement A', body: 'spec', blockedBy: [] })
-				await backend.updateSlice(result.id, slice.id, { readyForAgent: true })
+				const storage = createFileStorage(f.deps)
+				const result = await storage.createPrd({ title: 'X', body: 'b' })
+				const slice = await storage.createSlice(result.id, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 				f.calls.git.length = 0
 
-				const outcome = await backend.landImplement(
+				const outcome = await storage.landImplement(
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'ready', commits: 1 },
 					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
@@ -522,7 +517,7 @@ if (import.meta.vitest) {
 
 				expect(outcome).toBe('done')
 				expect(f.calls.git).toContainEqual(['push', result.branch])
-				const after = await backend.findSlices(result.id)
+				const after = await storage.findSlices(result.id)
 				expect(after[0]!.state).toBe('CLOSED')
 			} finally {
 				await teardown(f)
@@ -532,13 +527,13 @@ if (import.meta.vitest) {
 		test('landImplement + no-work-needed: clears readyForAgent, returns no-work, does not push', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
-				const result = await backend.createPrd({ title: 'X', body: 'b' })
-				const slice = await backend.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
-				await backend.updateSlice(result.id, slice.id, { readyForAgent: true })
+				const storage = createFileStorage(f.deps)
+				const result = await storage.createPrd({ title: 'X', body: 'b' })
+				const slice = await storage.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
+				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 				f.calls.git.length = 0
 
-				const outcome = await backend.landImplement(
+				const outcome = await storage.landImplement(
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'no-work-needed', commits: 0 },
 					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
@@ -546,7 +541,7 @@ if (import.meta.vitest) {
 
 				expect(outcome).toBe('no-work')
 				expect(f.calls.git.find((c) => c[0] === 'push')).toBeUndefined()
-				const after = await backend.findSlices(result.id)
+				const after = await storage.findSlices(result.id)
 				expect(after[0]!.state).toBe('OPEN')
 				expect(after[0]!.readyForAgent).toBe(false)
 			} finally {
@@ -557,13 +552,13 @@ if (import.meta.vitest) {
 		test('landImplement + partial: no host action, returns partial', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
-				const result = await backend.createPrd({ title: 'X', body: 'b' })
-				const slice = await backend.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
-				await backend.updateSlice(result.id, slice.id, { readyForAgent: true })
+				const storage = createFileStorage(f.deps)
+				const result = await storage.createPrd({ title: 'X', body: 'b' })
+				const slice = await storage.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
+				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 				f.calls.git.length = 0
 
-				const outcome = await backend.landImplement(
+				const outcome = await storage.landImplement(
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'partial', commits: 0 },
 					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false } },
@@ -571,7 +566,7 @@ if (import.meta.vitest) {
 
 				expect(outcome).toBe('partial')
 				expect(f.calls.git).toEqual([])
-				const after = await backend.findSlices(result.id)
+				const after = await storage.findSlices(result.id)
 				expect(after[0]!.state).toBe('OPEN')
 				expect(after[0]!.readyForAgent).toBe(true)
 			} finally {
@@ -579,23 +574,23 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('prepareReview / landReview / prepareAddress / landAddress all throw on the file backend', async () => {
+		test('prepareReview / landReview / prepareAddress / landAddress all throw on the file storage', async () => {
 			const f = await setup()
 			try {
-				const backend = createFileBackend(f.deps)
+				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
 				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: false, review: false } }
-				await expect(backend.prepareReview(slice, ctx)).rejects.toThrow(/not supported on the file backend/)
-				await expect(backend.landReview(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file backend/)
-				await expect(backend.prepareAddress(slice, ctx)).rejects.toThrow(/not supported on the file backend/)
-				await expect(backend.landAddress(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file backend/)
+				await expect(storage.prepareReview(slice, ctx)).rejects.toThrow(/not supported on the file storage/)
+				await expect(storage.landReview(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file storage/)
+				await expect(storage.prepareAddress(slice, ctx)).rejects.toThrow(/not supported on the file storage/)
+				await expect(storage.landAddress(slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/not supported on the file storage/)
 			} finally {
 				await teardown(f)
 			}
 		})
 	})
 
-	describe('file backend: createPrd', () => {
+	describe('file storage: createPrd', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -605,8 +600,8 @@ if (import.meta.vitest) {
 		})
 
 		test('writes README.md and store.json under <prdsDir>/<id>-<slug>/ and returns matching id+branch', async () => {
-			const backend = createFileBackend(f.deps)
-			const result = await backend.createPrd({ title: 'Fix Tabs', body: '# Hi\n\nthe body' })
+			const storage = createFileStorage(f.deps)
+			const result = await storage.createPrd({ title: 'Fix Tabs', body: '# Hi\n\nthe body' })
 			expect(result.id).toMatch(/^[a-z0-9]{6}$/)
 			expect(result.branch).toBe(`prd/${result.id}-fix-tabs`)
 			const dir = path.join(f.prdsDir, `${result.id}-fix-tabs`)
@@ -619,30 +614,31 @@ if (import.meta.vitest) {
 			expect(typeof store.createdAt).toBe('string')
 		})
 
-		test('creates the integration branch, commits the PRD files, and pushes to origin', async () => {
-			const backend = createFileBackend(f.deps)
-			const result = await backend.createPrd({ title: 'Add ORM', body: 'spec' })
+		test('creates and pushes the integration branch without auto-committing the PRD files', async () => {
+			const storage = createFileStorage(f.deps)
+			const result = await storage.createPrd({ title: 'Add ORM', body: 'spec' })
 			const localHead = (await exec('git', ['-C', f.work, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
 			expect(localHead).toBe(result.branch)
 			const remoteRefs = (await exec('git', ['-C', f.work, 'ls-remote', '--heads', 'origin'])).stdout
 			expect(remoteRefs).toContain(`refs/heads/${result.branch}`)
-			const lastMsg = (await exec('git', ['-C', f.work, 'log', '-1', '--pretty=%s'])).stdout.trim()
-			expect(lastMsg).toBe(`docs(prd-${result.id}): land context for Add ORM`)
+			// no commits beyond the base branch — the integration branch is empty relative to main
+			const commitDelta = (await exec('git', ['-C', f.work, 'rev-list', '--count', `main..${result.branch}`])).stdout.trim()
+			expect(commitDelta).toBe('0')
 		})
 
 		test('retries id generation on collision with an existing PRD directory', async () => {
 			const ids = ['aaaaaa', 'bbbbbb']
 			let i = 0
-			const deps: BackendDeps = { ...f.deps, generateId: () => ids[i++]! }
+			const deps: StorageDeps = { ...f.deps, generateId: () => ids[i++]! }
 			await mkdir(path.join(f.prdsDir, 'aaaaaa-foo'), { recursive: true })
-			const backend = createFileBackend(deps)
-			const result = await backend.createPrd({ title: 'Foo', body: 'spec' })
+			const storage = createFileStorage(deps)
+			const result = await storage.createPrd({ title: 'Foo', body: 'spec' })
 			expect(result.id).toBe('bbbbbb')
 			expect(await exists(path.join(f.prdsDir, 'bbbbbb-foo'))).toBe(true)
 		})
 	})
 
-	describe('file backend: branchForExisting', () => {
+	describe('file storage: branchForExisting', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -652,25 +648,25 @@ if (import.meta.vitest) {
 		})
 
 		test('reads slug from store.json and composes the branch with the configured prefix', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id, branch } = await backend.createPrd({ title: 'Fix Tabs', body: 'spec' })
-			expect(await backend.branchForExisting(id)).toBe(branch)
+			const storage = createFileStorage(f.deps)
+			const { id, branch } = await storage.createPrd({ title: 'Fix Tabs', body: 'spec' })
+			expect(await storage.branchForExisting(id)).toBe(branch)
 		})
 
 		test('uses the user-provided branchPrefix when set, overriding default', async () => {
-			const deps: BackendDeps = { ...f.deps, branchPrefix: 'feat/' }
-			const backend = createFileBackend(deps)
-			const { id } = await backend.createPrd({ title: 'Fix Tabs', body: 'spec' })
-			expect(await backend.branchForExisting(id)).toBe(`feat/${id}-fix-tabs`)
+			const deps: StorageDeps = { ...f.deps, branchPrefix: 'feat/' }
+			const storage = createFileStorage(deps)
+			const { id } = await storage.createPrd({ title: 'Fix Tabs', body: 'spec' })
+			expect(await storage.branchForExisting(id)).toBe(`feat/${id}-fix-tabs`)
 		})
 
 		test('throws when no PRD directory exists for the id', async () => {
-			const backend = createFileBackend(f.deps)
-			await expect(backend.branchForExisting('zzzzzz')).rejects.toThrow(/no PRD/i)
+			const storage = createFileStorage(f.deps)
+			await expect(storage.branchForExisting('zzzzzz')).rejects.toThrow(/no PRD/i)
 		})
 	})
 
-	describe('file backend: listPrds', () => {
+	describe('file storage: listPrds', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -680,8 +676,8 @@ if (import.meta.vitest) {
 		})
 
 		test('returns empty array when prdsDir does not exist', async () => {
-			const backend = createFileBackend(f.deps)
-			expect(await backend.listPrds({ state: 'open' })).toEqual([])
+			const storage = createFileStorage(f.deps)
+			expect(await storage.listPrds({ state: 'open' })).toEqual([])
 		})
 
 		test('returns one summary per PRD with closedAt === null, skipping closed ones', async () => {
@@ -710,8 +706,8 @@ if (import.meta.vitest) {
 				}),
 			)
 
-			const backend = createFileBackend(f.deps)
-			const open = await backend.listPrds({ state: 'open' })
+			const storage = createFileStorage(f.deps)
+			const open = await storage.listPrds({ state: 'open' })
 			expect(open).toHaveLength(1)
 			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'prd/bbbbbb-beta' })
 		})
@@ -742,8 +738,8 @@ if (import.meta.vitest) {
 				}),
 			)
 
-			const backend = createFileBackend(f.deps)
-			const all = await backend.listPrds({ state: 'all' })
+			const storage = createFileStorage(f.deps)
+			const all = await storage.listPrds({ state: 'all' })
 			expect(all).toHaveLength(2)
 			expect(all.map((p) => p.id).sort()).toEqual(['aaaaaa', 'bbbbbb'])
 		})
@@ -763,8 +759,8 @@ if (import.meta.vitest) {
 				)
 			}
 
-			const backend = createFileBackend(f.deps)
-			const ordered = await backend.listPrds({ state: 'open' })
+			const storage = createFileStorage(f.deps)
+			const ordered = await storage.listPrds({ state: 'open' })
 			expect(ordered.map((p) => p.id)).toEqual(['bbbbbb', 'cccccc', 'aaaaaa'])
 		})
 
@@ -794,14 +790,14 @@ if (import.meta.vitest) {
 				}),
 			)
 
-			const backend = createFileBackend(f.deps)
-			const closed = await backend.listPrds({ state: 'closed' })
+			const storage = createFileStorage(f.deps)
+			const closed = await storage.listPrds({ state: 'closed' })
 			expect(closed).toHaveLength(1)
 			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'prd/aaaaaa-alpha' })
 		})
 	})
 
-	describe('file backend: close', () => {
+	describe('file storage: close', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -810,16 +806,17 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('sets closedAt in store.json and commits the change (does not touch branches)', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
-			await backend.close(id)
+		test('sets closedAt in store.json without auto-committing the change', async () => {
+			const storage = createFileStorage(f.deps)
+			const { id, branch } = await storage.createPrd({ title: 'Alpha', body: 'a' })
+			await storage.close(id)
 			const storePath = path.join(f.prdsDir, `${id}-alpha`, 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8'))
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
-			const lastMsg = (await exec('git', ['-C', f.work, 'log', '-1', '--pretty=%s'])).stdout.trim()
-			expect(lastMsg).toBe(`docs(prd-${id}): close`)
-			// Branch must still exist — branch deletion is orchestrator's job.
+			// close must not add a commit
+			const commitDelta = (await exec('git', ['-C', f.work, 'rev-list', '--count', `main..${branch}`])).stdout.trim()
+			expect(commitDelta).toBe('0')
+			// branch must still exist — branch deletion is orchestrator's job.
 			const remoteRefs = (await exec('git', ['-C', f.work, 'ls-remote', '--heads', 'origin'])).stdout
 			expect(remoteRefs).toContain(`refs/heads/${branch}`)
 			const localRefs = (await exec('git', ['-C', f.work, 'branch', '--list', branch])).stdout
@@ -827,13 +824,13 @@ if (import.meta.vitest) {
 		})
 
 		test('idempotent: re-running close on a closed PRD is a no-op', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id } = await backend.createPrd({ title: 'Alpha', body: 'a' })
-			await backend.close(id)
+			const storage = createFileStorage(f.deps)
+			const { id } = await storage.createPrd({ title: 'Alpha', body: 'a' })
+			await storage.close(id)
 			const storePath = path.join(f.prdsDir, `${id}-alpha`, 'store.json')
 			const firstClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
 			const commitCountBefore = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
-			await backend.close(id)
+			await storage.close(id)
 			const secondClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
 			expect(secondClosedAt).toBe(firstClosedAt)
 			const commitCountAfter = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
@@ -841,7 +838,7 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file backend: createSlice', () => {
+	describe('file storage: createSlice', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -851,10 +848,10 @@ if (import.meta.vitest) {
 		})
 
 		test('writes README.md and store.json under <prdDir>/slices/<id>-<slug>/ and returns the Slice', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'Add ORM', body: 'prd-spec' })
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'Add ORM', body: 'prd-spec' })
 
-			const slice = await backend.createSlice(prdId, { title: 'Implement Tab Parser', body: '# spec\nbody', blockedBy: [] })
+			const slice = await storage.createSlice(prdId, { title: 'Implement Tab Parser', body: '# spec\nbody', blockedBy: [] })
 			expect(slice.id).toMatch(/^[a-z0-9]{6}$/)
 			expect(slice.title).toBe('Implement Tab Parser')
 			expect(slice.body).toBe('# spec\nbody')
@@ -870,19 +867,19 @@ if (import.meta.vitest) {
 		test('retries id generation on collision (across all PRDs slices/)', async () => {
 			const ids = ['ccccc1', 'aaaaaa', 'bbbbbb']
 			let i = 0
-			const deps: BackendDeps = { ...f.deps, generateId: () => ids[i++]! }
-			const backend = createFileBackend(deps)
+			const deps: StorageDeps = { ...f.deps, generateId: () => ids[i++]! }
+			const storage = createFileStorage(deps)
 
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
 			// Pre-create a colliding slice dir so 'aaaaaa' is taken.
 			await mkdir(path.join(f.prdsDir, `${prdId}-p`, 'slices', 'aaaaaa-pre'), { recursive: true })
 
-			const slice = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
+			const slice = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
 			expect(slice.id).toBe('bbbbbb')
 		})
 	})
 
-	describe('file backend: findSlices', () => {
+	describe('file storage: findSlices', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -892,29 +889,29 @@ if (import.meta.vitest) {
 		})
 
 		test('returns empty array when the PRD has no slices/ directory', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			expect(await backend.findSlices(prdId)).toEqual([])
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			expect(await storage.findSlices(prdId)).toEqual([])
 		})
 
-		test('returned slices have prState=null and branchAhead=false (file backend has no PR concept)', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			const [s] = await backend.findSlices(prdId)
+		test('returned slices have prState=null and branchAhead=false (file storage has no PR concept)', async () => {
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const [s] = classifySlices(await storage.findSlices(prdId))
 			expect(s!.prState).toBeNull()
 			expect(s!.branchAhead).toBe(false)
 		})
 
 		test('returns one Slice per slice directory with body from README.md and state from closedAt', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const a = await backend.createSlice(prdId, { title: 'Alpha', body: 'aa', blockedBy: [] })
-			const b = await backend.createSlice(prdId, { title: 'Beta', body: 'bb', blockedBy: [] })
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const a = await storage.createSlice(prdId, { title: 'Alpha', body: 'aa', blockedBy: [] })
+			const b = await storage.createSlice(prdId, { title: 'Beta', body: 'bb', blockedBy: [] })
 			// Mark b as closed and needsRevision via updateSlice
-			await backend.updateSlice(prdId, b.id, { state: 'CLOSED', needsRevision: true })
+			await storage.updateSlice(prdId, b.id, { state: 'CLOSED', needsRevision: true })
 
-			const slices = await backend.findSlices(prdId)
+			const slices = classifySlices(await storage.findSlices(prdId))
 			expect(slices).toHaveLength(2)
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
 			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'OPEN', readyForAgent: false, needsRevision: false })
@@ -922,7 +919,7 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file backend: createSlice round-trips blockedBy', () => {
+	describe('file storage: createSlice round-trips blockedBy', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -932,21 +929,21 @@ if (import.meta.vitest) {
 		})
 
 		test('persists spec.blockedBy to store.json; findSlices returns it on Slice', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const slice = await backend.createSlice(prdId, {
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const slice = await storage.createSlice(prdId, {
 				title: 'Needs others',
 				body: 'spec',
 				blockedBy: ['abc123', 'def456'],
 			})
 			expect(slice.blockedBy).toEqual(['abc123', 'def456'])
 
-			const found = (await backend.findSlices(prdId)).find((s) => s.id === slice.id)!
+			const found = (await storage.findSlices(prdId)).find((s) => s.id === slice.id)!
 			expect(found.blockedBy).toEqual(['abc123', 'def456'])
 		})
 	})
 
-	describe('file backend: findSlices computes bucket', () => {
+	describe('file storage: findSlices computes bucket', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -956,74 +953,74 @@ if (import.meta.vitest) {
 		})
 
 		test('OPEN slice with no readiness flags → draft', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			const [s] = await backend.findSlices(prdId)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const [s] = classifySlices(await storage.findSlices(prdId))
 			expect(s!.bucket).toBe('draft')
 		})
 
 		test('readyForAgent and no deps → ready', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
-			const [updated] = await backend.findSlices(prdId)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			await storage.updateSlice(prdId, s.id, { readyForAgent: true })
+			const [updated] = classifySlices(await storage.findSlices(prdId))
 			expect(updated!.bucket).toBe('ready')
 		})
 
 		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await backend.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: true })
-			const [updated] = await backend.findSlices(prdId)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			await storage.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: true })
+			const [updated] = classifySlices(await storage.findSlices(prdId))
 			expect(updated!.bucket).toBe('needs-revision')
 		})
 
 		test('CLOSED → done', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await backend.updateSlice(prdId, s.id, { state: 'CLOSED' })
-			const [updated] = await backend.findSlices(prdId)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			await storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
+			const [updated] = classifySlices(await storage.findSlices(prdId))
 			expect(updated!.bucket).toBe('done')
 		})
 
 		test('slice with Depends-on: pointing to a non-done slice → blocked', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			const b = await backend.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-			await backend.updateSlice(prdId, b.id, { readyForAgent: true })
-			const slices = await backend.findSlices(prdId)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const a = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const b = await storage.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
+			await storage.updateSlice(prdId, b.id, { readyForAgent: true })
+			const slices = classifySlices(await storage.findSlices(prdId))
 			const bAfter = slices.find((s) => s.id === b.id)!
 			expect(bAfter.bucket).toBe('blocked')
 		})
 
 		test('slice with Depends-on: pointing to a done slice → ready (dep satisfied)', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const a = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			const b = await backend.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-			await backend.updateSlice(prdId, a.id, { state: 'CLOSED' })
-			await backend.updateSlice(prdId, b.id, { readyForAgent: true })
-			const slices = await backend.findSlices(prdId)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const a = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const b = await storage.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
+			await storage.updateSlice(prdId, a.id, { state: 'CLOSED' })
+			await storage.updateSlice(prdId, b.id, { readyForAgent: true })
+			const slices = classifySlices(await storage.findSlices(prdId))
 			const bAfter = slices.find((s) => s.id === b.id)!
 			expect(bAfter.bucket).toBe('ready')
 		})
 
-		test('file backend never returns in-flight (no PR concept)', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
-			const slices = await backend.findSlices(prdId)
+		test('file storage never returns in-flight (no PR concept)', async () => {
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			await storage.updateSlice(prdId, s.id, { readyForAgent: true })
+			const slices = classifySlices(await storage.findSlices(prdId))
 			expect(slices.every((x) => x.bucket !== 'in-flight')).toBe(true)
 		})
 	})
 
-	describe('file backend: findPrd', () => {
+	describe('file storage: findPrd', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -1033,26 +1030,26 @@ if (import.meta.vitest) {
 		})
 
 		test('returns null when no PRD exists for id', async () => {
-			const backend = createFileBackend(f.deps)
-			expect(await backend.findPrd('zzzzzz')).toBeNull()
+			const storage = createFileStorage(f.deps)
+			expect(await storage.findPrd('zzzzzz')).toBeNull()
 		})
 
 		test('returns PrdRecord with state=OPEN for an open PRD', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id, branch } = await backend.createPrd({ title: 'Alpha', body: 'a' })
-			expect(await backend.findPrd(id)).toEqual({ id, branch, title: 'Alpha', state: 'OPEN' })
+			const storage = createFileStorage(f.deps)
+			const { id, branch } = await storage.createPrd({ title: 'Alpha', body: 'a' })
+			expect(await storage.findPrd(id)).toEqual({ id, branch, title: 'Alpha', state: 'OPEN' })
 		})
 
 		test('returns PrdRecord with state=CLOSED after close', async () => {
-			const deps: BackendDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'never' } }
-			const backend = createFileBackend(deps)
-			const { id, branch } = await backend.createPrd({ title: 'Beta', body: 'b' })
-			await backend.close(id)
-			expect(await backend.findPrd(id)).toEqual({ id, branch, title: 'Beta', state: 'CLOSED' })
+			const deps: StorageDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'never' } }
+			const storage = createFileStorage(deps)
+			const { id, branch } = await storage.createPrd({ title: 'Beta', body: 'b' })
+			await storage.close(id)
+			expect(await storage.findPrd(id)).toEqual({ id, branch, title: 'Beta', state: 'CLOSED' })
 		})
 	})
 
-	describe('file backend: updateSlice', () => {
+	describe('file storage: updateSlice', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -1062,54 +1059,54 @@ if (import.meta.vitest) {
 		})
 
 		test('flips readyForAgent and needsRevision', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await backend.updateSlice(prdId, s.id, { readyForAgent: true })
+			await storage.updateSlice(prdId, s.id, { readyForAgent: true })
 			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(true)
 			expect(store.needsRevision).toBe(false)
 
-			await backend.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: false })
+			await storage.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: false })
 			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(false)
 			expect(store.needsRevision).toBe(true)
 		})
 
 		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await backend.updateSlice(prdId, s.id, { state: 'CLOSED' })
+			await storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
 			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 
-			await backend.updateSlice(prdId, s.id, { state: 'OPEN' })
+			await storage.updateSlice(prdId, s.id, { state: 'OPEN' })
 			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toBeNull()
 		})
 
 		test('updates blockedBy as a full-array replace', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			const s = await backend.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: ['old1', 'old2'] })
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			const s = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: ['old1', 'old2'] })
 
-			await backend.updateSlice(prdId, s.id, { blockedBy: ['new1'] })
-			const found = (await backend.findSlices(prdId)).find((x) => x.id === s.id)!
+			await storage.updateSlice(prdId, s.id, { blockedBy: ['new1'] })
+			const found = (await storage.findSlices(prdId)).find((x) => x.id === s.id)!
 			expect(found.blockedBy).toEqual(['new1'])
 
 			// Empty array clears blockers.
-			await backend.updateSlice(prdId, s.id, { blockedBy: [] })
-			const found2 = (await backend.findSlices(prdId)).find((x) => x.id === s.id)!
+			await storage.updateSlice(prdId, s.id, { blockedBy: [] })
+			const found2 = (await storage.findSlices(prdId)).find((x) => x.id === s.id)!
 			expect(found2.blockedBy).toEqual([])
 		})
 
 		test('throws when the slice does not exist', async () => {
-			const backend = createFileBackend(f.deps)
-			const { id: prdId } = await backend.createPrd({ title: 'P', body: 'b' })
-			await expect(backend.updateSlice(prdId, 'zzzzzz', { readyForAgent: true })).rejects.toThrow(/no slice/i)
+			const storage = createFileStorage(f.deps)
+			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+			await expect(storage.updateSlice(prdId, 'zzzzzz', { readyForAgent: true })).rejects.toThrow(/no slice/i)
 		})
 	})
 }

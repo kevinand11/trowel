@@ -1,6 +1,6 @@
 # PR flow is opt-out on the issue backend; no-PR mode merges slice branches into the integration branch
 
-`config.work.usePrs: boolean` (default `true`) controls whether the `issue` backend's **AFK loop** runs the full PR-driven flow (`true`) or skips PR creation and merges **Slice branch**es directly into the **Integration branch** (`false`). The knob is issue-backend-only; the file backend has no PR concept and silently ignores `usePrs`.
+> **Superseded by:** [2026-05-13-storage-behavior-separation.md](./2026-05-13-storage-behavior-separation.md). The `usePrs` flag survives but is no longer storage-bound. It becomes a universal **Flag** on `config.work.*`, gated by storage **Capability** `prFlow` at config load: a user setting `usePrs: true` against a storage that doesn't declare `prFlow` errors before any work runs (rather than being "silently ignored"). The slice-branch / integration-branch disposition is governed by a separate orthogonal flag `perSliceBranches`. The text below describes the previous issue-backend-specific design.
 
 Under `usePrs: false`:
 

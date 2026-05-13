@@ -1,9 +1,9 @@
 import path from 'node:path'
 
-import { getBackend } from '../backends/registry.ts'
-import type { Backend, BackendDeps, PrdRecord, Slice } from '../backends/types.ts'
 import { loadConfig } from '../config.ts'
-import type { Bucket } from '../utils/bucket.ts'
+import { getStorage } from '../storages/registry.ts'
+import type { ClassifiedSlice, Slice, Storage, StorageDeps, PrdRecord } from '../storages/types.ts'
+import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 
 // Bucket render order. Mirrors the predicate evaluation order in
@@ -11,7 +11,7 @@ import { realGhRunner } from '../utils/gh-runner.ts'
 // the classifier evaluates them.
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
 
-function renderStatus(prd: PrdRecord, slices: Slice[]): string {
+function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
 	const counts: Record<Bucket, number> = {
 		done: 0,
 		'needs-revision': 0,
@@ -57,11 +57,11 @@ function formatCounts(counts: Record<Bucket, number>): string {
 		.join(' · ')
 }
 
-function bySliceId(slices: Slice[]): Map<string, Slice> {
+function bySliceId(slices: ClassifiedSlice[]): Map<string, ClassifiedSlice> {
 	return new Map(slices.map((s) => [s.id, s]))
 }
 
-function rightColumn(s: Slice, byId: Map<string, Slice>): string {
+function rightColumn(s: ClassifiedSlice, byId: Map<string, ClassifiedSlice>): string {
 	if (s.bucket === 'blocked') {
 		const unmet = s.blockedBy.filter((id) => {
 			const dep = byId.get(id)
@@ -74,53 +74,42 @@ function rightColumn(s: Slice, byId: Map<string, Slice>): string {
 }
 
 type StatusRuntime = {
-	backend: Backend
+	storage: Storage
 	stdout: (s: string) => void
 }
 
 async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
-	const prd = await rt.backend.findPrd(prdId)
+	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
-	const slices = await rt.backend.findSlices(prdId)
+	const slices = classifySlices(await rt.storage.findSlices(prdId))
 	rt.stdout(renderStatus(prd, slices))
 	if (!renderStatus(prd, slices).endsWith('\n')) rt.stdout('\n')
 }
 
-export async function status(prdId: string, opts: { backend?: string }): Promise<void> {
+export async function status(prdId: string, opts: { storage?: string }): Promise<void> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel status: no project root found\n')
 		process.exit(1)
 	}
 
-	const backendKind = opts.backend ?? config.backend
-	const noopGit = {
-		fetch: async () => {},
-		push: async () => {},
-		checkout: async () => {},
-		mergeNoFf: async () => {},
-		deleteRemoteBranch: async () => {},
-		createRemoteBranch: async () => {},
-	}
-	const backendDeps: BackendDeps = {
+	const storageKind = opts.storage ?? config.storage
+	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
 		baseBranch: config.baseBranch,
 		branchPrefix: config.branchPrefix,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		docMsg: config.commit.docMsg,
 		labels: config.labels,
 		closeOptions: config.close,
-		confirm: async () => false, // status never prompts
-		git: noopGit,
-		log: () => {},
+		// status is read-only: no git, no confirm, no log needed.
 	}
-	const backend = getBackend(backendKind, backendDeps)
+	const storage = getStorage(storageKind, storageDeps)
 
 	try {
 		await runStatus(prdId, {
-			backend,
+			storage,
 			stdout: (s) => process.stdout.write(s),
 		})
 	} catch (error) {
@@ -131,14 +120,13 @@ export async function status(prdId: string, opts: { backend?: string }): Promise
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { classify } = await import('../utils/bucket.ts')
 
-	type FakeBackendState = {
+	type FakeStorageState = {
 		prd: PrdRecord | null
-		rawSlices: Array<Omit<Slice, 'bucket'>>
+		rawSlices: Slice[]
 	}
 
-	function fakeBackend(state: FakeBackendState): Backend {
+	function fakeStorage(state: FakeStorageState): Storage {
 		return {
 			name: 'fake',
 			defaultBranchPrefix: '',
@@ -166,7 +154,7 @@ if (import.meta.vitest) {
 			createSlice: async () => {
 				throw new Error('nyi')
 			},
-			findSlices: async () => state.rawSlices.map((s) => ({ ...s, bucket: classify(s, { hasOpenPr: false, unmetDepIds: [] }) })),
+			findSlices: async () => state.rawSlices,
 			updateSlice: async () => {},
 		}
 	}
@@ -175,9 +163,9 @@ if (import.meta.vitest) {
 
 	describe('status: tracer (no slices)', () => {
 		test('renders header + "(no slices)" summary', async () => {
-			const backend = fakeBackend({ prd, rawSlices: [] })
+			const storage = fakeStorage({ prd, rawSlices: [] })
 			let buf = ''
-			await runStatus('ab12cd', { backend, stdout: (s) => (buf += s) })
+			await runStatus('ab12cd', { storage, stdout: (s) => (buf += s) })
 			expect(buf).toContain('PRD ab12cd  Add SSO')
 			expect(buf).toContain('Branch:  prd/ab12cd-feature')
 			expect(buf).toContain('State:   OPEN')
@@ -185,13 +173,13 @@ if (import.meta.vitest) {
 		})
 
 		test("error when PRD not found", async () => {
-			const backend = fakeBackend({ prd: null, rawSlices: [] })
-			await expect(runStatus('zzzzzz', { backend, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
+			const storage = fakeStorage({ prd: null, rawSlices: [] })
+			await expect(runStatus('zzzzzz', { storage, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
 		})
 	})
 
 	describe('status: per-bucket rendering', () => {
-		const slice = (overrides: Partial<Omit<Slice, 'bucket'>>): Omit<Slice, 'bucket'> => ({
+		const slice = (overrides: Partial<Omit<ClassifiedSlice, 'bucket'>>): Omit<ClassifiedSlice, 'bucket'> => ({
 			id: 's1',
 			title: 'a slice',
 			body: '',
@@ -239,7 +227,7 @@ if (import.meta.vitest) {
 			expect(out).toMatch(/^ {2}in-flight$/m)
 		})
 
-		test('"blocked" section shows blockedBy ids in the right column (read from Slice.blockedBy)', () => {
+		test('"blocked" section shows blockedBy ids in the right column (read from ClassifiedSlice.blockedBy)', () => {
 			const out = renderStatus(prd, [
 				{
 					...slice({ id: '146', title: 'SSO admin UI', readyForAgent: true, blockedBy: ['145', '147'] }),

@@ -7,16 +7,17 @@ import { fileURLToPath } from 'node:url'
 import { claudeCode, createWorktree as sandcastleCreateWorktree, type Worktree as SandcastleWorktree } from '@ai-hero/sandcastle'
 import { docker } from '@ai-hero/sandcastle/sandboxes/docker'
 
-import { getBackend } from '../backends/registry.ts'
-import type { Backend, BackendDeps, Slice } from '../backends/types.ts'
 import { loadConfig } from '../config.ts'
 import type { Config } from '../schema.ts'
+import { getStorage } from '../storages/registry.ts'
+import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
+import { createRepoGit } from '../utils/git-ops.ts'
 import { loadClaudeOauthToken, realLoadOauthTokenDeps } from '../utils/oauth-token.ts'
 import { exec, tryExec } from '../utils/shell.ts'
 import { ensureSandboxImage } from '../work/image.ts'
 import { runLoop } from '../work/loop.ts'
-import { loadPrompt, type BackendKind, type Role } from '../work/prompts.ts'
+import { loadPrompt, type StorageKind, type Role } from '../work/prompts.ts'
 import { spawnSandbox, type Worktree } from '../work/sandbox.ts'
 import type { SandboxIn, SandboxOut } from '../work/verdict.ts'
 import { ensureTrowelDir } from '../work/worktrees.ts'
@@ -57,7 +58,7 @@ const realImageDeps = {
 type LoopWiring = {
 	config: Config
 	projectRoot: string
-	backend: Backend
+	storage: Storage
 	integrationBranch: (prdId: string) => Promise<string>
 	runOnePhase: (prdId: string, slice: Slice, role: Role) => Promise<void>
 	runLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
@@ -68,63 +69,28 @@ type LoopWiring = {
  * The `runAgent` callback inside spawnSandbox is intentionally unimplemented; production
  * wiring needs `@ai-hero/sandcastle` integration (see TODO Section 1, Phase E).
  */
-export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopWiring> {
+export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopWiring> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) throw new Error('no project root found')
 
-	const backendKind = opts.backend ?? config.backend
-
-	const gitFetch = async (b: string) => {
-		const r = await tryExec('git', ['-C', projectRoot, 'fetch', '-q', 'origin', b])
-		if (!r.ok) throw r.error
-	}
-	const gitPush = async (b: string) => {
-		const r = await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', b])
-		if (!r.ok) throw r.error
-	}
-	const gitCheckout = async (b: string) => {
-		const r = await tryExec('git', ['-C', projectRoot, 'checkout', '-q', b])
-		if (!r.ok) throw r.error
-	}
-	const gitMergeNoFf = async (b: string) => {
-		const r = await tryExec('git', ['-C', projectRoot, 'merge', '--no-ff', '-q', b])
-		if (!r.ok) throw r.error
-	}
-	const gitDeleteRemoteBranch = async (b: string) => {
-		const r = await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `:${b}`])
-		if (!r.ok) throw r.error
-	}
-	const gitCreateRemoteBranch = async (newBranch: string, baseBranch: string) => {
-		const fetched = await tryExec('git', ['-C', projectRoot, 'fetch', '-q', 'origin', baseBranch])
-		if (!fetched.ok) throw fetched.error
-		const pushed = await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `refs/remotes/origin/${baseBranch}:refs/heads/${newBranch}`])
-		if (!pushed.ok) throw pushed.error
-	}
+	const storageKind = opts.storage ?? config.storage
 
 	const log = (m: string) => process.stdout.write(`${m}\n`)
+	const git = createRepoGit(projectRoot)
 
-	const backendDeps: BackendDeps = {
+	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
 		baseBranch: config.baseBranch,
 		branchPrefix: config.branchPrefix,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		docMsg: config.commit.docMsg,
 		labels: config.labels,
 		closeOptions: config.close,
-		confirm: async () => false,
-		git: {
-			fetch: gitFetch,
-			push: gitPush,
-			checkout: gitCheckout,
-			mergeNoFf: gitMergeNoFf,
-			deleteRemoteBranch: gitDeleteRemoteBranch,
-			createRemoteBranch: gitCreateRemoteBranch,
-		},
+		git,
 		log,
 	}
-	const backend = getBackend(backendKind, backendDeps)
+	const storage = getStorage(storageKind, storageDeps)
 
 	await ensureTrowelDir(projectRoot)
 
@@ -146,7 +112,7 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 	const makeRunAgent =
 		(integrationBranchName: string) =>
 		async ({ worktree, logPath, role }: { worktree: Worktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
-			const rendered = await loadPrompt(role, backend.name as BackendKind, { INTEGRATION_BRANCH: integrationBranchName })
+			const rendered = await loadPrompt(role, storage.name as StorageKind, { INTEGRATION_BRANCH: integrationBranchName })
 			const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
 			await writeFile(promptFile, rendered)
 
@@ -190,7 +156,7 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 		})
 
 	const integrationBranch = async (prdId: string): Promise<string> => {
-		const prd = await backend.findPrd(prdId)
+		const prd = await storage.findPrd(prdId)
 		if (!prd) throw new Error(`PRD '${prdId}' not found`)
 		return prd.branch
 	}
@@ -199,19 +165,19 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 		const branch = await integrationBranch(prdId)
 		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review } }
 		const prep = role === 'implement'
-			? await backend.prepareImplement(slice, ctx)
+			? await storage.prepareImplement(slice, ctx)
 			: role === 'review'
-				? await backend.prepareReview(slice, ctx)
-				: await backend.prepareAddress(slice, ctx)
+				? await storage.prepareReview(slice, ctx)
+				: await storage.prepareAddress(slice, ctx)
 		const verdict: SandboxOut = await makeSpawnSandboxFor(prdId, branch)({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
-		if (role === 'implement') await backend.landImplement(slice, verdict, ctx)
-		else if (role === 'review') await backend.landReview(slice, verdict, ctx)
-		else await backend.landAddress(slice, verdict, ctx)
+		if (role === 'implement') await storage.landImplement(slice, verdict, ctx)
+		else if (role === 'review') await storage.landReview(slice, verdict, ctx)
+		else await storage.landAddress(slice, verdict, ctx)
 	}
 
 	const runLoopFor = async (prdId: string, branch: string): Promise<void> => {
 		await runLoop(prdId, {
-			backend,
+			storage,
 			integrationBranch: branch,
 			spawnSandbox: makeSpawnSandboxFor(prdId, branch),
 			log,
@@ -225,5 +191,5 @@ export async function buildLoopWiring(opts: { backend?: string }): Promise<LoopW
 		})
 	}
 
-	return { config, projectRoot, backend, integrationBranch, runOnePhase, runLoopFor }
+	return { config, projectRoot, storage, integrationBranch, runOnePhase, runLoopFor }
 }

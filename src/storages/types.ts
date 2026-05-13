@@ -1,6 +1,9 @@
 import type { Bucket } from '../utils/bucket.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
+import type { GitOps } from '../utils/git-ops.ts'
 import type { SandboxIn, SandboxOut } from '../work/verdict.ts'
+
+export type { GitOps }
 
 export type PrdSpec = {
 	title: string
@@ -34,9 +37,9 @@ export type PrdRecord = {
  * - `'draft'`: an open draft PR exists (the reviewer phase fires).
  * - `'ready'`: an open non-draft PR exists, awaiting merge.
  * - `'merged'`: the PR is merged (the slice's `state` should also be `'CLOSED'` in most cases).
- * - `null`: no PR exists, or the backend has no PR concept (file backend always emits `null`).
+ * - `null`: no PR exists, or the storage has no PR concept (file storage always emits `null`).
  *
- * Populated by `findSlices`. See ADR `afk-loop-asymmetric-across-backends`.
+ * Populated by `findSlices`. See ADR `afk-loop-asymmetric-across-storages`.
  */
 export type SlicePrState = 'draft' | 'ready' | 'merged' | null
 
@@ -47,31 +50,24 @@ export type Slice = {
 	state: 'OPEN' | 'CLOSED'
 	readyForAgent: boolean
 	needsRevision: boolean
-	/** Lifecycle bucket computed by the backend at findSlices time. See ADR `backend-owns-slice-bucket-classification`. */
-	bucket: Bucket
-	/** Ids of slices that block this one. See ADR `backend-native-blocker-storage`. */
+	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
 	blockedBy: string[]
-	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. */
+	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. Always null on the file storage. */
 	prState: SlicePrState
-	/** True when the slice's local branch is ahead of the integration branch with no PR open (a self-heal case). Always false on the file backend. */
+	/** True when the slice's local branch is ahead of the integration branch with no PR open (a self-heal case). Always false on the file storage. */
 	branchAhead: boolean
 }
+
+/**
+ * A `Slice` enriched with the loop-computed lifecycle bucket. Storages return raw `Slice`s;
+ * consumers that need bucket (status, list, loop classifier) call `classifySlices` from
+ * `src/utils/bucket.ts` to enrich.
+ */
+export type ClassifiedSlice = Slice & { bucket: Bucket }
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
 
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
-
-/**
- * Persistent git operations the backend can call. Wired once at construction in `BackendDeps`.
- */
-export type GitOps = {
-	fetch: (branch: string) => Promise<void>
-	push: (branch: string) => Promise<void>
-	checkout: (branch: string) => Promise<void>
-	mergeNoFf: (branch: string) => Promise<void>
-	deleteRemoteBranch: (branch: string) => Promise<void>
-	createRemoteBranch: (newBranch: string, baseBranch: string) => Promise<void>
-}
 
 /**
  * Outcome of a single per-slice phase invocation (one `prepare<Role>` + sandbox + `land<Role>`).
@@ -92,14 +88,14 @@ export type PreparedPhase = {
 }
 
 /**
- * Loop dispatch state for one slice. Computed by `Backend.classifySlice`.
+ * Loop dispatch state for one slice. Computed by `Storage.classifySlice`.
  *
  * - `'done'` — slice has nothing more for the loop to do (closed, !readyForAgent, PR merged/ready,
  *   or PR draft with `config.review: false`). The loop skips it.
  * - `'blocked'` — at least one unfinished blocker exists. Loop skips; will reconsider once a blocker closes.
  * - `'implement'` — run the implementer sandbox next.
- * - `'review'` — run the reviewer sandbox next (issue backend only; only reachable with `usePrs && review`).
- * - `'address'` — run the addresser sandbox next (issue backend only; only reachable with `usePrs && review`).
+ * - `'review'` — run the reviewer sandbox next (issue storage only; only reachable with `usePrs && review`).
+ * - `'address'` — run the addresser sandbox next (issue storage only; only reachable with `usePrs && review`).
  *
  * The `'create-pr-then-review'` recovery state from the prior loop design is gone — that path now lives
  * inside `reconcileSlices`, which heals branch-ahead-no-PR drift before each iteration's `findSlices`.
@@ -109,7 +105,7 @@ export type ResumeState = 'done' | 'blocked' | 'implement' | 'review' | 'address
 export type ClassifySliceConfig = { usePrs: boolean; review: boolean }
 
 /**
- * Per-loop-invocation context passed to backend methods that need to act against a specific PRD's
+ * Per-loop-invocation context passed to storage methods that need to act against a specific PRD's
  * integration branch. Same shape across all phase methods so the call sites stay uniform.
  */
 export type PhaseCtx = {
@@ -118,31 +114,35 @@ export type PhaseCtx = {
 	config: ClassifySliceConfig
 }
 
-export type BackendDeps = {
+export type StorageDeps = {
 	gh: GhRunner
 	repoRoot: string
 	projectRoot: string
 	baseBranch: string
 	branchPrefix: string | null
 	prdsDir: string
-	docMsg: string
 	labels: { prd: string; readyForAgent: string; needsRevision: string }
 	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
-	confirm: (msg: string) => Promise<boolean>
-	git: GitOps
-	log: (msg: string) => void
-	// Optional override for id generation (file backend). Default: imported generateId.
+	/**
+	 * Optional runtime channels. Read-only call paths (status, list) construct a storage
+	 * without these wired; phase methods and `Storage.close` (which prompts) throw at
+	 * the top if invoked without their channel. See ADR `unified-gitops-via-module-factory`.
+	 */
+	confirm?: (msg: string) => Promise<boolean>
+	git?: GitOps
+	log?: (msg: string) => void
+	// Optional override for id generation (file storage). Default: imported generateId.
 	generateId?: () => string
 }
 
-export type BackendFactory = (deps: BackendDeps) => Backend
+export type StorageFactory = (deps: StorageDeps) => Storage
 
-export interface Backend {
+export interface Storage {
 	readonly name: string
 	readonly defaultBranchPrefix: string
 	/**
-	 * Declarative concurrency cap. The loop uses `min(config.sandbox.maxConcurrent, backend.maxConcurrent ?? Infinity)`.
-	 * `null` = unbounded (user config wins). File backend declares 1 because its implementer commits
+	 * Declarative concurrency cap. The loop uses `min(config.sandbox.maxConcurrent, storage.maxConcurrent ?? Infinity)`.
+	 * `null` = unbounded (user config wins). File storage declares 1 because its implementer commits
 	 * land directly on the integration branch (no slice branches); parallel implementers would race.
 	 */
 	readonly maxConcurrent: number | null
@@ -160,20 +160,22 @@ export interface Backend {
 	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
 
 	/**
-	 * Decide what the loop should do next for this slice. Pure: reads slice fields and config flags only.
-	 * The file backend's classifier never returns `'review'` or `'address'` (no PR concept).
+	 * Decide what the loop should do next for this slice. Takes a `ClassifiedSlice` because routing
+	 * requires the lifecycle bucket alongside the slice's persistence fields. Pure: reads slice
+	 * fields, bucket, and config flags only.
+	 * The file storage's classifier never returns `'review'` or `'address'` (no PR concept).
 	 */
-	classifySlice(slice: Slice, config: ClassifySliceConfig): ResumeState
+	classifySlice(slice: ClassifiedSlice, config: ClassifySliceConfig): ResumeState
 
 	/**
-	 * Heal cross-process drift on each outer-loop iteration. The issue backend opens draft PRs for any
+	 * Heal cross-process drift on each outer-loop iteration. The issue storage opens draft PRs for any
 	 * slice with `branchAhead && !prState` (a prior run died after pushing but before `gh pr create`).
-	 * The file backend implements this as a no-op — reconciliation isn't a missing capability, it just
+	 * The file storage implements this as a no-op — reconciliation isn't a missing capability, it just
 	 * has nothing to reconcile.
 	 *
 	 * Contract: the loop calls `findSlices`, passes the result here, then re-calls `findSlices` to see
 	 * post-reconcile state. Taking slices as input (rather than internally calling `findSlices`) keeps
-	 * this method pure with respect to backend internals and trivially testable.
+	 * this method pure with respect to storage internals and trivially testable.
 	 */
 	reconcileSlices(slices: Slice[], ctx: PhaseCtx): Promise<void>
 
@@ -182,10 +184,10 @@ export interface Backend {
 	 *   - For each phase the classifier emits, the loop calls `prepare<Role>` (which may create branches,
 	 *     fetch PR data, build a `SandboxIn`), spawns the sandbox itself, then calls `land<Role>` with
 	 *     the verdict to apply gh/git side effects.
-	 *   - Methods unreachable on a given backend (e.g. `prepareReview` on file backend) throw.
-	 *     The throw is a runtime invariant: `classifySlice` on that backend never returns the matching
+	 *   - Methods unreachable on a given storage (e.g. `prepareReview` on file storage) throw.
+	 *     The throw is a runtime invariant: `classifySlice` on that storage never returns the matching
 	 *     state, so the loop never calls the method. Per-phase commands (`trowel review`) that bypass
-	 *     `classifySlice` propagate the throw as a "not supported on this backend" error.
+	 *     `classifySlice` propagate the throw as a "not supported on this storage" error.
 	 */
 	prepareImplement(slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase>
 	landImplement(slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome>

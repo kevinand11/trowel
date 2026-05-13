@@ -1,6 +1,7 @@
 import type { Role } from './prompts.ts'
 import type { SandboxIn, SandboxOut } from './verdict.ts'
-import type { Backend, PhaseOutcome, ResumeState, Slice } from '../backends/types.ts'
+import type { ClassifiedSlice, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
+import { classifySlices } from '../utils/bucket.ts'
 
 export type LoopConfig = {
 	usePrs: boolean
@@ -11,7 +12,7 @@ export type LoopConfig = {
 }
 
 export type LoopDeps = {
-	backend: Backend
+	storage: Storage
 	integrationBranch: string
 	spawnSandbox: (args: { role: Role; slice: Slice; branch: string; sandboxIn: SandboxIn }) => Promise<SandboxOut>
 	log: (msg: string) => void
@@ -22,15 +23,15 @@ export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
 const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'review', 'address'])
 
-function effectiveConcurrency(backend: Backend, configCap: number | null): number {
+function effectiveConcurrency(storage: Storage, configCap: number | null): number {
 	const a = configCap ?? Number.POSITIVE_INFINITY
-	const b = backend.maxConcurrent ?? Number.POSITIVE_INFINITY
+	const b = storage.maxConcurrent ?? Number.POSITIVE_INFINITY
 	return Math.max(1, Math.floor(Math.min(a, b)))
 }
 
 export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 	const tag = `[work prd-${prdId}]`
-	const { backend, config } = deps
+	const { storage, config } = deps
 	const failed = new Set<string>()
 	const ctxOf = (): { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } } => ({
 		prdId,
@@ -39,16 +40,16 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 	})
 
 	for (let iter = 0; iter < config.maxIterations; iter++) {
-		const before = await backend.findSlices(prdId)
-		await backend.reconcileSlices(before, ctxOf())
-		const slices = await backend.findSlices(prdId)
-		const actionable = slices.filter((s) => !failed.has(s.id) && backend.classifySlice(s, ctxOf().config) !== 'done')
+		const before = await storage.findSlices(prdId)
+		await storage.reconcileSlices(before, ctxOf())
+		const slices = classifySlices(await storage.findSlices(prdId))
+		const actionable = slices.filter((s) => !failed.has(s.id) && storage.classifySlice(s, ctxOf().config) !== 'done')
 		if (actionable.length === 0) {
 			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
 			return
 		}
 		deps.log(`${tag} iter ${iter + 1}/${config.maxIterations}: ${actionable.length} actionable slice(s) [${actionable.map((s) => s.id).join(', ')}]`)
-		const limit = effectiveConcurrency(backend, config.maxConcurrent)
+		const limit = effectiveConcurrency(storage, config.maxConcurrent)
 		for (let start = 0; start < actionable.length; start += limit) {
 			const batch = actionable.slice(start, start + limit)
 			const results = await Promise.allSettled(batch.map((s) => processSlice(prdId, s, deps)))
@@ -65,8 +66,8 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 	deps.log(`${tag} hit maxIterations (${config.maxIterations}); leaving remaining slices for next invocation`)
 }
 
-export async function processSlice(prdId: string, initial: Slice, deps: LoopDeps): Promise<ProcessOutcome> {
-	const { backend, config } = deps
+export async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
+	const { storage, config } = deps
 	const ctx = {
 		prdId,
 		integrationBranch: deps.integrationBranch,
@@ -74,14 +75,14 @@ export async function processSlice(prdId: string, initial: Slice, deps: LoopDeps
 	}
 	const tag = `[work prd-${prdId} slice-${initial.id}]`
 
-	if (backend.classifySlice(initial, ctx.config) === 'blocked') {
+	if (storage.classifySlice(initial, ctx.config) === 'blocked') {
 		deps.log(`${tag} blocked by [${initial.blockedBy.join(', ')}]; skipping`)
 		return 'no-work'
 	}
 
-	let slice = initial
+	let slice: ClassifiedSlice = initial
 	for (let step = 0; step < config.sliceStepCap; step++) {
-		const state = backend.classifySlice(slice, ctx.config)
+		const state = storage.classifySlice(slice, ctx.config)
 		if (state === 'done') return 'done'
 		if (state === 'blocked') return 'no-work'
 		if (!SANDBOX_ROLES.has(state)) {
@@ -91,16 +92,16 @@ export async function processSlice(prdId: string, initial: Slice, deps: LoopDeps
 		const role = state as Role
 		deps.log(`${tag} state=${role}: "${slice.title}"`)
 
-		const prep = await callPrepare(backend, role, slice, ctx)
+		const prep = await callPrepare(storage, role, slice, ctx)
 		deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
 		const verdict = await deps.spawnSandbox({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
 		deps.log(`${tag} ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
-		const outcome: PhaseOutcome = await callLand(backend, role, slice, verdict, ctx)
+		const outcome: PhaseOutcome = await callLand(storage, role, slice, verdict, ctx)
 		if (outcome === 'done') return 'done'
 		if (outcome === 'no-work') return 'no-work'
 		if (outcome === 'partial') return 'partial'
 		// outcome === 'progress': refetch and continue
-		const refreshed = (await backend.findSlices(prdId)).find((s) => s.id === slice.id)
+		const refreshed = classifySlices(await storage.findSlices(prdId)).find((s) => s.id === slice.id)
 		if (!refreshed) return 'partial'
 		slice = refreshed
 	}
@@ -108,16 +109,16 @@ export async function processSlice(prdId: string, initial: Slice, deps: LoopDeps
 	return 'partial'
 }
 
-function callPrepare(backend: Backend, role: Role, slice: Slice, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
-	if (role === 'implement') return backend.prepareImplement(slice, ctx)
-	if (role === 'review') return backend.prepareReview(slice, ctx)
-	return backend.prepareAddress(slice, ctx)
+function callPrepare(storage: Storage, role: Role, slice: Slice, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
+	if (role === 'implement') return storage.prepareImplement(slice, ctx)
+	if (role === 'review') return storage.prepareReview(slice, ctx)
+	return storage.prepareAddress(slice, ctx)
 }
 
-function callLand(backend: Backend, role: Role, slice: Slice, verdict: SandboxOut, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
-	if (role === 'implement') return backend.landImplement(slice, verdict, ctx)
-	if (role === 'review') return backend.landReview(slice, verdict, ctx)
-	return backend.landAddress(slice, verdict, ctx)
+function callLand(storage: Storage, role: Role, slice: Slice, verdict: SandboxOut, ctx: { prdId: string; integrationBranch: string; config: { usePrs: boolean; review: boolean } }) {
+	if (role === 'implement') return storage.landImplement(slice, verdict, ctx)
+	if (role === 'review') return storage.landReview(slice, verdict, ctx)
+	return storage.landAddress(slice, verdict, ctx)
 }
 
 if (import.meta.vitest) {
@@ -125,11 +126,11 @@ if (import.meta.vitest) {
 
 	type FakeState = {
 		slices: Slice[]
-		classify?: (s: Slice, c: { usePrs: boolean; review: boolean }) => ResumeState
+		classify?: (s: ClassifiedSlice, c: { usePrs: boolean; review: boolean }) => ResumeState
 	}
 
-	function makeBackend(state: FakeState, overrides: Partial<Backend> = {}): Backend {
-		const defaultClassify = (s: Slice): ResumeState => {
+	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
+		const defaultClassify = (s: ClassifiedSlice): ResumeState => {
 			if (s.state === 'CLOSED') return 'done'
 			if (!s.readyForAgent) return 'done'
 			if (s.bucket === 'blocked') return 'blocked'
@@ -184,7 +185,7 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function makeSlice(overrides: Partial<Slice> = {}): Slice {
+	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
 			id: 's1',
 			title: 'A',
@@ -200,9 +201,9 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function makeDeps(backend: Backend, overrides: Partial<LoopDeps> = {}): LoopDeps {
+	function makeDeps(storage: Storage, overrides: Partial<LoopDeps> = {}): LoopDeps {
 		return {
-			backend,
+			storage,
 			integrationBranch: 'integration',
 			spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
@@ -214,9 +215,9 @@ if (import.meta.vitest) {
 	describe('runLoop', () => {
 		test('blocked slice → no sandbox spawn; outcome no-work', async () => {
 			const blocked = makeSlice({ id: 'b1', bucket: 'blocked', blockedBy: ['a'] })
-			const backend = makeBackend({ slices: [blocked] })
+			const storage = makeStorage({ slices: [blocked] })
 			let sandboxCalls = 0
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async () => {
 					sandboxCalls++
 					return { verdict: 'ready', commits: 1 }
@@ -227,24 +228,24 @@ if (import.meta.vitest) {
 
 		test('ready slice: runs implementer, lands done, exits with empty actionable queue', async () => {
 			const slice = makeSlice({ id: 's1' })
-			const backend = makeBackend({ slices: [slice] })
+			const storage = makeStorage({ slices: [slice] })
 			const roles: Role[] = []
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async ({ role }) => {
 					roles.push(role)
 					return { verdict: 'ready', commits: 1 }
 				},
 			}))
 			expect(roles).toEqual(['implement'])
-			const after = await backend.findSlices('p1')
+			const after = await storage.findSlices('p1')
 			expect(after[0]!.state).toBe('CLOSED')
 		})
 
 		test('partial verdict: returns partial, leaves slice OPEN, exits this run', async () => {
 			const slice = makeSlice({ id: 's1' })
-			const backend = makeBackend({ slices: [slice] })
+			const storage = makeStorage({ slices: [slice] })
 			let outerIters = 0
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async () => ({ verdict: 'partial', commits: 0 }),
 				log: (m) => {
 					if (/iter \d+\//.test(m)) outerIters++
@@ -253,16 +254,16 @@ if (import.meta.vitest) {
 			}))
 			// step-cap=1 → one inner attempt, outer loop sees slice still actionable, retries until maxIterations
 			expect(outerIters).toBe(5)
-			const after = await backend.findSlices('p1')
+			const after = await storage.findSlices('p1')
 			expect(after[0]!.state).toBe('OPEN')
 		})
 
 		test('stuck slice (always partial) does not block sibling ready slices in subsequent iterations', async () => {
 			const stuck = makeSlice({ id: 'stuck' })
 			const fine = makeSlice({ id: 'fine' })
-			const backend = makeBackend({ slices: [stuck, fine] })
+			const storage = makeStorage({ slices: [stuck, fine] })
 			const calls: string[] = []
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async ({ slice: s }) => {
 					calls.push(s.id)
 					return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
@@ -270,15 +271,15 @@ if (import.meta.vitest) {
 				config: { usePrs: false, review: false, maxIterations: 5, sliceStepCap: 1, maxConcurrent: null },
 			}))
 			expect(calls).toContain('fine')
-			const after = await backend.findSlices('p1')
+			const after = await storage.findSlices('p1')
 			expect(after.find((s) => s.id === 'fine')!.state).toBe('CLOSED')
 		})
 
 		test('hitting maxIterations exits with a log message', async () => {
 			const slice = makeSlice({ id: 's1' })
-			const backend = makeBackend({ slices: [slice] })
+			const storage = makeStorage({ slices: [slice] })
 			const logs: string[] = []
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async () => ({ verdict: 'partial', commits: 0 }),
 				log: (m) => logs.push(m),
 				config: { usePrs: false, review: false, maxIterations: 2, sliceStepCap: 1, maxConcurrent: null },
@@ -286,10 +287,10 @@ if (import.meta.vitest) {
 			expect(logs.some((m) => /maxIterations \(2\)/.test(m))).toBe(true)
 		})
 
-		test('a rejected slice (backend throws) is logged, added to skip set, not retried', async () => {
+		test('a rejected slice (storage throws) is logged, added to skip set, not retried', async () => {
 			const a = makeSlice({ id: 'a' })
 			const b = makeSlice({ id: 'b' })
-			const backend = makeBackend({ slices: [a, b] }, {
+			const storage = makeStorage({ slices: [a, b] }, {
 				prepareImplement: async (s) => {
 					if (s.id === 'a') throw new Error('docker unreachable')
 					return { branch: 'integration', sandboxIn: { slice: { id: s.id, title: s.title, body: s.body } } }
@@ -297,7 +298,7 @@ if (import.meta.vitest) {
 			})
 			const calls: string[] = []
 			const logs: string[] = []
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async ({ slice: s }) => {
 					calls.push(s.id)
 					return { verdict: 'partial', commits: 0 }
@@ -311,12 +312,12 @@ if (import.meta.vitest) {
 			expect(logs.some((m) => /slice-a\] error: docker unreachable/.test(m))).toBe(true)
 		})
 
-		test('respects min(config.maxConcurrent, backend.maxConcurrent): file backend semantics serialize even when config allows 3', async () => {
+		test('respects min(config.maxConcurrent, storage.maxConcurrent): file storage semantics serialize even when config allows 3', async () => {
 			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
-			const backend = makeBackend({ slices }, { maxConcurrent: 1 })
+			const storage = makeStorage({ slices }, { maxConcurrent: 1 })
 			let live = 0
 			let peak = 0
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async () => {
 					live++
 					peak = Math.max(peak, live)
@@ -329,12 +330,12 @@ if (import.meta.vitest) {
 			expect(peak).toBe(1)
 		})
 
-		test('respects config.maxConcurrent when backend.maxConcurrent is null: issue-backend semantics parallelize up to 2', async () => {
+		test('respects config.maxConcurrent when storage.maxConcurrent is null: issue-storage semantics parallelize up to 2', async () => {
 			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
-			const backend = makeBackend({ slices }, { maxConcurrent: null })
+			const storage = makeStorage({ slices }, { maxConcurrent: null })
 			let live = 0
 			let peak = 0
-			await runLoop('p1', makeDeps(backend, {
+			await runLoop('p1', makeDeps(storage, {
 				spawnSandbox: async () => {
 					live++
 					peak = Math.max(peak, live)
@@ -352,15 +353,15 @@ if (import.meta.vitest) {
 	describe('processSlice', () => {
 		test('progress outcome refetches slice, continues inner step-cap loop, sees updated classification', async () => {
 			const slice = makeSlice({ id: 's1' })
-			const backend = makeBackend({ slices: [slice] }, {
+			const storage = makeStorage({ slices: [slice] }, {
 				landImplement: async () => 'progress',
 			})
 			let classifyCount = 0
-			backend.classifySlice = () => {
+			storage.classifySlice = () => {
 				classifyCount++
 				return classifyCount === 1 ? 'implement' : 'done'
 			}
-			const outcome = await processSlice('p1', slice, makeDeps(backend, {
+			const outcome = await processSlice('p1', slice, makeDeps(storage, {
 				spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
 			}))
 			expect(outcome).toBe('done')

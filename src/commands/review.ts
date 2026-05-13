@@ -1,12 +1,13 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
-import type { Backend, Slice } from '../backends/types.ts'
+import type { Storage, Slice, ClassifiedSlice } from '../storages/types.ts'
+import { classifySlices } from '../utils/bucket.ts'
 
 
 export async function review(prdId: string, sliceId: string): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring({})
 		await runReview(prdId, sliceId, {
-			backend: wiring.backend,
+			storage: wiring.storage,
 			runOnePhase: (slice) => wiring.runOnePhase(prdId, slice, 'review'),
 			stderr: (s) => process.stderr.write(s),
 		})
@@ -17,18 +18,18 @@ export async function review(prdId: string, sliceId: string): Promise<void> {
 }
 
 type ReviewRuntime = {
-	backend: Backend
+	storage: Storage
 	runOnePhase: (slice: Slice) => Promise<void>
 	stderr: (s: string) => void
 }
 
 async function runReview(prdId: string, sliceId: string, rt: ReviewRuntime): Promise<void> {
-	if (rt.backend.name !== 'issue') {
-		throw new Error(`'${rt.backend.name}' backend does not support review. PR-driven review is an issue-backend feature.`)
+	if (rt.storage.name !== 'issue') {
+		throw new Error(`'${rt.storage.name}' storage does not support review. PR-driven review is an issue-storage feature.`)
 	}
-	const prd = await rt.backend.findPrd(prdId)
+	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
-	const slice = (await rt.backend.findSlices(prdId)).find((s) => s.id === sliceId)
+	const slice = classifySlices(await rt.storage.findSlices(prdId)).find((s) => s.id === sliceId)
 	if (!slice) throw new Error(`slice '${sliceId}' not found in PRD '${prdId}'`)
 	if (slice.bucket !== 'in-flight') {
 		throw new Error(
@@ -42,7 +43,7 @@ async function runReview(prdId: string, sliceId: string, rt: ReviewRuntime): Pro
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function makeSlice(overrides: Partial<Slice> = {}): Slice {
+	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
 			id: 's1',
 			title: 'Implement A',
@@ -58,7 +59,7 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function makeBackend(name: string, slices: Slice[]): Backend {
+	function makeStorage(name: string, slices: Slice[]): Storage {
 		return {
 			name,
 			defaultBranchPrefix: '',
@@ -85,12 +86,12 @@ if (import.meta.vitest) {
 	}
 
 	describe('runReview', () => {
-		test('on an in-flight slice (issue backend): calls runOnePhase exactly once', async () => {
+		test('on an in-flight slice (issue storage): calls runOnePhase exactly once', async () => {
 			const slice = makeSlice({ id: 's1', bucket: 'in-flight' })
-			const backend = makeBackend('issue', [slice])
+			const storage = makeStorage('issue', [slice])
 			const calls: Slice[] = []
 			await runReview('p1', 's1', {
-				backend,
+				storage,
 				runOnePhase: async (s) => {
 					calls.push(s)
 				},
@@ -99,19 +100,19 @@ if (import.meta.vitest) {
 			expect(calls).toHaveLength(1)
 		})
 
-		test('refuses on the file backend with a backend-aware message', async () => {
+		test('refuses on the file storage with a storage-aware message', async () => {
 			const slice = makeSlice({ id: 's1', bucket: 'in-flight' })
-			const backend = makeBackend('file', [slice])
+			const storage = makeStorage('file', [slice])
 			await expect(
-				runReview('p1', 's1', { backend, runOnePhase: async () => {}, stderr: () => {} }),
-			).rejects.toThrow(/file.*backend.*does not support.*review/i)
+				runReview('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} }),
+			).rejects.toThrow(/file.*storage.*does not support.*review/i)
 		})
 
 		test('refuses when slice bucket is not "in-flight"', async () => {
-			const slice = makeSlice({ id: 's1', bucket: 'ready' })
-			const backend = makeBackend('issue', [slice])
+			const slice = makeSlice({ id: 's1', prState: null }) // no PR → bucket 'ready'
+			const storage = makeStorage('issue', [slice])
 			await expect(
-				runReview('p1', 's1', { backend, runOnePhase: async () => {}, stderr: () => {} }),
+				runReview('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} }),
 			).rejects.toThrow(/bucket 'ready'/)
 		})
 	})
