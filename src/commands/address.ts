@@ -16,13 +16,13 @@ export async function address(prdId: string, sliceId: string): Promise<void> {
 	}
 }
 
-export type AddressRuntime = {
+type AddressRuntime = {
 	backend: Backend
 	runOnePhase: (slice: Slice) => Promise<void>
 	stderr: (s: string) => void
 }
 
-export async function runAddress(prdId: string, sliceId: string, rt: AddressRuntime): Promise<void> {
+async function runAddress(prdId: string, sliceId: string, rt: AddressRuntime): Promise<void> {
 	if (rt.backend.name !== 'issue') {
 		throw new Error(`'${rt.backend.name}' backend does not support address. PR-driven feedback is an issue-backend feature.`)
 	}

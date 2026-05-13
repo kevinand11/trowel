@@ -54,7 +54,7 @@ const realImageDeps = {
 	},
 }
 
-export type LoopWiring = {
+type LoopWiring = {
 	config: Config
 	projectRoot: string
 	backend: Backend

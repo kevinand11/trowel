@@ -16,13 +16,13 @@ export async function review(prdId: string, sliceId: string): Promise<void> {
 	}
 }
 
-export type ReviewRuntime = {
+type ReviewRuntime = {
 	backend: Backend
 	runOnePhase: (slice: Slice) => Promise<void>
 	stderr: (s: string) => void
 }
 
-export async function runReview(prdId: string, sliceId: string, rt: ReviewRuntime): Promise<void> {
+async function runReview(prdId: string, sliceId: string, rt: ReviewRuntime): Promise<void> {
 	if (rt.backend.name !== 'issue') {
 		throw new Error(`'${rt.backend.name}' backend does not support review. PR-driven review is an issue-backend feature.`)
 	}

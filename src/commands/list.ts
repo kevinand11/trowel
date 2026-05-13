@@ -10,13 +10,13 @@ const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked'
 
 export type PrdState = 'open' | 'closed' | 'all'
 
-export type PrdListRow = {
+type PrdListRow = {
 	summary: PrdSummary
 	state: 'OPEN' | 'CLOSED'
 	slices: Slice[]
 }
 
-export function renderList(rows: PrdListRow[], filter: PrdState): string {
+function renderList(rows: PrdListRow[], filter: PrdState): string {
 	if (rows.length === 0) {
 		return filter === 'all' ? 'No PRDs found.\n' : `No ${filter} PRDs.\n`
 	}
@@ -46,12 +46,12 @@ function formatCounts(counts: Record<Bucket, number>): string {
 		.join(' · ')
 }
 
-export type ListRuntime = {
+type ListRuntime = {
 	backend: Backend
 	stdout: (s: string) => void
 }
 
-export async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
+async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
 	const summaries = await rt.backend.listPrds({ state: filter })
 	const rows: PrdListRow[] = await Promise.all(
 		summaries.map(async (summary) => {

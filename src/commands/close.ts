@@ -8,9 +8,9 @@ import { loadConfig } from '../config.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { tryExec } from '../utils/shell.ts'
 
-export type OpenPr = { number: number; url: string }
+type OpenPr = { number: number; url: string }
 
-export type GitOps = {
+type GitOps = {
 	currentBranch: () => Promise<string>
 	branchExists: (branch: string) => Promise<boolean>
 	isMerged: (branch: string, base: string) => Promise<boolean>
@@ -18,7 +18,7 @@ export type GitOps = {
 	deleteBranch: (branch: string) => Promise<void>
 }
 
-export type CloseRuntime = {
+type CloseRuntime = {
 	backend: Backend
 	baseBranch: string
 	deleteBranchPolicy: DeleteBranchPolicy
@@ -28,7 +28,7 @@ export type CloseRuntime = {
 	listOpenPrs: (baseBranch: string) => Promise<OpenPr[]>
 }
 
-export async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
+async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
 
 	const prd = await rt.backend.findPrd(prdId)

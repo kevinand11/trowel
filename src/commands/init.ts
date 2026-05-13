@@ -10,13 +10,13 @@ import { pathForLayer } from '../config.ts'
 import { resolveProjectRoot } from '../project.ts'
 import { partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
 
-export type InitPrompts = {
+type InitPrompts = {
 	backend: (current: string) => Promise<string>
 	branchPrefix: (current: string) => Promise<string>
 	confirm: (msg: string) => Promise<boolean>
 }
 
-export type RunInitOptions = {
+type RunInitOptions = {
 	layer: InitableLayer
 	cwd?: string
 	home?: string
@@ -26,9 +26,9 @@ export type RunInitOptions = {
 	resolveRoot?: (cwd: string) => Promise<string | null>
 }
 
-export type RunInitResult = { wrote: boolean; path: string }
+type RunInitResult = { wrote: boolean; path: string }
 
-export async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
+async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 	const cwd = opts.cwd ?? process.cwd()
 	const home = opts.home ?? homedir()
 	const stdout = opts.stdout ?? ((s) => process.stdout.write(s))

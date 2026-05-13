@@ -1,14 +1,13 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
 import type { Backend } from '../backends/types.ts'
 
-
-export type WorkRuntime = {
+type WorkRuntime = {
 	backend: Backend
 	runLoop: (prdId: string, integrationBranch: string) => Promise<void>
 	stdout: (s: string) => void
 }
 
-export async function runWork(prdId: string, rt: WorkRuntime): Promise<void> {
+async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
 	const prd = await rt.backend.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 	await rt.runLoop(prdId, prd.branch)

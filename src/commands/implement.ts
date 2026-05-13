@@ -2,7 +2,7 @@ import { buildLoopWiring } from './_loop-wiring.ts'
 import type { Backend, Slice } from '../backends/types.ts'
 
 
-export type ImplementRuntime = {
+type ImplementRuntime = {
 	backend: Backend
 	runOnePhase: (slice: Slice) => Promise<void>
 	stderr: (s: string) => void
@@ -22,7 +22,7 @@ export async function implement(prdId: string, sliceId: string): Promise<void> {
 	}
 }
 
-export async function runImplement(prdId: string, sliceId: string, rt: ImplementRuntime): Promise<void> {
+async function runImplement(prdId: string, sliceId: string, rt: ImplementRuntime): Promise<void> {
 	const prd = await rt.backend.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 	const slice = (await rt.backend.findSlices(prdId)).find((s) => s.id === sliceId)

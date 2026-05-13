@@ -11,7 +11,7 @@ import { realGhRunner } from '../utils/gh-runner.ts'
 // the classifier evaluates them.
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
 
-export function renderStatus(prd: PrdRecord, slices: Slice[]): string {
+function renderStatus(prd: PrdRecord, slices: Slice[]): string {
 	const counts: Record<Bucket, number> = {
 		done: 0,
 		'needs-revision': 0,
@@ -73,12 +73,12 @@ function rightColumn(s: Slice, byId: Map<string, Slice>): string {
 	return ''
 }
 
-export type StatusRuntime = {
+type StatusRuntime = {
 	backend: Backend
 	stdout: (s: string) => void
 }
 
-export async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
+async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
 	const prd = await rt.backend.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 	const slices = await rt.backend.findSlices(prdId)
