@@ -244,7 +244,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	return {
 		name: 'file',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
-		capabilities: { prFlow: false },
 		createPrd,
 		branchForExisting,
 		findPrd,
@@ -330,18 +329,6 @@ if (import.meta.vitest) {
 			return false
 		}
 	}
-
-	describe('file storage: shape', () => {
-		test('declares capabilities.prFlow = false (no PR concept; reviewer/addresser are unreachable)', async () => {
-			const f = await setup()
-			try {
-				const storage = createFileStorage(f.deps)
-				expect(storage.capabilities.prFlow).toBe(false)
-			} finally {
-				await teardown(f)
-			}
-		})
-	})
 
 	describe('file storage: phase primitives', () => {
 		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
@@ -536,17 +523,77 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('review and address phases throw with a capability-shaped error on file storage', async () => {
+		test('landImplement + perSliceBranches:true + usePrs:true + ready: opens a draft PR, returns progress, slice stays OPEN (capability gate retired)', async () => {
+			const f = await setup()
+			try {
+				const storage = createFileStorage(f.deps)
+				const { id: prdId, branch: integration } = await storage.createPrd({ title: 'X', body: 'b' })
+				const slice = await storage.createSlice(prdId, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
+				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
+				const gitCalls: Array<[string, ...string[]]> = []
+				const recordingGit = {
+					fetch: async (b: string) => { gitCalls.push(['fetch', b]) },
+					push: async (b: string) => { gitCalls.push(['push', b]) },
+					checkout: async (b: string) => { gitCalls.push(['checkout', b]) },
+					mergeNoFf: async (b: string) => { gitCalls.push(['mergeNoFf', b]) },
+					deleteRemoteBranch: async (b: string) => { gitCalls.push(['deleteRemoteBranch', b]) },
+					createRemoteBranch: async (n: string, b: string) => { gitCalls.push(['createRemoteBranch', n, b]) },
+					createLocalBranch: async () => {},
+					pushSetUpstream: async () => {},
+					currentBranch: async () => integration,
+					branchExists: async () => true,
+					isMerged: async () => false,
+					deleteBranch: async () => {},
+					worktreeAdd: async () => {},
+					worktreeRemove: async () => {},
+					worktreeList: async () => [],
+					restoreAll: async () => {},
+					cleanUntracked: async () => {},
+				}
+				const ghCalls: string[][] = []
+				const gh = async (args: string[]) => {
+					ghCalls.push(args)
+					return { ok: true as const, stdout: '', stderr: '' }
+				}
+				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log! }
+
+				const outcome = await landImplement(
+					deps,
+					{ ...slice, readyForAgent: true } as Slice,
+					{ verdict: 'ready', commits: 1 },
+					{ prdId, integrationBranch: integration, config: { usePrs: true, review: false, perSliceBranches: true } },
+				)
+
+				expect(outcome).toBe('progress')
+				expect(gitCalls).toContainEqual(['push', sliceBranch])
+				// No merge/delete on this code path — PR creation is the terminus.
+				expect(gitCalls.map((c) => c[0])).not.toContain('mergeNoFf')
+				expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
+				// gh pr create was invoked.
+				expect(ghCalls.find((args) => args[0] === 'pr' && args[1] === 'create')).toBeDefined()
+				// Slice not closed (PR awaits merge).
+				const after = await storage.findSlices(prdId)
+				expect(after[0]!.state).toBe('OPEN')
+			} finally {
+				await teardown(f)
+			}
+		})
+
+		test('review and address phases on file storage reach the PR-lookup layer (capability gate retired)', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
-				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: false, review: false, perSliceBranches: false } }
+				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: true, review: true, perSliceBranches: true } }
 				const deps = makePhaseDeps(f, storage)
-				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/review requires capability 'prFlow'; storage 'file' does not declare it/)
-				await expect(landReview(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/review requires capability 'prFlow'; storage 'file' does not declare it/)
-				await expect(prepareAddress(deps, slice, ctx)).rejects.toThrow(/address requires capability 'prFlow'; storage 'file' does not declare it/)
-				await expect(landAddress(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(/address requires capability 'prFlow'; storage 'file' does not declare it/)
+				// f.deps.gh returns empty stdout, so findPrNumber throws "no PR found".
+				// The point: that's now the failure mode, not "requires capability 'prFlow'".
+				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/no PR found/)
+				await expect(prepareAddress(deps, slice, ctx)).rejects.toThrow(/no PR found/)
+				// landReview/landAddress with verdict 'partial' short-circuit before any gh call.
+				expect(await landReview(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
+				expect(await landAddress(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
 			} finally {
 				await teardown(f)
 			}

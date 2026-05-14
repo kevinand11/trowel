@@ -185,7 +185,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	return {
 		name: 'issue',
 		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
-		capabilities: { prFlow: true },
 		createPrd,
 		branchForExisting,
 		findPrd,
@@ -278,14 +277,6 @@ if (import.meta.vitest) {
 		}
 		return { deps, calls, gitCalls, logCalls }
 	}
-
-	describe('issue storage: shape', () => {
-		test('declares capabilities.prFlow = true (full PR-based lifecycle)', () => {
-			const { deps } = makeDeps([])
-			const storage = createIssueStorage(deps)
-			expect(storage.capabilities.prFlow).toBe(true)
-		})
-	})
 
 	describe('issue storage: phase primitives', () => {
 		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {

@@ -58,7 +58,7 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 
 	const fetchEnriched = async (): Promise<Slice[]> => {
 		const raw = await storage.findSlices(prdId)
-		if (!storage.capabilities.prFlow) return raw
+		if (!config.usePrs) return raw
 		return enrichSlicePrStates(deps.gh, prdId, raw)
 	}
 
@@ -124,9 +124,9 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 		if (outcome === 'done') return 'done'
 		if (outcome === 'no-work') return 'no-work'
 		if (outcome === 'partial') return 'partial'
-		// outcome === 'progress': refetch (with PR-state enrichment for prFlow storages) and continue
+		// outcome === 'progress': refetch (with PR-state enrichment when usePrs is on) and continue
 		const raw = await storage.findSlices(prdId)
-		const enriched = storage.capabilities.prFlow ? await enrichSlicePrStates(deps.gh, prdId, raw) : raw
+		const enriched = config.usePrs ? await enrichSlicePrStates(deps.gh, prdId, raw) : raw
 		const refreshed = classifySlices(enriched).find((s) => s.id === slice.id)
 		if (!refreshed) return 'partial'
 		slice = refreshed
@@ -158,7 +158,6 @@ if (import.meta.vitest) {
 		return {
 			name: 'fake',
 			defaultBranchPrefix: '',
-			capabilities: { prFlow: false },
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async () => null,
@@ -222,7 +221,7 @@ if (import.meta.vitest) {
 			storage,
 			git: noopGit(),
 			// Default: `pr list` returns an empty array so PR-state enrichment is a clean no-op on
-			// prFlow=true fakes. Per-test gh overrides handle the create / list-with-results cases.
+			// usePrs=true tests. Per-test gh overrides handle the create / list-with-results cases.
 			gh: async (args) => {
 				if (args[0] === 'pr' && args[1] === 'list') return { ok: true, stdout: '[]', stderr: '' }
 				return { ok: true, stdout: '', stderr: '' }
@@ -247,6 +246,22 @@ if (import.meta.vitest) {
 				},
 			}))
 			expect(sandboxCalls).toBe(0)
+		})
+
+		test('fetchEnriched runs gh pr list whenever config.usePrs is true, regardless of storage capability', async () => {
+			const slice = makeSlice({ id: 's1' })
+			const storage = makeStorage({ slices: [slice] })
+			const ghCalls: string[][] = []
+			await runLoop('p1', makeDeps(storage, {
+				gh: async (args) => {
+					ghCalls.push(args)
+					if (args[0] === 'pr' && args[1] === 'list') return { ok: true, stdout: '[]', stderr: '' }
+					return { ok: true, stdout: '', stderr: '' }
+				},
+				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
+				config: { usePrs: true, review: false, perSliceBranches: true, maxIterations: 1, sliceStepCap: 5, maxConcurrent: null },
+			}))
+			expect(ghCalls.find((args) => args[0] === 'pr' && args[1] === 'list')).toBeDefined()
 		})
 
 		test('ready slice: runs implementer, lands done, exits with empty actionable queue', async () => {
@@ -313,9 +328,9 @@ if (import.meta.vitest) {
 		test('a rejected slice (storage throws) is logged, added to skip set, not retried', async () => {
 			const a = makeSlice({ id: 'a' })
 			const b = makeSlice({ id: 'b' })
-			// Use a prFlow=true storage so prepareImplement calls git.createRemoteBranch — an
-			// injection seam for per-slice failure. (file-shape prepareImplement is pure.)
-			const storage = makeStorage({ slices: [a, b] }, { capabilities: { prFlow: true } })
+			// usePrs:true + perSliceBranches:true → prepareImplement calls git.createRemoteBranch,
+			// an injection seam for per-slice failure.
+			const storage = makeStorage({ slices: [a, b] })
 			const git = noopGit()
 			git.createRemoteBranch = async (newBranch) => {
 				if (newBranch.includes('slice-a')) throw new Error('docker unreachable')
@@ -377,12 +392,12 @@ if (import.meta.vitest) {
 
 	describe('processSlice', () => {
 		test('progress outcome refetches slice, continues inner step-cap loop, sees updated classification', async () => {
-			// On prFlow=true + usePrs=true, landImplement returns 'progress' after opening the draft
-			// PR. The gh stub mutates the slice to CLOSED on that pr-create call so the loop's refetch
-			// classifies as 'done' and the inner step-cap loop exits cleanly.
+			// On usePrs=true, landImplement returns 'progress' after opening the draft PR. The gh stub
+			// mutates the slice to CLOSED on that pr-create call so the loop's refetch classifies as
+			// 'done' and the inner step-cap loop exits cleanly.
 			const slice = makeSlice({ id: 's1' })
 			const state = { slices: [slice] }
-			const storage = makeStorage(state, { capabilities: { prFlow: true } })
+			const storage = makeStorage(state)
 			let prCreateCount = 0
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),

@@ -17,18 +17,14 @@ The canonical unique identifier for a **PRD**. Form depends on **Storage**: GitH
 _Avoid_: Slug (slug is human-legible, not unique on its own), name.
 
 **Storage**:
-The strategy that decides how a **PRD** is persisted, identified, listed, and linked to its **Slices**. One of `file`, `issue`. Storage is **pure persistence** — id format, slice/PRD CRUD, blocker linkage, slice-flag storage, branch-naming convention. The AFK-loop behavior (per-slice branches, PR-flow, reviewer/addresser phases) lives in the loop driver and is selected by **Flags**, not by the storage choice. Each storage declares a set of **Capabilities** that constrain which flag combinations are legal; mismatch errors at config load. PR-flow operations (`openDraftPr`, `markPrReady`, `fetchPrFeedback`, `getPrState`) are free utility functions parameterized by `gh`, not methods on the storage.
+The strategy that decides how a **PRD** is persisted, identified, listed, and linked to its **Slices**. One of `file`, `issue`. Storage is **pure persistence** — id format, slice/PRD CRUD, blocker linkage, slice-flag storage, branch-naming convention. The AFK-loop behavior (per-slice branches, PR-flow, reviewer/addresser phases) lives in the loop driver and is selected by **Flags**, not by the storage choice. Flags work uniformly across every storage; tool availability (`gh`, `claude`) is a `trowel doctor` concern, not a storage opinion. PR-flow operations (`openDraftPr`, `markPrReady`, `fetchPrFeedback`, `getPrState`) are free utility functions parameterized by `gh`, not methods on the storage.
 _Avoid_: Backend (old name, retired), provider, adapter, driver.
 
-**Capability**:
-A primitive property declared by a **Storage** that expresses what platform-level operations the storage's environment supports. Currently the only capability is `prFlow` — true iff the storage's environment has a PR/review surface (`issue`: true, `file`: false). Capabilities gate **Flag** validity: a user-flag that requires a capability the chosen storage doesn't expose is rejected at config load with a precise error. Capabilities are storage **opinions**, not pure technical can-do — a storage author may decline a capability for UX coherence even when the platform technically supports it.
-_Avoid_: Feature, support flag.
-
 **Flag**:
-A user-configurable behavior toggle in `config.work.*`. Flags drive AFK-loop behavior uniformly across storages, subject to capability gating. The three flags today:
-- **`usePrs`** (requires capability `prFlow`): the loop opens a draft PR per slice branch after the implementer's push; the slice's transition to `done` is gated on PR merge. When false, the loop merges the slice branch into the **Integration branch** via `git merge --no-ff` host-side (if `perSliceBranches: true`) or skips slice branches entirely (if `perSliceBranches: false`).
-- **`review`** (requires `usePrs: true` and therefore capability `prFlow`): the loop runs the **Reviewer** and **Addresser** phases against the slice's PR. When false, the loop opens the draft PR and stops, awaiting a human review.
-- **`perSliceBranches`** (no capability required): each Slice gets its own branch (`prd-<prdId>/slice-<sliceId>-<slug>`) on which the implementer commits. When false, the implementer commits directly to the **Integration branch**. Default `true`; the `false` mode is `maxConcurrent: 1` because parallel implementers would race on a single branch.
+A user-configurable behavior toggle in `config.work.*`. Flags drive AFK-loop behavior uniformly across every **Storage**. The three flags today:
+- **`usePrs`** (requires `perSliceBranches: true`): the loop opens a draft PR per slice branch after the implementer's push; the slice's transition to `done` is gated on PR merge. When false, the loop merges the slice branch into the **Integration branch** via `git merge --no-ff` host-side (if `perSliceBranches: true`) or skips slice branches entirely (if `perSliceBranches: false`). Mismatched flag combos (e.g. `usePrs: true && perSliceBranches: false`) error at config load.
+- **`review`** (requires `usePrs: true`): the loop runs the **Reviewer** and **Addresser** phases against the slice's PR. When false, the loop opens the draft PR (if `usePrs: true`) and stops, awaiting a human review.
+- **`perSliceBranches`**: each Slice gets its own branch (`prd-<prdId>/slice-<sliceId>-<slug>`) on which the implementer commits. When false, the implementer commits directly to the **Integration branch**. Default `true`; the `false` mode is `maxConcurrent: 1` because parallel implementers would race on a single branch.
 _Avoid_: Option, setting.
 
 **Slice**:
@@ -36,7 +32,7 @@ One vertical cut of a **PRD** — a discrete piece of work that can be implement
 _Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature; sub-issues are only one storage mechanism), task, ticket.
 
 **Bucket**:
-The canonical lifecycle classification of a **Slice**, computed by the AFK loop from the slice's storage fields plus PR-state queries. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive — every slice is in exactly one bucket at any time. Computed by the loop (not the storage) using the storage's raw Slice plus an optional PR-state probe via `getPrState(gh, sliceBranch)` when `usePrs: true`. The `in-flight` bucket only fires when there's an open draft PR for the slice — therefore only reachable under `usePrs: true && prFlow` capability.
+The canonical lifecycle classification of a **Slice**, computed by the AFK loop from the slice's storage fields plus PR-state queries. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive — every slice is in exactly one bucket at any time. Computed by the loop (not the storage) using the storage's raw Slice plus an optional PR-state probe via `getPrState(gh, sliceBranch)` when `usePrs: true`. The `in-flight` bucket only fires when there's an open draft PR for the slice — therefore only reachable when `usePrs: true` (any **Storage**).
 _Avoid_: Status (overloaded with `Slice.state: OPEN | CLOSED`, which is one of the raw signals that feeds the bucket), phase, stage.
 
 **Blocker**:
@@ -106,7 +102,7 @@ _Avoid_: Feature branch (reserved for `fix/<slug>`), task branch.
 - Every **Slice** is in exactly one **Bucket** at any time, assigned by the **AFK loop** (not the storage).
 - A **Slice** may reference zero or more **Blockers** (other slices in the same **PRD**) via its `blockedBy` field; if any blocker is not yet `done`, the slice's bucket is `blocked`.
 - The **Storage** is chosen per project; `trowel start`'s `--storage <kind>` flag overrides project config for one invocation.
-- Each **Storage** declares zero or more **Capabilities**. **Flag** values are validated against the chosen storage's capabilities at config load; an enabled flag requiring an unavailable capability errors before any work runs.
+- **Flag** combinations are validated at config load (e.g. `review: true` requires `usePrs: true`; `usePrs: true` requires `perSliceBranches: true`). Validation is storage-independent — every flag works on every storage.
 - Resolution of every config knob walks layers `default` → `global` → `private` → `project`, with later layers' present values overriding earlier ones.
 
 ## Example dialogue
@@ -118,10 +114,11 @@ _Avoid_: Feature branch (reserved for `fix/<slug>`), task branch.
 > **A:** Drop `{ "agent": { "model": "sonnet" } }` into `~/.trowel/projects/Users/mac/Desktop/code/packages/equipped/config.json` — that's the `private` **Layer**, your per-machine, per-project setting. But if `<project root>/.trowel/config.json` (the `project` **Layer**) sets `agent.model` to something else, `project` wins — that's β precedence.
 
 > **Q:** "I'm on the `file` storage and I set `config.work.usePrs: true`. What happens?"
-> **A:** Config load errors with something like `config.work.usePrs requires capability 'prFlow', but storage 'file' does not declare it`. The check fires before any work runs. If you want PR-flow, switch to the `issue` storage; if you want to stay on `file`, drop the `usePrs` flag.
+> **A:** It works — `usePrs` no longer gates on storage. The loop opens a draft PR per slice branch via `gh pr create`, just like on the `issue` storage. The only constraint is that `perSliceBranches: true` is required (no slice branch → no PR to open); config load rejects the combo otherwise. If your project has no GitHub remote, `gh pr create` will fail at runtime — `trowel doctor` surfaces tool/auth gaps; the loop itself doesn't pre-flight them.
 
 ## Flagged ambiguities
 
+- "Capability" was a `Storage`-declared property that gated `Flag` validity (specifically `prFlow`: true on `issue`, false on `file`). It retired when `PR-flow` was decoupled from `Storage` — flags now work uniformly on every storage. The pre-pivot ADR `2026-05-13-storage-behavior-separation.md` introduced the concept; the post-pivot ADR retiring it sits alongside it.
 - "Sub-issue" was used early in design as a synonym for **Slice**, but GitHub already has a "sub-issue" feature. To avoid confusion, **Slice** is canonical; the GitHub sub-issue API is only one possible **Slice marker** mechanism (used by the `issue` **Storage**).
 - "Backend" is the retired name for **Storage**. The codebase (as of this writing) still uses `Backend`, `BackendDeps`, `BackendFactory`, `getBackend`, `config.backend`, and `--backend`; the rename to `Storage`/`StorageDeps`/`StorageFactory`/`getStorage`/`config.storage`/`--storage` is captured in ADR `2026-05-13-storage-behavior-separation.md` and will land with that pivot.
 - "Sandbox" is the retired name for **Turn**. It overspecified Docker isolation; the **Turn** vocabulary covers both `kind: 'host'` (no container) and `kind: 'docker'` (future). Code-level identifiers (`spawnSandbox`, `SpawnSandboxArgs`, `sandbox-in.json`, `sandbox-out.json`, `config.sandbox.*`) are scheduled to rename in the same pass that retires sandcastle. The pre-pivot ADR `2026-05-12-sandcastle-integration.md` describes the old shape.
@@ -135,5 +132,5 @@ _Avoid_: Feature branch (reserved for `fix/<slug>`), task branch.
 - Shared **Turn** environments across agent runs. Each Turn gets a fresh worktree; trowel does not pool or reuse them.
 - Containerized isolation for **Turns**. Today Turns run on the host with worktree-only isolation. A future Docker mode is anticipated but not yet a schema dimension; it would re-introduce a sandbox image, the `~/.claude/` bind-mount, and the gh-free network policy.
 - `gh` operations from inside a **Turn**. All GitHub round-trips happen on the host; Turns are gh-free by design.
-- Reviewer / Addresser on storages without **Capability** `prFlow`. The PR-driven review surface is absent there by construction; users wanting it pick a storage that declares `prFlow` (today: `issue`).
 - Auto-committing `prdsDir` contents on the `file` storage. Trowel writes PRD/slice JSON and markdown to disk; if the user keeps `prdsDir` in a git repo, they own staging and committing those files. (The integration branch's per-slice commits — made by the AFK loop's implementer from inside the sandbox — are a different matter and are pushed by the loop as today.)
+- Storage-declared software preconditions. Tool availability (`gh`, `claude`) and auth state are `trowel doctor`'s concern, not a `Storage` opinion. The loop runs and lets missing tools fail naturally; `trowel doctor` is the discovery surface.

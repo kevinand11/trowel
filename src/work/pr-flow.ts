@@ -15,7 +15,7 @@ async function ghOrThrow(gh: GhRunner, args: string[]): Promise<string> {
 }
 
 /**
- * Canonical per-slice branch name for `prFlow: true` storages. The implementer creates this
+ * Canonical per-slice branch name (storage-agnostic). The implementer creates this
  * branch; subsequent `findPrNumber` / `getPrStates` calls look up PRs against it.
  */
 export function sliceBranchFor(prdId: string, slice: Slice): string {
@@ -23,9 +23,9 @@ export function sliceBranchFor(prdId: string, slice: Slice): string {
 }
 
 /**
- * Enrich slices with their `prState` via one bulk `gh pr list`. Storages with `prFlow: true`
- * return `prState: null` from `findSlices`; the loop calls this to populate the field before
- * classification and reconciliation. No-op for empty slice lists.
+ * Enrich slices with their `prState` via one bulk `gh pr list`. Storages return raw slices
+ * with `prState: null`; the loop calls this when `config.work.usePrs` is true to populate the
+ * field before classification and reconciliation. No-op for empty slice lists.
  */
 export async function enrichSlicePrStates(gh: GhRunner, prdId: string, slices: Slice[]): Promise<Slice[]> {
 	const openSlices = slices.filter((s) => s.state === 'OPEN')

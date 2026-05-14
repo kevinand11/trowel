@@ -1,6 +1,8 @@
 # Storage / behavior separation; PR-flow as utility functions; capability primitives
 
 > **Supersedes (when implementation lands):** [2026-05-12-unified-loop-via-backend-primitives.md](./2026-05-12-unified-loop-via-backend-primitives.md), [2026-05-11-backend-owns-slice-bucket-classification.md](./2026-05-11-backend-owns-slice-bucket-classification.md), [2026-05-11-optional-pr-flow-on-issue-backend.md](./2026-05-11-optional-pr-flow-on-issue-backend.md).
+>
+> **Amended by:** [2026-05-14-decouple-pr-flow-from-storage.md](./2026-05-14-decouple-pr-flow-from-storage.md). The `Capability` primitive (`capabilities.prFlow`) introduced here retires; PR-flow is now driven by `config.work.*` flags alone, uniformly across every storage. Other elements (storage / loop split, free PR-flow utility functions, `perSliceBranches` flag promotion, `Slice` shape simplification) stand.
 
 The `Backend` concept is split. What was previously one interface that bundled **persistence** (how PRDs/slices are stored) with **AFK-loop behavior** (per-slice branches, PR-flow, reviewer/addresser phases) becomes two cleanly separated layers:
 

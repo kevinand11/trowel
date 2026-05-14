@@ -148,16 +148,6 @@ export interface Storage {
 	readonly name: string
 	readonly defaultBranchPrefix: string
 
-	/**
-	 * Declarative capabilities a storage exposes to the loop and to config validation.
-	 *
-	 * - `prFlow` — the storage participates in a PR-based lifecycle (slice branches, draft PRs,
-	 *   reviewer/addresser roles). File storage: `false`. Issue storage: `true`.
-	 *   The loop's phase dispatch and `reconcileSlices` are no-ops on `prFlow: false` storages.
-	 *   Config validation (step 4) will reject `config.work.usePrs: true` against a non-`prFlow` storage.
-	 */
-	readonly capabilities: { prFlow: boolean }
-
 	// PRD lifecycle
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
 	branchForExisting(id: string): Promise<string>

@@ -6,7 +6,6 @@ import { v } from 'valleyed'
 
 import { resolveProjectRoot } from './project.ts'
 import { defaultConfig, mergePartial, partialConfigPipe, type Config, type ConfigLayer, type InitableLayer, type PartialConfig } from './schema.ts'
-import { storageCapabilities } from './storages/registry.ts'
 
 export type LoadedLayer = {
 	layer: Exclude<ConfigLayer, 'default'>
@@ -96,8 +95,8 @@ export async function loadConfig(cwd: string = process.cwd(), home: string = hom
 }
 
 /**
- * Cross-field validation that can't live in the per-layer Valleyed pipe (it needs the merged
- * `storage` value to look up capabilities). See ADR `storage-behavior-separation` step 4.
+ * Cross-field flag validation. See ADRs `storage-behavior-separation` and
+ * `decouple-pr-flow-from-storage`: flag combinations are validated storage-independently.
  */
 function validateCapabilities(config: Config): void {
 	if (config.work.review && !config.work.usePrs) {
@@ -105,13 +104,6 @@ function validateCapabilities(config: Config): void {
 	}
 	if (config.work.usePrs && !config.work.perSliceBranches) {
 		throw new Error(`config.work.usePrs requires config.work.perSliceBranches: true (there is no slice branch to open a PR against otherwise)`)
-	}
-	if (config.work.usePrs) {
-		const caps = storageCapabilities[config.storage]
-		if (!caps) throw new Error(`config.storage '${config.storage}' is not a registered storage`)
-		if (!caps.prFlow) {
-			throw new Error(`config.work.usePrs requires capability 'prFlow', but storage '${config.storage}' does not declare it`)
-		}
 	}
 }
 
@@ -211,9 +203,10 @@ if (import.meta.vitest) {
 			expect(resolved.config.collision.branchPattern).toBe('prds-issue-*')
 		})
 
-		test("rejects usePrs: true against the file storage (capability 'prFlow' is false)", async () => {
+		test('accepts usePrs: true against the file storage (capability gating retired)', async () => {
 			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'file', work: { usePrs: true } })
-			await expect(loadConfig(project, home)).rejects.toThrow(/config\.work\.usePrs requires capability 'prFlow', but storage 'file' does not declare it/)
+			const resolved = await loadConfig(project, home)
+			expect(resolved.config.work.usePrs).toBe(true)
 		})
 
 		test('accepts usePrs: true against the issue storage', async () => {
@@ -227,7 +220,7 @@ if (import.meta.vitest) {
 			await expect(loadConfig(project, home)).rejects.toThrow(/config\.work\.review requires config\.work\.usePrs: true/)
 		})
 
-		test('accepts review: true when usePrs: true is also set (on a prFlow storage)', async () => {
+		test('accepts review: true when usePrs: true is also set', async () => {
 			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', work: { usePrs: true, review: true } })
 			const resolved = await loadConfig(project, home)
 			expect(resolved.config.work.review).toBe(true)

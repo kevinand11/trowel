@@ -1,7 +1,6 @@
 import path from 'node:path'
 
 import type { Config } from './schema.ts'
-import { ghIsAuthenticated } from './utils/gh.ts'
 import { currentBranch, fetch, isCleanWorkingTree } from './utils/git.ts'
 
 export type PreflightFailure = {
@@ -21,13 +20,6 @@ export async function runPreflight(opts: { config: Config; projectRoot: string |
 		const clean = await isCleanWorkingTree(projectRoot)
 		if (!clean) {
 			failures.push({ check: 'clean-tree', message: 'Working tree has uncommitted changes. Stash or commit first.' })
-		}
-	}
-
-	if (config.preconditions.requireGhAuth) {
-		const authed = await ghIsAuthenticated()
-		if (!authed) {
-			failures.push({ check: 'gh-auth', message: '`gh` is not authenticated. Run `gh auth login` first.' })
 		}
 	}
 
@@ -62,7 +54,7 @@ if (import.meta.vitest) {
 
 	const allChecksOff = (): Config =>
 		mergePartial(defaultConfig, {
-			preconditions: { requireCleanTree: false, requireGitRoot: false, requireGhAuth: false },
+			preconditions: { requireCleanTree: false, requireGitRoot: false },
 		})
 
 	describe('runPreflight', () => {

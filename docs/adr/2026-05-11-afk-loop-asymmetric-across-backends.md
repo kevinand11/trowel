@@ -1,6 +1,8 @@
 # AFK loop is asymmetric across backends; two loop drivers, minimal Backend interface
 
 > **Superseded by:** [2026-05-12-unified-loop-via-backend-primitives.md](./2026-05-12-unified-loop-via-backend-primitives.md). The asymmetry that justified two drivers narrowed once `config.work.review` defaulted to `false` (see ADR `agent-review-opt-in`); the interface-bloat objection was resolved by gating unsupported methods through `classifySlice` and having them throw rather than no-op. The text below is kept for historical context.
+>
+> **Further superseded by:** [2026-05-14-decouple-pr-flow-from-storage.md](./2026-05-14-decouple-pr-flow-from-storage.md). The original `issue`-vs-`file` asymmetry premise — that PR-flow is a storage property — is itself retired. Under the post-pivot model the loop is symmetric across storages; asymmetry, when it exists, comes from the user's `config.work.*` flag choices, not the storage choice.
 
 The **AFK loop** does not share a single state machine across **Backends**. The `issue` backend runs the full four-state per-slice machine (`implement` → `review` → `address` → `done`) with parallel agents, draft PRs, and label-driven transitions. The `file` backend runs a serial implementer-only pass: pop the next `ready` **Slice**, run an **Implementer** in a fresh **Sandbox** on the **Integration branch**, commit, push, mark the slice CLOSED, repeat.
 

@@ -31,11 +31,6 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) throw new Error('no project root found')
 
-	const which = await tryExec('which', ['claude'])
-	if (!which.ok) {
-		throw new Error("trowel requires the 'claude' CLI on PATH; install Claude Code first.")
-	}
-
 	const storageKind = opts.storage ?? config.storage
 
 	const log = (m: string) => process.stdout.write(`${m}\n`)

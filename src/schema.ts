@@ -37,7 +37,6 @@ export const partialConfigPipe = () =>
 			v.object({
 				requireCleanTree: v.optional(v.boolean()),
 				requireGitRoot: v.optional(v.boolean()),
-				requireGhAuth: v.optional(v.boolean()),
 			}),
 		),
 		labels: v.optional(
@@ -98,7 +97,6 @@ export type Config = {
 	preconditions: {
 		requireCleanTree: boolean
 		requireGitRoot: boolean
-		requireGhAuth: boolean
 	}
 	labels: {
 		readyForAgent: string
@@ -156,7 +154,6 @@ export const defaultConfig: Config = {
 	preconditions: {
 		requireCleanTree: true,
 		requireGitRoot: true,
-		requireGhAuth: true,
 	},
 	labels: {
 		readyForAgent: 'ready-for-agent',
@@ -174,8 +171,8 @@ export const defaultConfig: Config = {
 	work: {
 		maxIterations: 5,
 		sliceStepCap: 5,
-		// Default false: matches the default `storage: 'file'`, which has `prFlow: false`.
-		// Users who switch to a `prFlow` storage (e.g. `issue`) and want PRs flip both flags.
+		// Default false: most projects start in host-merge mode regardless of storage.
+		// Set true to open a draft PR per slice branch (requires a GitHub remote + gh auth).
 		usePrs: false,
 		review: false,
 		// Default true: every workflow runs each slice on its own branch, then host-merges (no PRs)
@@ -252,14 +249,13 @@ if (import.meta.vitest) {
 			expect(defaultConfig.work.review).toBe(false)
 		})
 
-		test('work.perSliceBranches defaults to true (slice-branches by default; host-merges on non-prFlow storages)', () => {
+		test('work.perSliceBranches defaults to true (slice-branches by default; host-merges when usePrs is false)', () => {
 			expect(defaultConfig.work.perSliceBranches).toBe(true)
 		})
 
 		test('every preconditions check is on by default', () => {
 			expect(defaultConfig.preconditions.requireCleanTree).toBe(true)
 			expect(defaultConfig.preconditions.requireGitRoot).toBe(true)
-			expect(defaultConfig.preconditions.requireGhAuth).toBe(true)
 		})
 	})
 

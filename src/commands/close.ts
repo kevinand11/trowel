@@ -152,7 +152,6 @@ if (import.meta.vitest) {
 		const storage: Storage = {
 			name: 'fake',
 			defaultBranchPrefix: '',
-			capabilities: { prFlow: false },
 			createPrd: async () => {
 				throw new Error('not implemented')
 			},

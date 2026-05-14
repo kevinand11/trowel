@@ -7,16 +7,6 @@ export const storageFactories: Record<string, StorageFactory> = {
 	issue: createIssueStorage,
 }
 
-/**
- * Static capability table — mirrors each storage instance's `capabilities`. Lives parallel to
- * `storageFactories` so config validation can query capabilities without instantiating a storage
- * (instantiation needs git/gh which `loadConfig` doesn't have).
- */
-export const storageCapabilities: Record<string, { prFlow: boolean }> = {
-	file: { prFlow: false },
-	issue: { prFlow: true },
-}
-
 export function getStorage(kind: string, deps: StorageDeps): Storage {
 	const factory = storageFactories[kind]
 	if (!factory) throw new Error(`No storage registered for kind '${kind}'`)

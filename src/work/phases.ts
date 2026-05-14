@@ -9,9 +9,9 @@ import { slug as slugify } from '../utils/slug.ts'
  * Dependency bag for the loop-level phase primitives. The loop builds this once per run from
  * its own `LoopDeps`; per-phase commands (`trowel implement`, etc.) build it ad-hoc.
  *
- * See ADR `storage-behavior-separation`: phase logic lives in the loop, not on `Storage`.
- * Storage exposes CRUD + capabilities; the phase functions branch on
- * `deps.storage.capabilities.prFlow` to pick file-shape vs issue-shape behavior.
+ * See ADR `storage-behavior-separation` and the post-pivot ADR `decouple-pr-flow-from-storage`:
+ * phase logic lives in the loop, not on `Storage`. PR-flow behavior branches on the user's
+ * `config.work.*` flags (`usePrs`, `review`, `perSliceBranches`), not on a storage capability.
  */
 export type PhaseDeps = {
 	storage: Storage
@@ -22,12 +22,6 @@ export type PhaseDeps = {
 
 function sliceBranchFor(prdId: string, slice: Slice): string {
 	return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
-}
-
-function requirePrFlow(storage: Storage, role: 'review' | 'address'): void {
-	if (!storage.capabilities.prFlow) {
-		throw new Error(`${role} requires capability 'prFlow'; storage '${storage.name}' does not declare it`)
-	}
 }
 
 /**
@@ -70,7 +64,8 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  *   return `'done'`.
  * - `perSliceBranches: true`, `usePrs: true`: push slice branch, open a draft PR, return
  *   `'progress'`. The next loop iteration's `findSlices` sees the PR and dispatches the reviewer.
- *   Requires `prFlow` capability; enforced at config load and defensively re-checked here.
+ *   Works on every storage; at runtime requires a GitHub remote + `gh` auth (surfaced via
+ *   `trowel doctor`, not preflight-gated).
  */
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
@@ -95,9 +90,6 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Turn
 	deps.log(`${tag} pushed ${branch}`)
 
 	if (ctx.config.usePrs) {
-		if (!deps.storage.capabilities.prFlow) {
-			throw new Error(`usePrs requires capability 'prFlow'; storage '${deps.storage.name}' does not declare it`)
-		}
 		await openDraftPr(deps.gh, slice, branch, ctx.integrationBranch)
 		deps.log(`${tag} opened draft PR for ${branch}`)
 		return 'progress'
@@ -115,15 +107,14 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Turn
 }
 
 /**
- * Prepare the reviewer sandbox. Requires `prFlow`: classify never returns 'review' for a
- * file-shape slice (`prState` is always `null`), but per-phase commands (`trowel review`) bypass
- * the classifier and surface this throw.
+ * Prepare the reviewer Turn. Requires an open PR (looked up via `findPrNumber`); the loop only
+ * dispatches `'review'` when `prState` is `'draft'`, which presupposes `config.work.usePrs: true`.
+ * Per-phase commands (`trowel review`) bypass the classifier; if no PR exists `findPrNumber` throws.
  *
  * Looks up the slice branch's PR number so the reviewer prompt has `{pr.number, pr.branch}` to
  * fetch the diff and post comments against.
  */
 export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	requirePrFlow(deps.storage, 'review')
 	const branch = sliceBranchFor(ctx.prdId, slice)
 	const prNumber = await findPrNumber(deps.gh, branch)
 	const turnIn: TurnIn = {
@@ -134,7 +125,8 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
 }
 
 /**
- * Apply the reviewer's verdict. Requires `prFlow`.
+ * Apply the reviewer's verdict. Requires an open PR (the `ready` and `needs-revision` paths call
+ * `findPrNumber` / `gh pr edit`; both throw if no PR exists for the slice branch).
  *
  * - `ready` → push review commits (if any), then `gh pr ready` to flip the PR out of draft. The
  *   slice's `prState` becomes 'ready' on next `findSlices`; classify routes to 'done'. Returns
@@ -144,7 +136,6 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	requirePrFlow(deps.storage, 'review')
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 	const branch = sliceBranchFor(ctx.prdId, slice)
@@ -172,13 +163,13 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut
 }
 
 /**
- * Prepare the addresser sandbox. Requires `prFlow`.
+ * Prepare the addresser Turn. Requires an open PR (calls `findPrNumber` + `fetchPrFeedback`;
+ * both throw if no PR exists for the slice branch).
  *
  * Same PR-discovery as the reviewer plus a `fetchPrFeedback` call so the addresser prompt has the
  * reviewer's comments in `turnIn.feedback`.
  */
 export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	requirePrFlow(deps.storage, 'address')
 	const branch = sliceBranchFor(ctx.prdId, slice)
 	const prNumber = await findPrNumber(deps.gh, branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
@@ -191,7 +182,7 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCt
 }
 
 /**
- * Apply the addresser's verdict. Requires `prFlow`.
+ * Apply the addresser's verdict. Requires an open PR for the slice branch.
  *
  * - `ready` → push fixup commits (if any), clear `needsRevision` via storage. The next iteration
  *   classifies back to 'review' (draft PR still open). Returns `'progress'`.
@@ -200,7 +191,6 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCt
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	requirePrFlow(deps.storage, 'address')
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 	const branch = sliceBranchFor(ctx.prdId, slice)

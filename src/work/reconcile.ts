@@ -10,8 +10,8 @@ import { slug as slugify } from '../utils/slug.ts'
  * the next `findSlices` sees `prState: 'draft'` and the loop routes correctly.
  *
  * Pure with respect to storage internals: takes slices as input rather than calling `findSlices`
- * itself. Naturally a no-op on file-storage slices (their `branchAhead` is always `false`),
- * so no capability check is needed yet — that arrives in step 4 via `storage.capabilities.prFlow`.
+ * itself. Naturally a no-op when `branchAhead` is `false` for every slice (the loop only enriches
+ * `branchAhead` when `config.work.usePrs` is true; otherwise it stays `false`).
  *
  * See ADR `storage-behavior-separation` (step 3 moves this off `Storage`).
  */

@@ -63,7 +63,6 @@ if (import.meta.vitest) {
 		return {
 			name,
 			defaultBranchPrefix: '',
-			capabilities: { prFlow: false },
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
