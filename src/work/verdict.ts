@@ -2,7 +2,7 @@ import type { Role } from './prompts.ts'
 
 export type VerdictKind = 'ready' | 'needs-revision' | 'no-work-needed' | 'partial'
 
-export type SandboxOut = {
+export type TurnOut = {
 	verdict: VerdictKind
 	notes?: string
 	commits: number
@@ -13,7 +13,7 @@ export type FeedbackEntry =
 	| { kind: 'review'; author: string; createdAt: string; body: string; state: 'COMMENTED' | 'CHANGES_REQUESTED' | 'APPROVED' }
 	| { kind: 'thread'; author: string; createdAt: string; body: string }
 
-export type SandboxIn = {
+export type TurnIn = {
 	slice: { id: string; title: string; body: string }
 	pr?: { number: number; branch: string }
 	feedback?: FeedbackEntry[]
@@ -27,7 +27,7 @@ const ROLE_VERDICTS: Record<Role, VerdictKind[]> = {
 	address: ['ready', 'no-work-needed', 'partial'],
 }
 
-export function parseVerdict(raw: string | null, role: Role, commits: number): SandboxOut {
+export function parseVerdict(raw: string | null, role: Role, commits: number): TurnOut {
 	if (raw === null) return { verdict: 'partial', notes: 'verdict file missing', commits }
 	let parsed: unknown
 	try {

@@ -63,7 +63,7 @@ export async function markPrReady(gh: GhRunner, prNumber: number): Promise<void>
 
 /**
  * Look up the PR number for an open PR whose head matches `sliceBranch`. Throws if no PR exists.
- * Used by the reviewer and addresser to build `sandboxIn.pr`.
+ * Used by the reviewer and addresser to build `turnIn.pr`.
  */
 export async function findPrNumber(gh: GhRunner, sliceBranch: string): Promise<number> {
 	const out = await ghOrThrow(gh, ['pr', 'list', '--head', sliceBranch, '--json', 'number', '--jq', '.[0].number'])

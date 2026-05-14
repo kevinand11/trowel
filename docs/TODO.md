@@ -36,6 +36,8 @@ Each pending session expands on one slice of the design; assume everything above
 
 ## 1. Sandcastle port → AFK loop commands
 
+> **Superseded by `docs/adr/2026-05-14-drop-sandcastle-for-host-exec-turns.md` (2026-05-14).** Sandcastle, Docker, and the `sandbox-{in,out}.json` IPC names are gone. Agents now run on the host via `child_process.spawn('claude', ...)` inside a persistent per-branch worktree, reset between **Turns**. The verdict contract and host-side state-machine wiring are unchanged; only the sandbox layer was ripped out. The "locked decisions" below reflect the pre-pivot design and remain as historical record of the phase the loop wiring was built against.
+
 **Goal.** Port equipped's `.sandcastle/` directory into `src/work/` and wire `trowel work`, `trowel implement`, `trowel review`, `trowel address` to call into it. The AFK loop is **asymmetric across backends** — the `issue` backend runs the full state machine; the `file` backend runs an implementer-only serial pass. See ADRs `afk-loop-asymmetric-across-backends`, `gh-free-sandbox-host-owns-side-effects`, `optional-pr-flow-on-issue-backend` for the locked design.
 
 **Locked decisions** (from grilling session 2026-05-11):
@@ -51,7 +53,7 @@ Each pending session expands on one slice of the design; assume everything above
 - **File-backend implementer.** Commits straight to the integration branch (no per-slice branch, no PR). Serial — concurrency = 1. On `ready` verdict: host runs `git push origin <integrationBranch>` + `backend.updateSlice(prdId, sliceId, { state: 'CLOSED' })`.
 - **PR flow is configurable.** `config.work.usePrs: boolean` (default `true`; issue-backend-only). When `false`: slice branch still created, implementer runs the same way, but on `ready` verdict the host merges `--no-ff` into the integration branch, pushes, deletes the slice branch, and closes the sub-issue (`gh issue close <sliceN>`). Reviewer and addresser refuse with: *"PR-driven review is disabled (`config.work.usePrs: false`); use `trowel work` for the implementer-only flow."* Merge conflicts at the host-side merge coerce to `partial`; slice branch left in place for manual resolution.
 - **`Slice` grows two fields.** `prState: 'draft' | 'ready' | 'merged' | null` and `branchAhead: boolean`, both populated by `findSlices`. Both `Bucket` (user-facing) and the loop's internal `ResumeState` derive from these. Issue-backend `findSlices` fetches PR state per slice + a ref-ahead check; file-backend `findSlices` always returns `prState: null, branchAhead: false`.
-- **Loop cadence.** `trowel work <prd-id>` runs until the queue drains (every remaining slice is `done`, `draft`, or `blocked`). Safety cap `config.work.maxIterations` (default `50`) bounds the outer loop; per-slice step cap `config.work.sliceStepCap` (default `5`) bounds the inner state-machine reruns. No `--iterations` flag; equipped's `MAX_ITERATIONS` env / CLI plumbing dropped.
+- **Loop cadence.** `trowel work <prd-id>` runs until the queue drains (every remaining slice is `done`, `draft`, or `blocked`). Safety cap `config.work.maxIterations` (default `5`) bounds the outer loop; per-slice step cap `config.work.sliceStepCap` (default `5`) bounds the inner state-machine reruns. No `--iterations` flag; equipped's `MAX_ITERATIONS` env / CLI plumbing dropped.
 - **Worktree location.** `<project root>/.trowel/worktrees/<prd-id>/<sliceId>-<role>-<runId>/`. `trowel init` (any layer; primarily `project`) always creates the target `.trowel/` directory and writes `.trowel/.gitignore` containing `worktrees/`. Lazy fallback: `trowel work` creates `.trowel/` + `.trowel/.gitignore` if missing. Project's root `.gitignore` is never touched. Cleanup: `git worktree remove` on clean exit; stale-prune older than `config.work.worktreeCleanupAge` (default `'24h'`) at next-invocation startup.
 - **Verdict-to-host-action table** (per role, after sandbox exit):
 
@@ -112,101 +114,13 @@ assets/
 
 ---
 
-## 1.5. Wire `@ai-hero/sandcastle` into the AFK loop (final integration)
+## 1.5. ~~Wire `@ai-hero/sandcastle` into the AFK loop~~ — superseded
 
-**Status (2026-05-12).** Phases A–E of Section 1 landed. The host-side machinery for `trowel work`, `trowel implement`, `trowel review`, `trowel address` is complete and tested without external systems (Docker, GitHub, real git). The remaining hole: **`runAgent` in `src/commands/_loop-wiring.ts` throws.** Architecture grilled and locked 2026-05-12 (see ADR `sandcastle-integration`).
+**Status (2026-05-14).** Done and then undone. The sandcastle integration landed briefly and was then ripped out in favour of host-mode persistent worktrees + a direct `child_process.spawn('claude', ...)` agent invocation. See `docs/adr/2026-05-14-drop-sandcastle-for-host-exec-turns.md` for the rationale and the new design; the original sandcastle integration ADR (`docs/adr/2026-05-12-sandcastle-integration.md`) carries a "Superseded by" banner.
 
-**Goal.** Replace the `runAgent` stub with a real `createSandboxFromWorktree` invocation per the locked design.
+**Net effect on the codebase.** `@ai-hero/sandcastle`, `src/work/image.ts`, `src/utils/oauth-token.ts`, and `assets/Dockerfile` are gone. `src/work/sandbox.ts` was renamed to `src/work/turn.ts` and rewritten around `ensureWorktree`/`resetWorktree`. `config.sandbox` became `config.turn` with shape `{ copyToWorktree, maxConcurrent }`. IPC filenames `sandbox-{in,out}.json` became `turn-{in,out}.json`. Verdict contract and `parseVerdict` semantics unchanged. `_loop-wiring.ts` now preflights `which claude` and sweeps orphan worktrees on each `runLoopFor`.
 
-**Locked decisions** (from grilling session 2026-05-12, amended after sandcastle-exports audit; full rationale in ADR `sandcastle-integration`):
-
-- **API surface: public `createWorktree` + `Worktree.createSandbox`.** The originally-locked `@internal` `createSandboxFromWorktree` was found to be module-system-encapsulated (not in sandcastle's `package.json` `exports` field). The public split-ownership pair gives us the same IPC-friendly flow at the cost of accepting sandcastle's hardcoded worktree path at `<projectRoot>/.sandcastle/worktrees/<sandcastle-generated path>/`. Sandcastle pinned to exact `0.5.7`; upgrades become flagged events.
-- **Sandcastle owns the worktree layer.** Lifecycle: `createWorktree → write sandbox-in.json + prompt-<role>.md inside worktree.worktreePath → worktree.createSandbox(docker(...)) → sandbox.run → read sandbox-out.json → sandbox.close → worktree.close`. Trowel's existing `addWorktree`/`removeWorktree` in `src/work/worktrees.ts` retire (and their tests). `worktree.close()` preserves dirty worktrees on disk — useful safety net.
-- **Image build is trowel's responsibility, not sandcastle's.** Sandcastle's `docker()` provider's `create()` calls `startContainer` only — it doesn't invoke `buildImage`. Trowel ships `assets/Dockerfile`, lazy-copies to `~/.trowel/Dockerfile` on first use, runs `docker build -t <config.sandbox.image> -f ~/.trowel/Dockerfile ~/.trowel/` if the image is missing OR `~/.trowel/Dockerfile`'s mtime > image creation time. Pass `docker({ imageName: config.sandbox.image, mounts: [...] })`.
-- **Credentials via bind-mount.** `docker({ mounts: [{ hostPath: '~/.claude', sandboxPath: '/home/agent/.claude', readonly: false }] })`. Agent reuses host's Claude Code credentials; session JSONL accumulates in host `~/.claude/projects/` exactly as if user had run `claude` locally. No env-var key injection. No `.sandcastle/.env` written.
-- **Per-role iteration caps.** `config.sandbox.iterationCaps: { implementer: 100, reviewer: 1, addresser: 50 }` — already in `src/schema.ts`. Passed to `sandbox.run({ maxIterations: config.sandbox.iterationCaps[capKey] })`.
-- **Ctrl-C policy.** Worktree isolation means `trowel work` never moves the main repo's HEAD during agent runs, so BACK_TO is automatically preserved for the ~99% of the run that's inside sandboxes. The brief `usePrs: false` host-side merge window (`gitCheckout(integration) → gitMergeNoFf → gitPush → gitCheckout(BACK_TO)`) is wrapped in a tight `try/finally`. Ctrl-C inside that ~5-second window leaves the user on the integration branch and is documented as a known small gap rather than engineered around (sandcastle's `process.on('SIGINT', ...) → process.exit(1)` fires before user-space `finally`).
-- **`config.sandbox.enabled` and `config.sandbox.dockerfile` dropped.** No `noSandbox()` escape hatch; sandboxing is unconditional. Final `config.sandbox` shape: `{ image, maxConcurrent, iterationCaps, onReady, copyToWorktree }`.
-- **Commits signal sourced from sandcastle.** `SandboxRunResult.commits.length` plumbed through `spawnSandbox`'s return type alongside `verdict`. The verdict-translation table's `if commits` gates (reviewer `ready`, reviewer `needs-revision`, addresser `ready`) read this directly. New coercion rule: implementer `ready` + zero commits → coerce to `partial` with logged reason ("implementer reported ready but made no commits"). Symmetric to the existing role-invalid-verdict coercion.
-- **`config.agent` simplified.** Drop `command` and `args` (dead knobs once sandcastle owns invocation). Final shape: `{ model: string }`, default `'claude-opus-4-6'` (matches sandcastle 0.5.7's `DEFAULT_MODEL`; pinning to library default avoids drift on upgrade). No `effort` knob for v0.
-- **Logging to file under `.trowel/logs/`.** `logging: { type: 'file', path: '<projectRoot>/.trowel/logs/<prdId>/<sliceId>-<role>-<runId>.log' }`. Don't let sandcastle default to `<projectRoot>/.sandcastle/logs/` — same anti-pollution argument as the worktree path. Extend `ensureTrowelDir` to add `logs/` to `.trowel/.gitignore` alongside `worktrees/`. No `onAgentStreamEvent` for v0; existing host-side `log()` covers loop-level events.
-- **Prompt delivery via tmpfile.** Trowel's `loadPrompt(role, backend, placeholders)` keeps full ownership (sandcastle's `promptArgs` can't do the backend-conditional blocks). Rendered prompt is written to `<worktreePath>/.trowel/prompt-<role>.md` (absolute path); passed via `sandbox.run({ promptFile })`. Symmetric with `sandbox-in.json` / `sandbox-out.json` — all artifacts crossing the sandbox boundary live in the same `.trowel/` IPC directory.
-
-**Implementation sketch.**
-
-```ts
-// src/commands/_loop-wiring.ts — replace the throwing runAgent stub
-import { createWorktree, claudeCode } from '@ai-hero/sandcastle'
-import { docker } from '@ai-hero/sandcastle/sandboxes/docker'
-import { loadPrompt } from '../work/prompts.ts'
-import { ensureSandboxImage } from '../work/image.ts'
-
-// spawnSandbox now takes a `createWorktree` dep (replaces addWorktree/removeWorktree/worktreesDir).
-const createWorktreeForRun = async ({ branch }: { branch: string }) =>
-  createWorktree({
-    branchStrategy: { kind: 'branch', name: branch },
-    cwd: projectRoot,
-    copyToWorktree: config.sandbox.copyToWorktree,
-  })
-
-const runAgent = async (
-  { worktree, logPath, role }: { worktree: Worktree; logPath: string; role: Role; branch: string },
-): Promise<{ commits: number }> => {
-  // 1. Render and persist the prompt (alongside sandbox-in.json which spawnSandbox already wrote).
-  const rendered = await loadPrompt(role, backend.name, { INTEGRATION_BRANCH: integrationBranch })
-  const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
-  await writeFile(promptFile, rendered)
-
-  // 2. Build/refresh the image lazily.
-  await ensureSandboxImage(config.sandbox.image, { ... })
-
-  // 3. Attach sandbox to the existing worktree.
-  const sandbox = await worktree.createSandbox({
-    sandbox: docker({
-      imageName: config.sandbox.image,
-      mounts: [{ hostPath: '~/.claude', sandboxPath: '/home/agent/.claude' }],
-    }),
-    hooks: {
-      sandbox: {
-        onSandboxReady: config.sandbox.onReady.map((c) => ({ command: c, timeoutMs: 600_000 })),
-      },
-    },
-  })
-
-  // 4. Run the agent.
-  const capKey = role === 'implement' ? 'implementer' : role === 'review' ? 'reviewer' : 'addresser'
-  await mkdir(path.dirname(logPath), { recursive: true })
-  try {
-    const result = await sandbox.run({
-      maxIterations: config.sandbox.iterationCaps[capKey],
-      agent: claudeCode(config.agent.model),
-      promptFile,
-      logging: { type: 'file', path: logPath },
-    })
-    return { commits: result.commits.length }
-  } finally {
-    await sandbox.close()
-  }
-}
-```
-
-**Refactor status (in-progress, 2026-05-12).**
-
-Done:
-- **`SpawnSandboxDeps.runAgent` return widened** to `Promise<{ commits: number }>`; `SandboxOut` carries `commits: number`. ✓
-- **Verdict-translation `if commits > 0: push` gates** in `src/work/loops/issue.ts` for reviewer-ready, reviewer-needs-revision, addresser-ready. ✓
-- **Implementer-ready-with-zero-commits → partial coercion** in `src/work/verdict.ts`. ✓
-- **`ensureTrowelDir` writes both `worktrees/` and `logs/`** to `.trowel/.gitignore`. ✓
-- **Schema cleanup**: `config.sandbox` lost `enabled` + `dockerfile`; `config.agent` shrank to `{ model: 'claude-opus-4-6' }`. ✓
-- **`src/work/image.ts`** lazy Dockerfile copy + mtime-driven build. ✓
-- **`assets/Dockerfile`** shipped (cloned from equipped). ✓
-- **`@ai-hero/sandcastle@0.5.7`** added as exact pin. ✓
-
-Remaining:
-- **Refactor `spawnSandbox` deps**: replace `addWorktree`/`removeWorktree`/`worktreesDir` with a single `createWorktree({branch}) → Worktree` dep. Sandcastle owns the worktree path; trowel just writes IPC files into `worktree.worktreePath`. Update the 6 existing `spawnSandbox` tests; delete the now-unused `addWorktree`/`removeWorktree`/`pruneStaleWorktrees` from `src/work/worktrees.ts` along with their tests.
-- **Wire the real `runAgent`** per the sketch above. No unit test (sandcastle + Docker + GitHub side effects).
-
-**Verification path.** Same as Section 1's verification — but now actually runnable. Scratch repo (or equipped itself) with one trivial `ready` slice on the file backend; expect the sandbox to spawn, the agent to make a commit, the host to push + close the slice. Iterate from there to multi-slice / issue-backend / `usePrs: false`. Also confirm: `~/.trowel/Dockerfile` materialised on first run; `<projectRoot>/.trowel/logs/<prd>/<slice>-<role>-<runId>.log` written; `~/.claude/projects/` shows new session JSONL after agent run.
+**Remaining manual sanity check** (not blocking): create a throwaway file-storage PRD, mark a slice ready, run `trowel work <id>`, confirm a worktree spawns under `.trowel/worktrees/<prdId>/<branch-slug>/`, the agent runs, and the verdict is translated.
 
 ---
 
@@ -582,7 +496,7 @@ Decisions worth turning into ADRs once the implementation stabilises:
 
 - **β precedence (project file wins outright).** Genuine trade-off; future-self will wonder why.
 - **`private` layer keyed by full-path mirror.** Alternatives considered (basename, encoded segment, git remote).
-- **Subsume sandcastle into trowel (Option X).** Trowel grows the AFK loop; equipped's `.sandcastle/` retires.
+- ~~**Subsume sandcastle into trowel (Option X).**~~ — superseded by the host-exec Turns pivot (ADR `2026-05-14-drop-sandcastle-for-host-exec-turns`); sandcastle is no longer a dependency.
 - **Three backends, one interface.** The strategy pattern + the choice of which operations live on the interface.
 - **pnpm-only.** Cross-cutting; matches the user's standing preference (already in personal memory).
 
@@ -592,12 +506,12 @@ Write each as `docs/adr/YYYY-MM-DD-<slug>.md` when the relevant implementation l
 
 ## Order of work (suggested)
 
-1. ~~Port the sandcastle AFK loop into `src/work/`; wire `trowel work`, `implement`, `review`, `address` against both backends.~~ **(done 2026-05-12; Phases A–E committed; one final integration step in Section 1.5 to actually spawn agents.)**
-2. **Section 1.5: wire `@ai-hero/sandcastle`** — the only remaining piece before `trowel work` runs end-to-end.
+1. ~~Port the sandcastle AFK loop into `src/work/`; wire `trowel work`, `implement`, `review`, `address` against both backends.~~ **(done 2026-05-12; Phases A–E committed.)**
+2. ~~Section 1.5: wire `@ai-hero/sandcastle`.~~ **(done and then superseded 2026-05-14 — sandcastle dropped in favour of host-mode persistent-worktree Turns; see ADR `2026-05-14-drop-sandcastle-for-host-exec-turns`. `trowel work` now reaches the agent on real `claude` CLI.)**
 3. Implement `trowel start` flow end-to-end against the `file` backend (the simpler of the two; no GitHub round-trip for the PRD itself).
 4. `fix` + `diagnose` flows.
 5. `init` wizard.
 6. `close` + `status`.
 7. Collision detection + ADR backlog cleanup.
 
-Both backends (`file`, `issue`) are implemented; all four AFK-loop commands are wired and tested up to the `runAgent` boundary. The remaining unblockers are the sandcastle integration (Section 1.5) and the workflows in Sections 2–6.
+Both backends (`file`, `issue`) are implemented; all four AFK-loop commands are wired end-to-end against the host-mode Turn flow. The remaining unblockers are the workflows in Sections 2–6.

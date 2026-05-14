@@ -40,6 +40,10 @@ async function createSliceBranch(
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
+	const requireGit = () => {
+		if (!deps.git) throw new Error('issue storage createPrd requires git ops to be wired')
+		return deps.git
+	}
 
 	function parseIssueNumberFromUrl(url: string): string {
 		const trimmed = url.trim()
@@ -59,29 +63,22 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
+		const git = requireGit()
 		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', spec.body, '--label', deps.labels.prd])
 		const id = parseIssueNumberFromUrl(createOut)
 		const branch = `${prefix}${id}-${slugify(spec.title)}`
-		await ghOrThrow(['issue', 'develop', id, '--branch', branch, '--base', deps.baseBranch, '--checkout'])
+		await git.createLocalBranch(branch, deps.baseBranch)
+		await git.pushSetUpstream(branch)
 		return { id, branch }
 	}
 
 	async function branchForExisting(id: string): Promise<string> {
-		const listOut = await ghOrThrow(['issue', 'develop', '--list', id])
-		const firstLine = listOut
-			.split('\n')
-			.map((l) => l.trim())
-			.find(Boolean)
-		if (firstLine) {
-			const branch = firstLine.split(/\s+/)[0]
-			if (branch) return branch
-		}
-		// Repair: no linked branch yet. Fetch title, compose, create.
+		// Computed from the current issue title rather than recovered from a GitHub-side
+		// branch↔issue linkage. The branch is the source of truth; if the issue is renamed
+		// after creation, the original branch persists and this lookup will drift.
 		const viewOut = await ghOrThrow(['issue', 'view', id, '--json', 'title'])
 		const parsed = JSON.parse(viewOut) as { title: string }
-		const branch = `${prefix}${id}-${slugify(parsed.title)}`
-		await ghOrThrow(['issue', 'develop', id, '--branch', branch, '--base', deps.baseBranch])
-		return branch
+		return `${prefix}${id}-${slugify(parsed.title)}`
 	}
 
 	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
@@ -166,10 +163,9 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		const viewResult = await gh(['issue', 'view', id, '--json', 'number,title,state'])
 		if (!viewResult.ok) return null
 		const parsed = JSON.parse(viewResult.stdout) as { number: number; title: string; state: string }
-		const branch = await branchForExisting(id)
 		return {
 			id: String(parsed.number),
-			branch,
+			branch: `${prefix}${parsed.number}-${slugify(parsed.title)}`,
 			title: parsed.title,
 			state: parsed.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 		}
@@ -178,13 +174,12 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
 		const out = await ghOrThrow(['issue', 'list', '--label', deps.labels.prd, '--state', opts.state, '--json', 'number,title,createdAt'])
 		const issues = JSON.parse(out) as Array<{ number: number; title: string; createdAt: string }>
-		const summaries: PrdSummary[] = []
-		for (const issue of issues) {
-			const id = String(issue.number)
-			const branch = await branchForExisting(id)
-			summaries.push({ id, title: issue.title, branch, createdAt: issue.createdAt })
-		}
-		return summaries
+		return issues.map((issue) => ({
+			id: String(issue.number),
+			title: issue.title,
+			branch: `${prefix}${issue.number}-${slugify(issue.title)}`,
+			createdAt: issue.createdAt,
+		}))
 	}
 
 	return {
@@ -267,12 +262,17 @@ if (import.meta.vitest) {
 				mergeNoFf: async (b) => { gitCalls.push(['mergeNoFf', b]) },
 				deleteRemoteBranch: async (b) => { gitCalls.push(['deleteRemoteBranch', b]) },
 				createRemoteBranch: async (n, b) => { gitCalls.push(['createRemoteBranch', n, b]) },
-				createLocalBranch: async () => {},
-				pushSetUpstream: async () => {},
+				createLocalBranch: async (n, b) => { gitCalls.push(['createLocalBranch', n, b]) },
+				pushSetUpstream: async (b) => { gitCalls.push(['pushSetUpstream', b]) },
 				currentBranch: async () => '',
 				branchExists: async () => false,
 				isMerged: async () => false,
 				deleteBranch: async () => {},
+				worktreeAdd: async () => {},
+				worktreeRemove: async () => {},
+				worktreeList: async () => [],
+				restoreAll: async () => {},
+				cleanUntracked: async () => {},
 			},
 			log: (m) => { logCalls.push(m) },
 		}
@@ -308,7 +308,7 @@ if (import.meta.vitest) {
 			return { storage, git: deps.git!, gh: deps.gh, log: deps.log! }
 		}
 
-		test('prepareImplement: creates slice branch via git, returns {branch, sandboxIn}', async () => {
+		test('prepareImplement: creates slice branch via git, returns {branch, turnIn}', async () => {
 			const { deps, gitCalls } = makeDeps([])
 			const storage = createIssueStorage(deps)
 			const prep = await prepareImplement(phaseDeps(deps, storage), makeOpenSlice(), {
@@ -317,7 +317,7 @@ if (import.meta.vitest) {
 				config: { usePrs: true, review: false, perSliceBranches: true },
 			})
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
-			expect(prep.sandboxIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
+			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
 			expect(gitCalls).toContainEqual(['createRemoteBranch', 'prd-142/slice-145-session-middleware', 'prds-issue-142'])
 			expect(gitCalls).toContainEqual(['fetch', 'prd-142/slice-145-session-middleware'])
 		})
@@ -425,7 +425,7 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([])
 		})
 
-		test('prepareReview: looks up PR number for the slice branch, builds sandboxIn with {pr, slice}', async () => {
+		test('prepareReview: looks up PR number for the slice branch, builds turnIn with {pr, slice}', async () => {
 			const { deps, calls } = makeDeps([
 				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
 			])
@@ -436,8 +436,8 @@ if (import.meta.vitest) {
 				config: { usePrs: true, review: true, perSliceBranches: true },
 			})
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
-			expect(prep.sandboxIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
-			expect(prep.sandboxIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
+			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
+			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
 			expect(calls.find((c) => c[0] === 'pr' && c[1] === 'list')).toBeDefined()
 		})
 
@@ -506,7 +506,7 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([])
 		})
 
-		test('prepareAddress: finds PR, fetches feedback, packs both into sandboxIn', async () => {
+		test('prepareAddress: finds PR, fetches feedback, packs both into turnIn', async () => {
 			const { deps } = makeDeps([
 				{ match: (a) => a[0] === 'pr' && a[1] === 'list', respond: { ok: true, stdout: '168\n', stderr: '' } },
 				{ match: (a) => a[0] === 'api' && (a[1] ?? '').endsWith('/comments'), respond: { ok: true, stdout: '[]', stderr: '' } },
@@ -520,8 +520,8 @@ if (import.meta.vitest) {
 				config: { usePrs: true, review: true, perSliceBranches: true },
 			})
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
-			expect(prep.sandboxIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
-			expect(prep.sandboxIn.feedback).toEqual([])
+			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
+			expect(prep.turnIn.feedback).toEqual([])
 		})
 
 		test('landAddress + ready (commits > 0): pushes slice branch, clears needsRevision, returns progress', async () => {
@@ -572,28 +572,26 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: createPrd', () => {
-		test('calls issue create + issue develop and returns {id, branch}', async () => {
-			const { deps, calls } = makeDeps([
+		test('creates the issue then creates the integration branch locally and pushes it upstream', async () => {
+			const { deps, calls, gitCalls } = makeDeps([
 				{
 					match: (a) => a[0] === 'issue' && a[1] === 'create',
 					respond: { ok: true, stdout: 'https://github.com/o/r/issues/42\n', stderr: '' },
-				},
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop',
-					respond: { ok: true, stdout: '', stderr: '' },
 				},
 			])
 			const storage = createIssueStorage(deps)
 			const result = await storage.createPrd({ title: 'Fix Tabs on macOS', body: 'the spec' })
 			expect(result).toEqual({ id: '42', branch: '42-fix-tabs-on-macos' })
-			expect(calls[0]).toEqual(['issue', 'create', '--title', 'Fix Tabs on macOS', '--body', 'the spec', '--label', 'prd'])
-			expect(calls[1]).toEqual(['issue', 'develop', '42', '--branch', '42-fix-tabs-on-macos', '--base', 'main', '--checkout'])
+			expect(calls).toEqual([['issue', 'create', '--title', 'Fix Tabs on macOS', '--body', 'the spec', '--label', 'prd']])
+			expect(gitCalls).toEqual([
+				['createLocalBranch', '42-fix-tabs-on-macos', 'main'],
+				['pushSetUpstream', '42-fix-tabs-on-macos'],
+			])
 		})
 
 		test('applies configured branchPrefix and labels.prd, and respects custom baseBranch', async () => {
-			const { deps, calls } = makeDeps([
+			const { deps, calls, gitCalls } = makeDeps([
 				{ match: (a) => a[1] === 'create', respond: { ok: true, stdout: 'https://github.com/o/r/issues/7\n', stderr: '' } },
-				{ match: (a) => a[1] === 'develop', respond: { ok: true, stdout: '', stderr: '' } },
 			])
 			deps.branchPrefix = 'feat/'
 			deps.labels.prd = 'roadmap'
@@ -604,8 +602,10 @@ if (import.meta.vitest) {
 			expect(result).toEqual({ id: '7', branch: 'feat/7-add-orm' })
 			expect(calls[0]).toContain('--label')
 			expect(calls[0][calls[0].indexOf('--label') + 1]).toBe('roadmap')
-			expect(calls[1]).toContain('--base')
-			expect(calls[1][calls[1].indexOf('--base') + 1]).toBe('develop')
+			expect(gitCalls).toEqual([
+				['createLocalBranch', 'feat/7-add-orm', 'develop'],
+				['pushSetUpstream', 'feat/7-add-orm'],
+			])
 		})
 
 		test('throws if gh issue create fails', async () => {
@@ -616,37 +616,28 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: branchForExisting', () => {
-		test('returns the linked branch when one already exists', async () => {
+		test('computes the branch from the current issue title via gh issue view', async () => {
 			const { deps, calls } = makeDeps([
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
-					respond: { ok: true, stdout: '42-fix-tabs\thttps://github.com/o/r/tree/42-fix-tabs\n', stderr: '' },
-				},
-			])
-			const storage = createIssueStorage(deps)
-			expect(await storage.branchForExisting('42')).toBe('42-fix-tabs')
-			expect(calls).toEqual([['issue', 'develop', '--list', '42']])
-		})
-
-		test('repairs by creating a linked branch when none exists', async () => {
-			const { deps, calls } = makeDeps([
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
-					respond: { ok: true, stdout: '', stderr: '' },
-				},
 				{
 					match: (a) => a[0] === 'issue' && a[1] === 'view',
 					respond: { ok: true, stdout: JSON.stringify({ title: 'Fix Tabs on macOS' }), stderr: '' },
 				},
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && !a.includes('--list'),
-					respond: { ok: true, stdout: '', stderr: '' },
-				},
 			])
 			const storage = createIssueStorage(deps)
 			expect(await storage.branchForExisting('42')).toBe('42-fix-tabs-on-macos')
-			expect(calls[1]).toEqual(['issue', 'view', '42', '--json', 'title'])
-			expect(calls[2]).toEqual(['issue', 'develop', '42', '--branch', '42-fix-tabs-on-macos', '--base', 'main'])
+			expect(calls).toEqual([['issue', 'view', '42', '--json', 'title']])
+		})
+
+		test('applies the configured branchPrefix when set', async () => {
+			const { deps } = makeDeps([
+				{
+					match: (a) => a[0] === 'issue' && a[1] === 'view',
+					respond: { ok: true, stdout: JSON.stringify({ title: 'Add ORM' }), stderr: '' },
+				},
+			])
+			deps.branchPrefix = 'feat/'
+			const storage = createIssueStorage(deps)
+			expect(await storage.branchForExisting('7')).toBe('feat/7-add-orm')
 		})
 	})
 
@@ -678,8 +669,8 @@ if (import.meta.vitest) {
 			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'all', '--json', 'number,title,createdAt'])
 		})
 
-		test('returns one PrdSummary per matching issue, with branch from branchForExisting and createdAt from gh', async () => {
-			const { deps } = makeDeps([
+		test('returns one PrdSummary per matching issue with branch composed from id+title (one gh call total)', async () => {
+			const { deps, calls } = makeDeps([
 				{
 					match: (a) => a[0] === 'issue' && a[1] === 'list',
 					respond: {
@@ -691,14 +682,6 @@ if (import.meta.vitest) {
 						stderr: '',
 					},
 				},
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list') && a.includes('42'),
-					respond: { ok: true, stdout: '42-fix-tabs\thttps://github.com/o/r/tree/42-fix-tabs\n', stderr: '' },
-				},
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list') && a.includes('7'),
-					respond: { ok: true, stdout: '7-add-orm\thttps://github.com/o/r/tree/7-add-orm\n', stderr: '' },
-				},
 			])
 			const storage = createIssueStorage(deps)
 			const result = await storage.listPrds({ state: 'open' })
@@ -706,6 +689,8 @@ if (import.meta.vitest) {
 				{ id: '42', title: 'Fix Tabs', branch: '42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
 				{ id: '7', title: 'Add ORM', branch: '7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
 			])
+			// No per-issue lookups — branch is derived from the list response.
+			expect(calls.filter((c) => c[1] === 'view' || c[1] === 'develop')).toEqual([])
 		})
 	})
 
@@ -983,10 +968,6 @@ if (import.meta.vitest) {
 					match: (a) => a[0] === 'issue' && a[1] === 'view',
 					respond: { ok: true, stdout: JSON.stringify({ number: 42, title: 'Fix Tabs', state: 'OPEN' }), stderr: '' },
 				},
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
-					respond: { ok: true, stdout: '42-fix-tabs\thttps://x\n', stderr: '' },
-				},
 			])
 			const storage = createIssueStorage(deps)
 			expect(await storage.findPrd('42')).toEqual({ id: '42', branch: '42-fix-tabs', title: 'Fix Tabs', state: 'OPEN' })
@@ -997,10 +978,6 @@ if (import.meta.vitest) {
 				{
 					match: (a) => a[0] === 'issue' && a[1] === 'view',
 					respond: { ok: true, stdout: JSON.stringify({ number: 42, title: 'X', state: 'CLOSED' }), stderr: '' },
-				},
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'develop' && a.includes('--list'),
-					respond: { ok: true, stdout: '42-x\n', stderr: '' },
 				},
 			])
 			const storage = createIssueStorage(deps)

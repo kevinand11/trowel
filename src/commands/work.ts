@@ -14,9 +14,7 @@ async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
 }
 
 /**
- * Production entry. Wires real gh/git/sandbox callbacks (via _loop-wiring) and calls runWork.
- * The `runAgent` callback inside spawnSandbox is intentionally unimplemented; it needs
- * `@ai-hero/sandcastle` integration (see TODO Section 1, Phase E).
+ * Production entry. Wires real gh/git/turn callbacks (via _loop-wiring) and calls runWork.
  */
 export async function work(prdId: string, opts: { storage?: string }): Promise<void> {
 	try {

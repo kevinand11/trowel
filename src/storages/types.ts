@@ -1,7 +1,7 @@
 import type { Bucket } from '../utils/bucket.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import type { SandboxIn } from '../work/verdict.ts'
+import type { TurnIn } from '../work/verdict.ts'
 
 export type { GitOps }
 
@@ -86,11 +86,11 @@ export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work'
 
 /**
- * Returned by `prepare<Role>` — the branch the sandbox should run on, and the `SandboxIn` payload.
+ * Returned by `prepare<Role>` — the branch the sandbox should run on, and the `TurnIn` payload.
  */
 export type PreparedPhase = {
 	branch: string
-	sandboxIn: SandboxIn
+	turnIn: TurnIn
 }
 
 /**

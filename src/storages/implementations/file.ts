@@ -294,6 +294,11 @@ if (import.meta.vitest) {
 			branchExists: async (b: string) => { const r = await realGit.branchExists(b); calls.git.push(['branchExists', b]); return r },
 			isMerged: async (b: string, base: string) => { const r = await realGit.isMerged(b, base); calls.git.push(['isMerged', b, base]); return r },
 			deleteBranch: async (b: string) => { calls.git.push(['deleteBranch', b]); await realGit.deleteBranch(b) },
+			worktreeAdd: async (p: string, b: string) => { await realGit.worktreeAdd(p, b) },
+			worktreeRemove: async (p: string, opts?: { force?: boolean }) => { await realGit.worktreeRemove(p, opts) },
+			worktreeList: async () => realGit.worktreeList(),
+			restoreAll: async (p: string) => { await realGit.restoreAll(p) },
+			cleanUntracked: async (p: string) => { await realGit.cleanUntracked(p) },
 		}
 		const deps: StorageDeps = {
 			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
@@ -359,7 +364,7 @@ if (import.meta.vitest) {
 			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log! }
 		}
 
-		test('prepareImplement: branch is the integration branch; sandboxIn carries the slice', async () => {
+		test('prepareImplement: branch is the integration branch; turnIn carries the slice', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
@@ -369,7 +374,7 @@ if (import.meta.vitest) {
 					config: { usePrs: false, review: false, perSliceBranches: false },
 				})
 				expect(prep.branch).toBe('prd/p1-x')
-				expect(prep.sandboxIn.slice).toEqual({ id: 's1', title: 'Implement A', body: 'spec' })
+				expect(prep.turnIn.slice).toEqual({ id: 's1', title: 'Implement A', body: 'spec' })
 			} finally {
 				await teardown(f)
 			}
@@ -452,7 +457,7 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('prepareImplement + perSliceBranches:true: creates slice branch via git, sandboxIn carries the slice', async () => {
+		test('prepareImplement + perSliceBranches:true: creates slice branch via git, turnIn carries the slice', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
@@ -497,6 +502,11 @@ if (import.meta.vitest) {
 					branchExists: async () => true,
 					isMerged: async () => false,
 					deleteBranch: async () => {},
+					worktreeAdd: async () => {},
+					worktreeRemove: async () => {},
+					worktreeList: async () => [],
+					restoreAll: async () => {},
+					cleanUntracked: async () => {},
 				}
 				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log! }
 

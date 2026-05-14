@@ -1,4 +1,4 @@
-import { tryExec } from './shell.ts'
+import { exec, tryExec } from './shell.ts'
 
 /**
  * Single canonical surface for every git operation trowel performs against
@@ -20,11 +20,22 @@ export type GitOps = {
 	branchExists(branch: string): Promise<boolean>
 	isMerged(branch: string, baseBranch: string): Promise<boolean>
 	deleteBranch(branch: string): Promise<void>
+	// worktree primitives (consumed by src/work/worktrees.ts for per-Turn worktrees)
+	worktreeAdd(worktreePath: string, branch: string): Promise<void>
+	worktreeRemove(worktreePath: string, opts?: { force?: boolean }): Promise<void>
+	worktreeList(): Promise<Array<{ path: string; branch: string | null; head: string }>>
+	restoreAll(worktreePath: string): Promise<void>
+	cleanUntracked(worktreePath: string): Promise<void>
 }
 
 export function createRepoGit(projectRoot: string): GitOps {
 	const gitOrThrow = async (args: string[]): Promise<string> => {
 		const r = await tryExec('git', ['-C', projectRoot, ...args])
+		if (!r.ok) throw r.error
+		return r.stdout
+	}
+	const gitInOrThrow = async (cwd: string, args: string[]): Promise<string> => {
+		const r = await tryExec('git', ['-C', cwd, ...args])
 		if (!r.ok) throw r.error
 		return r.stdout
 	}
@@ -63,5 +74,136 @@ export function createRepoGit(projectRoot: string): GitOps {
 			await tryExec('git', ['-C', projectRoot, 'branch', '-q', '-D', b])
 			await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `:${b}`])
 		},
+		worktreeAdd: async (worktreePath, branch) => {
+			await gitOrThrow(['worktree', 'add', worktreePath, branch])
+		},
+		worktreeRemove: async (worktreePath, opts) => {
+			const args = ['worktree', 'remove']
+			if (opts?.force) args.push('--force')
+			args.push(worktreePath)
+			await gitOrThrow(args)
+		},
+		worktreeList: async () => {
+			const stdout = await gitOrThrow(['worktree', 'list', '--porcelain'])
+			return parseWorktreePorcelain(stdout)
+		},
+		restoreAll: async (worktreePath) => {
+			await gitInOrThrow(worktreePath, ['restore', '--staged', '--worktree', '.'])
+		},
+		cleanUntracked: async (worktreePath) => {
+			await gitInOrThrow(worktreePath, ['clean', '-fd'])
+		},
 	}
+}
+
+function parseWorktreePorcelain(stdout: string): Array<{ path: string; branch: string | null; head: string }> {
+	const result: Array<{ path: string; branch: string | null; head: string }> = []
+	let current: { path?: string; branch: string | null; head?: string } = { branch: null }
+	for (const line of stdout.split('\n')) {
+		if (line.startsWith('worktree ')) {
+			if (current.path && current.head) result.push({ path: current.path, branch: current.branch, head: current.head })
+			current = { path: line.slice('worktree '.length).trim(), branch: null }
+		} else if (line.startsWith('HEAD ')) {
+			current.head = line.slice('HEAD '.length).trim()
+		} else if (line.startsWith('branch ')) {
+			const ref = line.slice('branch '.length).trim()
+			current.branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
+		} else if (line.startsWith('detached')) {
+			current.branch = null
+		}
+	}
+	if (current.path && current.head) result.push({ path: current.path, branch: current.branch, head: current.head })
+	return result
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
+	const path = await import('node:path')
+	const { mkdtemp, rm, writeFile, readFile, stat, mkdir } = await import('node:fs/promises')
+	const { tmpdir } = await import('node:os')
+	const { realpath } = await import('node:fs/promises')
+
+	describe('GitOps worktree primitives (real git on tmp repos)', () => {
+		let repo: string
+		let git: GitOps
+
+		beforeEach(async () => {
+			const raw = await mkdtemp(path.join(tmpdir(), 'trowel-gitops-'))
+			repo = await realpath(raw)
+			await exec('git', ['-C', repo, 'init', '-q', '-b', 'main'])
+			await exec('git', ['-C', repo, 'config', 'user.email', 't@t.t'])
+			await exec('git', ['-C', repo, 'config', 'user.name', 'T'])
+			await writeFile(path.join(repo, 'README.md'), 'x\n')
+			await exec('git', ['-C', repo, 'add', '.'])
+			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'init'])
+			await exec('git', ['-C', repo, 'branch', 'feature'])
+			git = createRepoGit(repo)
+		})
+		afterEach(async () => {
+			if (repo) await rm(repo, { recursive: true, force: true })
+		})
+
+		test('worktreeAdd checks out the branch at a new worktree path', async () => {
+			const wtPath = path.join(repo, '.trowel-wt-test')
+			await git.worktreeAdd(wtPath, 'feature')
+			const s = await stat(path.join(wtPath, 'README.md'))
+			expect(s.isFile()).toBe(true)
+			const branch = (await exec('git', ['-C', wtPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
+			expect(branch).toBe('feature')
+		})
+
+		test('worktreeList includes the primary repo and any added worktrees', async () => {
+			const wtPath = path.join(repo, '.trowel-wt-test')
+			await git.worktreeAdd(wtPath, 'feature')
+			const list = await git.worktreeList()
+			const primary = list.find((w) => w.path === repo)
+			const added = list.find((w) => w.path === wtPath)
+			expect(primary?.branch).toBe('main')
+			expect(added?.branch).toBe('feature')
+			expect(added?.head).toMatch(/^[0-9a-f]{40}$/)
+		})
+
+		test('worktreeRemove removes a clean worktree without --force', async () => {
+			const wtPath = path.join(repo, '.trowel-wt-test')
+			await git.worktreeAdd(wtPath, 'feature')
+			await git.worktreeRemove(wtPath)
+			const list = await git.worktreeList()
+			expect(list.find((w) => w.path === wtPath)).toBeUndefined()
+		})
+
+		test('worktreeRemove with force removes a dirty worktree', async () => {
+			const wtPath = path.join(repo, '.trowel-wt-test')
+			await git.worktreeAdd(wtPath, 'feature')
+			await writeFile(path.join(wtPath, 'README.md'), 'dirty\n')
+			await git.worktreeRemove(wtPath, { force: true })
+			const list = await git.worktreeList()
+			expect(list.find((w) => w.path === wtPath)).toBeUndefined()
+		})
+
+		test('restoreAll discards staged and unstaged changes inside a worktree', async () => {
+			const wtPath = path.join(repo, '.trowel-wt-test')
+			await git.worktreeAdd(wtPath, 'feature')
+			await writeFile(path.join(wtPath, 'README.md'), 'unstaged\n')
+			await writeFile(path.join(wtPath, 'staged.txt'), 'staged\n')
+			await exec('git', ['-C', wtPath, 'add', 'staged.txt'])
+			await git.restoreAll(wtPath)
+			const readme = await readFile(path.join(wtPath, 'README.md'), 'utf8')
+			expect(readme).toBe('x\n')
+			// `restore --staged --worktree` unstages and resets tracked files; the new untracked staged.txt
+			// remains because it was never tracked. cleanUntracked handles that case (next test).
+		})
+
+		test('cleanUntracked removes untracked files and directories but preserves gitignored', async () => {
+			const wtPath = path.join(repo, '.trowel-wt-test')
+			await git.worktreeAdd(wtPath, 'feature')
+			await writeFile(path.join(wtPath, '.gitignore'), 'keep-me/\n')
+			await mkdir(path.join(wtPath, 'keep-me'), { recursive: true })
+			await writeFile(path.join(wtPath, 'keep-me', 'a.txt'), 'gitignored\n')
+			await writeFile(path.join(wtPath, 'untracked.txt'), 'untracked\n')
+			await git.cleanUntracked(wtPath)
+			const keptStat = await stat(path.join(wtPath, 'keep-me', 'a.txt'))
+			expect(keptStat.isFile()).toBe(true)
+			await expect(stat(path.join(wtPath, 'untracked.txt'))).rejects.toThrow()
+		})
+	})
 }

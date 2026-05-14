@@ -1,5 +1,5 @@
 import { fetchPrFeedback, findPrNumber, markPrReady, openDraftPr } from './pr-flow.ts'
-import type { SandboxIn, SandboxOut } from './verdict.ts'
+import type { TurnIn, TurnOut } from './verdict.ts'
 import type { PhaseCtx, PhaseOutcome, PreparedPhase, Slice, Storage } from '../storages/types.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
 import type { GitOps } from '../utils/git-ops.ts'
@@ -42,7 +42,7 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 	if (!ctx.config.perSliceBranches) {
 		return {
 			branch: ctx.integrationBranch,
-			sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
+			turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
 		}
 	}
 	const branch = sliceBranchFor(ctx.prdId, slice)
@@ -50,7 +50,7 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 	await deps.git.fetch(branch)
 	return {
 		branch,
-		sandboxIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
+		turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
 	}
 }
 
@@ -72,7 +72,7 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  *   `'progress'`. The next loop iteration's `findSlices` sees the PR and dispatches the reviewer.
  *   Requires `prFlow` capability; enforced at config load and defensively re-checked here.
  */
-export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 	if (verdict.verdict === 'no-work-needed') {
@@ -126,11 +126,11 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
 	requirePrFlow(deps.storage, 'review')
 	const branch = sliceBranchFor(ctx.prdId, slice)
 	const prNumber = await findPrNumber(deps.gh, branch)
-	const sandboxIn: SandboxIn = {
+	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },
 		pr: { number: prNumber, branch },
 	}
-	return { branch, sandboxIn }
+	return { branch, turnIn }
 }
 
 /**
@@ -143,7 +143,7 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
  *   classifies to 'address'. Returns `'progress'`.
  * - `partial` → return `'partial'`, no side effects.
  */
-export async function landReview(deps: PhaseDeps, slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	requirePrFlow(deps.storage, 'review')
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
@@ -175,19 +175,19 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: Sandbox
  * Prepare the addresser sandbox. Requires `prFlow`.
  *
  * Same PR-discovery as the reviewer plus a `fetchPrFeedback` call so the addresser prompt has the
- * reviewer's comments in `sandboxIn.feedback`.
+ * reviewer's comments in `turnIn.feedback`.
  */
 export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
 	requirePrFlow(deps.storage, 'address')
 	const branch = sliceBranchFor(ctx.prdId, slice)
 	const prNumber = await findPrNumber(deps.gh, branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
-	const sandboxIn: SandboxIn = {
+	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },
 		pr: { number: prNumber, branch },
 		feedback,
 	}
-	return { branch, sandboxIn }
+	return { branch, turnIn }
 }
 
 /**
@@ -199,7 +199,7 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCt
  *   slice for this run.
  * - `partial` → return `'partial'`, no side effects.
  */
-export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: SandboxOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	requirePrFlow(deps.storage, 'address')
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 	if (verdict.verdict === 'partial') return 'partial'

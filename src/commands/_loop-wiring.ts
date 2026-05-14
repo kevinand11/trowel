@@ -1,11 +1,8 @@
+import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { createWriteStream } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-import { claudeCode, createWorktree as sandcastleCreateWorktree, type Worktree as SandcastleWorktree } from '@ai-hero/sandcastle'
-import { docker } from '@ai-hero/sandcastle/sandboxes/docker'
 
 import { loadConfig } from '../config.ts'
 import type { Config } from '../schema.ts'
@@ -13,48 +10,13 @@ import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
-import { loadClaudeOauthToken, realLoadOauthTokenDeps } from '../utils/oauth-token.ts'
-import { exec, tryExec } from '../utils/shell.ts'
-import { ensureSandboxImage } from '../work/image.ts'
+import { tryExec } from '../utils/shell.ts'
 import { runLoop } from '../work/loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
 import { loadPrompt, type StorageKind, type Role } from '../work/prompts.ts'
-import { spawnSandbox, type Worktree } from '../work/sandbox.ts'
-import type { SandboxIn, SandboxOut } from '../work/verdict.ts'
-import { ensureTrowelDir } from '../work/worktrees.ts'
-
-const TROWEL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
-const ASSETS_DOCKERFILE = path.join(TROWEL_ROOT, 'assets', 'Dockerfile')
-const TROWEL_HOME = path.join(homedir(), '.trowel')
-const TROWEL_HOME_DOCKERFILE = path.join(TROWEL_HOME, 'Dockerfile')
-
-const realImageDeps = {
-	dockerfileSrc: ASSETS_DOCKERFILE,
-	dockerfileDst: TROWEL_HOME_DOCKERFILE,
-	copyFile: async (src: string, dst: string) => {
-		await mkdir(path.dirname(dst), { recursive: true })
-		await copyFile(src, dst)
-	},
-	statFile: async (p: string) => {
-		try {
-			const s = await stat(p)
-			return { mtime: s.mtime }
-		} catch {
-			return null
-		}
-	},
-	inspectImageCreatedAt: async (imageName: string): Promise<Date | null> => {
-		const r = await tryExec('docker', ['image', 'inspect', imageName, '--format', '{{.Created}}'])
-		if (!r.ok) return null
-		const created = r.stdout.trim()
-		if (!created) return null
-		const parsed = new Date(created)
-		return Number.isNaN(parsed.getTime()) ? null : parsed
-	},
-	buildImage: async (imageName: string, dockerfilePath: string, buildContext: string) => {
-		await exec('docker', ['build', '-t', imageName, '-f', dockerfilePath, buildContext])
-	},
-}
+import { spawnTurn } from '../work/turn.ts'
+import type { TurnIn, TurnOut } from '../work/verdict.ts'
+import { ensureTrowelDir, sweepOrphanWorktrees, type TurnWorktree } from '../work/worktrees.ts'
 
 type LoopWiring = {
 	config: Config
@@ -65,14 +27,14 @@ type LoopWiring = {
 	runLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
 }
 
-/**
- * Builds the gh/git/sandbox callbacks shared by `work`, `implement`, `review`, `address`.
- * The `runAgent` callback inside spawnSandbox is intentionally unimplemented; production
- * wiring needs `@ai-hero/sandcastle` integration (see TODO Section 1, Phase E).
- */
 export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopWiring> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) throw new Error('no project root found')
+
+	const which = await tryExec('which', ['claude'])
+	if (!which.ok) {
+		throw new Error("trowel requires the 'claude' CLI on PATH; install Claude Code first.")
+	}
 
 	const storageKind = opts.storage ?? config.storage
 
@@ -95,65 +57,62 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 
 	await ensureTrowelDir(projectRoot)
 
-	const oauthToken = await loadClaudeOauthToken(projectRoot, realLoadOauthTokenDeps)
-	const sandboxEnv: Record<string, string> = oauthToken !== null ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}
-
-	const createWorktree = async ({ branch }: { branch: string }): Promise<Worktree> => sandcastleCreateWorktree({
-			branchStrategy: { type: 'branch', branch },
-			cwd: projectRoot,
-			copyToWorktree: config.sandbox.copyToWorktree,
-		})
-
-	const ROLE_TO_CAP: Record<Role, keyof Config['sandbox']['iterationCaps']> = {
-		implement: 'implementer',
-		review: 'reviewer',
-		address: 'addresser',
-	}
-
 	const makeRunAgent =
 		(integrationBranchName: string) =>
-		async ({ worktree, logPath, role }: { worktree: Worktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
+		async ({ worktree, logPath, role }: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
 			const rendered = await loadPrompt(role, storage.name as StorageKind, { INTEGRATION_BRANCH: integrationBranchName })
 			const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
 			await writeFile(promptFile, rendered)
 
-			await ensureSandboxImage(config.sandbox.image, realImageDeps)
-
 			await mkdir(path.dirname(logPath), { recursive: true })
+			const logStream = createWriteStream(logPath, { flags: 'a' })
 
-			const sandcastleWt = worktree as SandcastleWorktree
-			const sandbox = await sandcastleWt.createSandbox({
-				sandbox: docker({
-					imageName: config.sandbox.image,
-					mounts: [{ hostPath: '~/.claude', sandboxPath: '/home/agent/.claude' }],
-					env: sandboxEnv,
-				}),
-				hooks: {
-					sandbox: {
-						onSandboxReady: config.sandbox.onReady.map((c) => ({ command: c, timeoutMs: 600_000 })),
-					},
-				},
+			const baseHeadR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])
+			const baseHead = baseHeadR.ok ? baseHeadR.stdout.trim() : ''
+
+			const child = spawn('claude', [
+				'--print',
+				'--model', config.agent.model,
+				'--dangerously-skip-permissions',
+				'--output-format', 'text',
+			], {
+				cwd: worktree.worktreePath,
+				env: process.env,
+				stdio: ['pipe', 'pipe', 'pipe'],
 			})
-			try {
-				const result = await sandbox.run({
-					maxIterations: config.sandbox.iterationCaps[ROLE_TO_CAP[role]],
-					agent: claudeCode(config.agent.model),
-					promptFile,
-					logging: { type: 'file', path: logPath },
-				})
-				return { commits: result.commits.length }
-			} finally {
-				await sandbox.close()
+
+			child.stdout.pipe(logStream, { end: false })
+			child.stderr.pipe(logStream, { end: false })
+			child.stdin.write(rendered)
+			child.stdin.end()
+
+			const exitCode: number = await new Promise((resolve, reject) => {
+				child.on('error', reject)
+				child.on('exit', (code) => resolve(code ?? -1))
+			})
+			logStream.end()
+
+			if (exitCode !== 0) {
+				log(`[work prd-${worktree.prdId} slice-${worktree.branch}] claude exited ${exitCode}; see ${logPath}`)
 			}
+
+			const headAfterR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])
+			const headAfter = headAfterR.ok ? headAfterR.stdout.trim() : baseHead
+			const commitsR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-list', '--count', `${baseHead}..${headAfter}`])
+			const commits = commitsR.ok ? parseInt(commitsR.stdout.trim(), 10) : 0
+
+			return { commits }
 		}
 
-	const makeSpawnSandboxFor = (prdId: string, integrationBranchName: string) => async (args: { role: Role; slice: Slice; branch: string; sandboxIn: SandboxIn }) =>
-		spawnSandbox(args, {
+	const makeSpawnTurnFor = (prdId: string, integrationBranchName: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
+		spawnTurn(args, {
 			prdId,
-			repoRoot: projectRoot,
-			createWorktree,
+			projectRoot,
+			copyToWorktree: config.turn.copyToWorktree,
+			git,
 			runAgent: makeRunAgent(integrationBranchName),
 			randId: () => randomBytes(3).toString('hex'),
+			log,
 		})
 
 	const integrationBranch = async (prdId: string): Promise<string> => {
@@ -171,19 +130,29 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 			: role === 'review'
 				? await prepareReview(phaseDeps, slice, ctx)
 				: await prepareAddress(phaseDeps, slice, ctx)
-		const verdict: SandboxOut = await makeSpawnSandboxFor(prdId, branch)({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
+		const verdict: TurnOut = await makeSpawnTurnFor(prdId, branch)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
 		if (role === 'implement') await landImplement(phaseDeps, slice, verdict, ctx)
 		else if (role === 'review') await landReview(phaseDeps, slice, verdict, ctx)
 		else await landAddress(phaseDeps, slice, verdict, ctx)
 	}
 
 	const runLoopFor = async (prdId: string, branch: string): Promise<void> => {
+		await sweepOrphanWorktrees({
+			projectRoot,
+			git,
+			cleanupAge: config.work.worktreeCleanupAge,
+			orphanCheck: async (sweptPrdId, sweptBranch) => {
+				if (sweptPrdId !== prdId) return false
+				return !(await git.branchExists(sweptBranch))
+			},
+		}).catch((e: Error) => log(`sweepOrphanWorktrees failed: ${e.message}`))
+
 		await runLoop(prdId, {
 			storage,
 			git,
 			gh: realGhRunner,
 			integrationBranch: branch,
-			spawnSandbox: makeSpawnSandboxFor(prdId, branch),
+			spawnTurn: makeSpawnTurnFor(prdId, branch),
 			log,
 			config: {
 				usePrs: config.work.usePrs,
@@ -191,7 +160,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 				perSliceBranches: config.work.perSliceBranches,
 				maxIterations: config.work.maxIterations,
 				sliceStepCap: config.work.sliceStepCap,
-				maxConcurrent: config.sandbox.maxConcurrent,
+				maxConcurrent: config.turn.maxConcurrent,
 			},
 		})
 	}

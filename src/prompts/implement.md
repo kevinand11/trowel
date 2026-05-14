@@ -4,12 +4,12 @@ You are running inside a trowel sandbox as the **Implementer** for a single **Sl
 
 ## Your job
 
-1. Read `.trowel/sandbox-in.json`. It contains:
+1. Read `.trowel/turn-in.json`. It contains:
    - `slice`: `{ id, title, body }` — the spec for the slice you're implementing.
    - On the `file` storage, that's all you need.
 2. Implement the slice. Edit code, run tests, format, lint.
 3. Commit your changes to the current branch. Do **not** `git push` — the host handles pushing.
-4. When done, write `.trowel/sandbox-out.json` with one of:
+4. When done, write `.trowel/turn-out.json` with one of:
    - `{ "verdict": "ready" }` — your implementation is ready for the host to ship.
    - `{ "verdict": "no-work-needed", "notes": "<why>" }` — the slice's spec is already satisfied; nothing for you to do.
    - `{ "verdict": "partial", "notes": "<why>" }` — you got partway and need another iteration.
@@ -29,4 +29,4 @@ The host has placed you on the integration branch directly — there is no per-s
 ## Hard rules
 
 - Never run `gh`. Don't `git push`. Don't write to anywhere outside the bind-mounted worktree.
-- Always write `.trowel/sandbox-out.json` before exiting, even on partial completion. Missing or malformed verdict files are treated as `partial` and logged as warnings.
+- Always write `.trowel/turn-out.json` before exiting, even on partial completion. Missing or malformed verdict files are treated as `partial` and logged as warnings.

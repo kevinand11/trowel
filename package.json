@@ -27,7 +27,6 @@
 		"vitest": "^4.0.18"
 	},
 	"dependencies": {
-		"@ai-hero/sandcastle": "0.5.7",
 		"@inquirer/prompts": "^8.4.3",
 		"commander": "^14.0.3",
 		"valleyed": "4.5.19"

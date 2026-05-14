@@ -1,0 +1,226 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+
+import type { Role } from './prompts.ts'
+import { parseVerdict, type TurnIn, type TurnOut } from './verdict.ts'
+import { ensureWorktree, resetWorktree, type TurnWorktree } from './worktrees.ts'
+import type { Slice } from '../storages/types.ts'
+import type { GitOps } from '../utils/git-ops.ts'
+
+export type SpawnTurnArgs = {
+	role: Role
+	slice: Slice
+	branch: string
+	turnIn: TurnIn
+}
+
+export type SpawnTurnDeps = {
+	prdId: string
+	projectRoot: string
+	copyToWorktree: string[]
+	git: GitOps
+	runAgent: (args: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }) => Promise<{ commits: number }>
+	randId: () => string
+	log?: (m: string) => void
+}
+
+export async function spawnTurn(args: SpawnTurnArgs, deps: SpawnTurnDeps): Promise<TurnOut> {
+	const runId = deps.randId()
+	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.prdId, `${args.slice.id}-${args.role}-${runId}.log`)
+
+	const worktree = await ensureWorktree({
+		prdId: deps.prdId,
+		branch: args.branch,
+		projectRoot: deps.projectRoot,
+		copyToWorktree: deps.copyToWorktree,
+		git: deps.git,
+		log: deps.log,
+	})
+	await resetWorktree(worktree, deps.git)
+
+	const trowelDir = path.join(worktree.worktreePath, '.trowel')
+	await mkdir(trowelDir, { recursive: true })
+	await writeFile(path.join(trowelDir, 'turn-in.json'), JSON.stringify(args.turnIn))
+
+	const agentResult = await deps.runAgent({ worktree, logPath, role: args.role, branch: args.branch })
+
+	let rawOut: string | null = null
+	try {
+		rawOut = await readFile(path.join(trowelDir, 'turn-out.json'), 'utf8')
+	} catch {
+		rawOut = null
+	}
+	return parseVerdict(rawOut, args.role, agentResult.commits)
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
+	const { exec } = await import('../utils/shell.ts')
+	const { createRepoGit } = await import('../utils/git-ops.ts')
+	const { mkdtemp, rm, realpath, stat } = await import('node:fs/promises')
+	const { tmpdir } = await import('node:os')
+
+	function makeArgs(overrides: Partial<SpawnTurnArgs> = {}): SpawnTurnArgs {
+		const slice: Slice = {
+			id: '145',
+			title: 'Session Middleware',
+			body: 'wire JWT validation',
+			state: 'OPEN',
+			readyForAgent: true,
+			needsRevision: false,
+			blockedBy: [],
+			prState: null,
+			branchAhead: false,
+		}
+		return {
+			role: 'implement',
+			slice,
+			branch: 'feature',
+			turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
+			...overrides,
+		}
+	}
+
+	describe('spawnTurn (persistent worktree, host-mode)', () => {
+		let projectRoot: string
+		let git: GitOps
+
+		beforeEach(async () => {
+			const raw = await mkdtemp(path.join(tmpdir(), 'trowel-spawnturn-'))
+			projectRoot = await realpath(raw)
+			await exec('git', ['-C', projectRoot, 'init', '-q', '-b', 'main'])
+			await exec('git', ['-C', projectRoot, 'config', 'user.email', 't@t.t'])
+			await exec('git', ['-C', projectRoot, 'config', 'user.name', 'T'])
+			await writeFile(path.join(projectRoot, 'README.md'), 'x\n')
+			await exec('git', ['-C', projectRoot, 'add', '.'])
+			await exec('git', ['-C', projectRoot, 'commit', '-q', '-m', 'init'])
+			await exec('git', ['-C', projectRoot, 'branch', 'feature'])
+			git = createRepoGit(projectRoot)
+		})
+		afterEach(async () => {
+			if (projectRoot) await rm(projectRoot, { recursive: true, force: true })
+		})
+
+		test('writes turn-in.json into the worktree and reads turn-out.json into the parsed verdict', async () => {
+			let observedTurnIn: TurnIn | null = null
+			const args = makeArgs()
+			const deps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async ({ worktree }) => {
+					const inRaw = await readFile(path.join(worktree.worktreePath, '.trowel', 'turn-in.json'), 'utf8')
+					observedTurnIn = JSON.parse(inRaw) as TurnIn
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 2 }
+				},
+				randId: () => 'r1',
+			}
+
+			const out = await spawnTurn(args, deps)
+			expect(observedTurnIn).toEqual(args.turnIn)
+			expect(out.verdict).toBe('ready')
+			expect(out.commits).toBe(2)
+		})
+
+		test('coerces missing turn-out.json to partial verdict', async () => {
+			const deps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async () => ({ commits: 0 }),
+				randId: () => 'r1',
+			}
+			const out = await spawnTurn(makeArgs(), deps)
+			expect(out.verdict).toBe('partial')
+			expect(out.notes).toMatch(/missing/i)
+		})
+
+		test('logPath is under <projectRoot>/.trowel/logs/<prdId>/ containing slice id, role and runId', async () => {
+			let observedLogPath: string | null = null
+			const deps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async ({ logPath, worktree }) => {
+					observedLogPath = logPath
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					return { commits: 0 }
+				},
+				randId: () => 'abc',
+			}
+			await spawnTurn(makeArgs({ role: 'review' }), deps)
+			expect(observedLogPath).toBe(path.join(projectRoot, '.trowel', 'logs', '142', '145-review-abc.log'))
+		})
+
+		test('passes runAgent a TurnWorktree handle pointing at the persistent worktree path', async () => {
+			let observedWorktreePath: string | null = null
+			const deps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async ({ worktree }) => {
+					observedWorktreePath = worktree.worktreePath
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					return { commits: 0 }
+				},
+				randId: () => 'r1',
+			}
+			await spawnTurn(makeArgs(), deps)
+			expect(observedWorktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', '142', 'feature'))
+			const s = await stat(observedWorktreePath!)
+			expect(s.isDirectory()).toBe(true)
+		})
+
+		test('resets the worktree between turns (uncommitted file from a prior turn is gone)', async () => {
+			const deps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async ({ worktree }) => {
+					await writeFile(path.join(worktree.worktreePath, 'leftover.txt'), 'from prior turn\n')
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 1 }
+				},
+				randId: () => 'r1',
+			}
+			await spawnTurn(makeArgs(), deps)
+
+			// Second turn: the prior turn's leftover.txt must be cleaned up before runAgent fires.
+			let leftoverSeen = true
+			const deps2: SpawnTurnDeps = {
+				...deps,
+				runAgent: async ({ worktree }) => {
+					leftoverSeen = await stat(path.join(worktree.worktreePath, 'leftover.txt')).then(() => true, () => false)
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 1 }
+				},
+			}
+			await spawnTurn(makeArgs(), deps2)
+			expect(leftoverSeen).toBe(false)
+		})
+
+		test('reuses the same worktree across turns (no second checkout)', async () => {
+			const deps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async ({ worktree }) => {
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 1 }
+				},
+				randId: () => 'r1',
+			}
+			await spawnTurn(makeArgs(), deps)
+			await spawnTurn(makeArgs(), deps)
+			const wts = (await git.worktreeList()).filter((w) => w.path.includes('worktrees'))
+			expect(wts).toHaveLength(1)
+		})
+	})
+}

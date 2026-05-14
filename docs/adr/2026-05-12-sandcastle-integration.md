@@ -1,5 +1,7 @@
 # Sandcastle integration — public createWorktree, host-built image, mounted credentials
 
+> **Superseded by [`2026-05-14-drop-sandcastle-for-host-exec-turns.md`](./2026-05-14-drop-sandcastle-for-host-exec-turns.md).** This ADR describes the pre-pivot wiring (sandcastle owns worktrees and container lifecycle). After 2026-05-14 trowel drops sandcastle entirely and runs each Turn as a direct `claude --print` child process inside a trowel-managed git worktree. Read this ADR for historical context only.
+
 Trowel's **AFK loop** spawns one **Sandbox** per agent run via `@ai-hero/sandcastle`. Sandcastle owns the worktree and container lifecycles; trowel owns the image build, credentials channel, logging path, prompt rendering, IPC files, and verdict translation. The integration uses sandcastle's public `createWorktree(...) → Worktree` + `Worktree.createSandbox(...)` split-ownership pair. Sandcastle places worktrees at `<projectRoot>/.sandcastle/worktrees/<sandcastle-generated path>/` — this path is hardcoded by the library and not configurable; the original locked design (Q14) of `<projectRoot>/.trowel/worktrees/<prdId>/<sliceId>-<role>-<runId>/` is retired. Sandcastle is pinned to an exact version (not `^`); upgrades are flagged for a manual recheck since the integration depends on the shape of `Worktree`, `Sandbox`, and `SandboxRunResult`.
 
 The per-run lifecycle:

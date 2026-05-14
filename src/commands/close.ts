@@ -221,6 +221,11 @@ if (import.meta.vitest) {
 			createRemoteBranch: async () => {},
 			createLocalBranch: async () => {},
 			pushSetUpstream: async () => {},
+			worktreeAdd: async () => {},
+			worktreeRemove: async () => {},
+			worktreeList: async () => [],
+			restoreAll: async () => {},
+			cleanUntracked: async () => {},
 		}
 		return { git, calls }
 	}

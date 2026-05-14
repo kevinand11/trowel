@@ -53,19 +53,10 @@ export const partialConfigPipe = () =>
 				deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
 			}),
 		),
-		sandbox: v.optional(
+		turn: v.optional(
 			v.object({
-				image: v.optional(v.string()),
-				onReady: v.optional(v.array(v.string())),
 				copyToWorktree: v.optional(v.array(v.string())),
 				maxConcurrent: v.optional(v.nullable(v.number())),
-				iterationCaps: v.optional(
-					v.object({
-						implementer: v.optional(v.number()),
-						reviewer: v.optional(v.number()),
-						addresser: v.optional(v.number()),
-					}),
-				),
 			}),
 		),
 		work: v.optional(
@@ -118,16 +109,9 @@ export type Config = {
 		comment: string | null
 		deleteBranch: 'always' | 'never' | 'prompt'
 	}
-	sandbox: {
-		image: string
-		onReady: string[]
+	turn: {
 		copyToWorktree: string[]
 		maxConcurrent: number | null
-		iterationCaps: {
-			implementer: number
-			reviewer: number
-			addresser: number
-		}
 	}
 	work: {
 		maxIterations: number
@@ -183,19 +167,12 @@ export const defaultConfig: Config = {
 		comment: 'Closed via trowel',
 		deleteBranch: 'prompt',
 	},
-	sandbox: {
-		image: 'trowel:latest',
-		onReady: [],
+	turn: {
 		copyToWorktree: [],
 		maxConcurrent: 3,
-		iterationCaps: {
-			implementer: 100,
-			reviewer: 1,
-			addresser: 50,
-		},
 	},
 	work: {
-		maxIterations: 50,
+		maxIterations: 5,
 		sliceStepCap: 5,
 		// Default false: matches the default `storage: 'file'`, which has `prFlow: false`.
 		// Users who switch to a `prFlow` storage (e.g. `issue`) and want PRs flip both flags.
@@ -255,23 +232,17 @@ if (import.meta.vitest) {
 			expect(defaultConfig.close.comment).toBe('Closed via trowel')
 		})
 
-		test('sandbox defaults to trowel:latest image with concurrency cap of 3 and empty hook arrays', () => {
-			expect(defaultConfig.sandbox.image).toBe('trowel:latest')
-			expect(defaultConfig.sandbox.maxConcurrent).toBe(3)
-			expect(defaultConfig.sandbox.onReady).toEqual([])
-			expect(defaultConfig.sandbox.copyToWorktree).toEqual([])
+		test('turn defaults to maxConcurrent: 3 and empty copyToWorktree', () => {
+			expect(defaultConfig.turn.maxConcurrent).toBe(3)
+			expect(defaultConfig.turn.copyToWorktree).toEqual([])
 		})
 
-		test('sandbox.iterationCaps defaults match equipped (implementer 100, reviewer 1, addresser 50)', () => {
-			expect(defaultConfig.sandbox.iterationCaps).toEqual({ implementer: 100, reviewer: 1, addresser: 50 })
-		})
-
-		test('agent defaults to claude-opus-4-6 (matches sandcastle DEFAULT_MODEL)', () => {
+		test('agent defaults to claude-opus-4-6', () => {
 			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
-		test('work loop defaults: 50 outer iters, 5 inner step cap, PRs off (matches default file storage), 24h worktree cleanup', () => {
-			expect(defaultConfig.work.maxIterations).toBe(50)
+		test('work loop defaults: 5 outer iters, 5 inner step cap, PRs off (matches default file storage), 24h worktree cleanup', () => {
+			expect(defaultConfig.work.maxIterations).toBe(5)
 			expect(defaultConfig.work.sliceStepCap).toBe(5)
 			expect(defaultConfig.work.usePrs).toBe(false)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
@@ -310,15 +281,14 @@ if (import.meta.vitest) {
 		})
 
 		test('deep-merges nested objects per-key', () => {
-			const result = mergePartial(defaultConfig, { sandbox: { image: 'custom:tag' } })
-			expect(result.sandbox.image).toBe('custom:tag')
-			expect(result.sandbox.maxConcurrent).toBe(defaultConfig.sandbox.maxConcurrent)
-			expect(result.sandbox.iterationCaps).toEqual(defaultConfig.sandbox.iterationCaps)
+			const result = mergePartial(defaultConfig, { turn: { maxConcurrent: 7 } })
+			expect(result.turn.maxConcurrent).toBe(7)
+			expect(result.turn.copyToWorktree).toEqual(defaultConfig.turn.copyToWorktree)
 		})
 
 		test('replaces arrays whole (no element merging)', () => {
-			const result = mergePartial(defaultConfig, { sandbox: { onReady: ['pnpm install --prefer-offline'] } })
-			expect(result.sandbox.onReady).toEqual(['pnpm install --prefer-offline'])
+			const result = mergePartial(defaultConfig, { turn: { copyToWorktree: ['node_modules'] } })
+			expect(result.turn.copyToWorktree).toEqual(['node_modules'])
 		})
 
 		test('ignores undefined values inside a partial', () => {
@@ -364,15 +334,13 @@ if (import.meta.vitest) {
 			expect(result.valid).toBe(false)
 		})
 
-		test('accepts sandbox.maxConcurrent as a number or null', () => {
-			expect(v.validate(partialConfigPipe(), { sandbox: { maxConcurrent: 5 } }).valid).toBe(true)
-			expect(v.validate(partialConfigPipe(), { sandbox: { maxConcurrent: null } }).valid).toBe(true)
+		test('accepts turn.maxConcurrent as a number or null', () => {
+			expect(v.validate(partialConfigPipe(), { turn: { maxConcurrent: 5 } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { turn: { maxConcurrent: null } }).valid).toBe(true)
 		})
 
-		test('accepts sandbox.onReady and copyToWorktree as string arrays', () => {
-			const result = v.validate(partialConfigPipe(), {
-				sandbox: { onReady: ['pnpm install --prefer-offline'], copyToWorktree: ['node_modules'] },
-			})
+		test('accepts turn.copyToWorktree as a string array', () => {
+			const result = v.validate(partialConfigPipe(), { turn: { copyToWorktree: ['node_modules'] } })
 			expect(result.valid).toBe(true)
 		})
 

@@ -3,7 +3,7 @@ import { landAddress, landImplement, landReview, prepareAddress, prepareImplemen
 import { enrichSlicePrStates } from './pr-flow.ts'
 import type { Role } from './prompts.ts'
 import { reconcileSlices } from './reconcile.ts'
-import type { SandboxIn, SandboxOut } from './verdict.ts'
+import type { TurnIn, TurnOut } from './verdict.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
 import type { GhRunner } from '../utils/gh-runner.ts'
@@ -23,7 +23,7 @@ export type LoopDeps = {
 	git: GitOps
 	gh: GhRunner
 	integrationBranch: string
-	spawnSandbox: (args: { role: Role; slice: Slice; branch: string; sandboxIn: SandboxIn }) => Promise<SandboxOut>
+	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
 }
@@ -36,7 +36,7 @@ const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'review', 'address'])
  * Concurrency derives from `config.work.perSliceBranches`:
  *
  * - `perSliceBranches: true` — slices land on their own branches, so parallel implementers
- *   are safe; the user's `config.sandbox.maxConcurrent` is the only cap.
+ *   are safe; the user's `config.turn.maxConcurrent` is the only cap.
  * - `perSliceBranches: false` — implementers commit directly on the integration branch, so
  *   any concurrency would race; force a cap of 1 regardless of user config.
  */
@@ -118,7 +118,7 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log }
 		const prep = await callPrepare(phaseDeps, role, slice, ctx)
 		deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
-		const verdict = await deps.spawnSandbox({ role, slice, branch: prep.branch, sandboxIn: prep.sandboxIn })
+		const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
 		deps.log(`${tag} ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
 		const outcome: PhaseOutcome = await callLand(phaseDeps, role, slice, verdict, ctx)
 		if (outcome === 'done') return 'done'
@@ -141,7 +141,7 @@ function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: { prdI
 	return prepareAddress(phaseDeps, slice, ctx)
 }
 
-function callLand(phaseDeps: PhaseDeps, role: Role, slice: Slice, verdict: SandboxOut, ctx: { prdId: string; integrationBranch: string; config: ClassifySliceConfig }) {
+function callLand(phaseDeps: PhaseDeps, role: Role, slice: Slice, verdict: TurnOut, ctx: { prdId: string; integrationBranch: string; config: ClassifySliceConfig }) {
 	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
 	if (role === 'review') return landReview(phaseDeps, slice, verdict, ctx)
 	return landAddress(phaseDeps, slice, verdict, ctx)
@@ -193,6 +193,11 @@ if (import.meta.vitest) {
 			createRemoteBranch: async () => {},
 			createLocalBranch: async () => {},
 			pushSetUpstream: async () => {},
+			worktreeAdd: async () => {},
+			worktreeRemove: async () => {},
+			worktreeList: async () => [],
+			restoreAll: async () => {},
+			cleanUntracked: async () => {},
 		}
 	}
 
@@ -223,7 +228,7 @@ if (import.meta.vitest) {
 				return { ok: true, stdout: '', stderr: '' }
 			},
 			integrationBranch: 'integration',
-			spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
+			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
 			config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 10, sliceStepCap: 5, maxConcurrent: null },
 			...overrides,
@@ -236,7 +241,7 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [blocked] })
 			let sandboxCalls = 0
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async () => {
+				spawnTurn: async () => {
 					sandboxCalls++
 					return { verdict: 'ready', commits: 1 }
 				},
@@ -249,7 +254,7 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [slice] })
 			const roles: Role[] = []
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async ({ role }) => {
+				spawnTurn: async ({ role }) => {
 					roles.push(role)
 					return { verdict: 'ready', commits: 1 }
 				},
@@ -264,7 +269,7 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [slice] })
 			let outerIters = 0
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async () => ({ verdict: 'partial', commits: 0 }),
+				spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
 				log: (m) => {
 					if (/iter \d+\//.test(m)) outerIters++
 				},
@@ -282,7 +287,7 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [stuck, fine] })
 			const calls: string[] = []
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async ({ slice: s }) => {
+				spawnTurn: async ({ slice: s }) => {
 					calls.push(s.id)
 					return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
 				},
@@ -298,7 +303,7 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [slice] })
 			const logs: string[] = []
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async () => ({ verdict: 'partial', commits: 0 }),
+				spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
 				log: (m) => logs.push(m),
 				config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 2, sliceStepCap: 1, maxConcurrent: null },
 			}))
@@ -319,7 +324,7 @@ if (import.meta.vitest) {
 			const logs: string[] = []
 			await runLoop('p1', makeDeps(storage, {
 				git,
-				spawnSandbox: async ({ slice: s }) => {
+				spawnTurn: async ({ slice: s }) => {
 					calls.push(s.id)
 					return { verdict: 'partial', commits: 0 }
 				},
@@ -338,7 +343,7 @@ if (import.meta.vitest) {
 			let live = 0
 			let peak = 0
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async () => {
+				spawnTurn: async () => {
 					live++
 					peak = Math.max(peak, live)
 					await new Promise((r) => setTimeout(r, 5))
@@ -356,7 +361,7 @@ if (import.meta.vitest) {
 			let live = 0
 			let peak = 0
 			await runLoop('p1', makeDeps(storage, {
-				spawnSandbox: async () => {
+				spawnTurn: async () => {
 					live++
 					peak = Math.max(peak, live)
 					await new Promise((r) => setTimeout(r, 5))
@@ -380,7 +385,7 @@ if (import.meta.vitest) {
 			const storage = makeStorage(state, { capabilities: { prFlow: true } })
 			let prCreateCount = 0
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {
-				spawnSandbox: async () => ({ verdict: 'ready', commits: 1 }),
+				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 				gh: async (args) => {
 					if (args[0] === 'pr' && args[1] === 'create') {
 						prCreateCount++
