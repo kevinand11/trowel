@@ -92,7 +92,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 		await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-		await deps.git.createLocalBranch(branch, deps.baseBranch)
+		await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
 		await deps.git.pushSetUpstream(branch)
 
 		return { id, branch }
@@ -274,6 +274,7 @@ if (import.meta.vitest) {
 			createLocalBranch: async (n: string, b: string) => { calls.git.push(['createLocalBranch', n, b]); await realGit.createLocalBranch(n, b) },
 			pushSetUpstream: async (b: string) => { calls.git.push(['pushSetUpstream', b]); await realGit.pushSetUpstream(b) },
 			currentBranch: async () => { const r = await realGit.currentBranch(); calls.git.push(['currentBranch']); return r },
+			baseBranch: async () => { const r = await realGit.baseBranch(); calls.git.push(['baseBranch']); return r },
 			branchExists: async (b: string) => { const r = await realGit.branchExists(b); calls.git.push(['branchExists', b]); return r },
 			isMerged: async (b: string, base: string) => { const r = await realGit.isMerged(b, base); calls.git.push(['isMerged', b, base]); return r },
 			deleteBranch: async (b: string) => { calls.git.push(['deleteBranch', b]); await realGit.deleteBranch(b) },
@@ -287,7 +288,6 @@ if (import.meta.vitest) {
 			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
 			repoRoot: work,
 			projectRoot: work,
-			baseBranch: 'main',
 			prdsDir,
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
@@ -469,6 +469,7 @@ if (import.meta.vitest) {
 					createLocalBranch: async () => {},
 					pushSetUpstream: async () => {},
 					currentBranch: async () => integration,
+					baseBranch: async () => 'main',
 					branchExists: async () => true,
 					isMerged: async () => false,
 					deleteBranch: async () => {},
@@ -525,6 +526,7 @@ if (import.meta.vitest) {
 					createLocalBranch: async () => {},
 					pushSetUpstream: async () => {},
 					currentBranch: async () => integration,
+					baseBranch: async () => 'develop',
 					branchExists: async () => true,
 					isMerged: async () => false,
 					deleteBranch: async () => {},

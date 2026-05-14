@@ -191,6 +191,7 @@ if (import.meta.vitest) {
 	function noopGit(): GitOps {
 		return {
 			currentBranch: async () => 'fake-current',
+			baseBranch: async () => 'fake-base',
 			branchExists: async () => true,
 			isMerged: async () => false,
 			checkout: async () => {},

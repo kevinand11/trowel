@@ -24,14 +24,14 @@ if (import.meta.vitest) {
 		branchExists: async () => false, isMerged: async () => false,
 		deleteBranch: async () => {}, worktreeAdd: async () => {},
 		worktreeRemove: async () => {}, worktreeList: async () => [],
-		restoreAll: async () => {}, cleanUntracked: async () => {},
+		restoreAll: async () => { }, cleanUntracked: async () => { },
+		baseBranch: async () => 'main',
 	}
 	const testDeps: StorageDeps = {
 		gh: async () => ({ ok: true, stdout: '', stderr: '' }),
 		git: noopGit,
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
-		baseBranch: 'main',
 		prdsDir: '/tmp/x/docs/prds',
 		labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },

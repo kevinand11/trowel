@@ -17,6 +17,7 @@ export type GitOps = {
 	pushSetUpstream(branch: string): Promise<void>
 	// host-side close cleanup (consumed by `runClose` in `src/commands/close.ts`)
 	currentBranch(): Promise<string>
+	baseBranch(): Promise<string>
 	branchExists(branch: string): Promise<boolean>
 	isMerged(branch: string, baseBranch: string): Promise<boolean>
 	deleteBranch(branch: string): Promise<void>
@@ -29,23 +30,28 @@ export type GitOps = {
 }
 
 export function createRepoGit(projectRoot: string): GitOps {
-	const gitOrThrow = async (args: string[]): Promise<string> => {
-		const r = await tryExec('git', ['-C', projectRoot, ...args])
-		if (!r.ok) throw r.error
-		return r.stdout
-	}
-	const gitInOrThrow = async (cwd: string, args: string[]): Promise<string> => {
+	const gitOrThrow = async (args: string[], cwd = projectRoot): Promise<string> => {
 		const r = await tryExec('git', ['-C', cwd, ...args])
 		if (!r.ok) throw r.error
 		return r.stdout
 	}
 
 	return {
-		fetch: async (b) => { await gitOrThrow(['fetch', '-q', 'origin', b]) },
-		push: async (b) => { await gitOrThrow(['push', '-q', 'origin', b]) },
-		checkout: async (b) => { await gitOrThrow(['checkout', '-q', b]) },
-		mergeNoFf: async (b) => { await gitOrThrow(['merge', '--no-ff', '-q', b]) },
-		deleteRemoteBranch: async (b) => { await gitOrThrow(['push', '-q', 'origin', `:${b}`]) },
+		fetch: async (b) => {
+			await gitOrThrow(['fetch', '-q', 'origin', b])
+		},
+		push: async (b) => {
+			await gitOrThrow(['push', '-q', 'origin', b])
+		},
+		checkout: async (b) => {
+			await gitOrThrow(['checkout', '-q', b])
+		},
+		mergeNoFf: async (b) => {
+			await gitOrThrow(['merge', '--no-ff', '-q', b])
+		},
+		deleteRemoteBranch: async (b) => {
+			await gitOrThrow(['push', '-q', 'origin', `:${b}`])
+		},
 		createRemoteBranch: async (newBranch, baseBranch) => {
 			await gitOrThrow(['fetch', '-q', 'origin', baseBranch])
 			await gitOrThrow(['push', '-q', 'origin', `refs/remotes/origin/${baseBranch}:refs/heads/${newBranch}`])
@@ -59,6 +65,13 @@ export function createRepoGit(projectRoot: string): GitOps {
 		currentBranch: async () => {
 			const r = await tryExec('git', ['-C', projectRoot, 'rev-parse', '--abbrev-ref', 'HEAD'])
 			return r.ok ? r.stdout.trim() : ''
+		},
+		baseBranch: async () => {
+			const result = await tryExec('git', ['-C', projectRoot, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+			if (!result.ok) return 'main'
+			const trimmed = result.stdout.trim()
+			if (!trimmed) return 'main'
+			return trimmed.startsWith('origin/') ? trimmed.slice('origin/'.length) : trimmed
 		},
 		branchExists: async (b) => {
 			const local = await tryExec('git', ['-C', projectRoot, 'branch', '--list', b])
@@ -88,10 +101,10 @@ export function createRepoGit(projectRoot: string): GitOps {
 			return parseWorktreePorcelain(stdout)
 		},
 		restoreAll: async (worktreePath) => {
-			await gitInOrThrow(worktreePath, ['restore', '--staged', '--worktree', '.'])
+			await gitOrThrow(['restore', '--staged', '--worktree', '.'], worktreePath)
 		},
 		cleanUntracked: async (worktreePath) => {
-			await gitInOrThrow(worktreePath, ['clean', '-fd'])
+			await gitOrThrow(['clean', '-fd'], worktreePath)
 		},
 	}
 }

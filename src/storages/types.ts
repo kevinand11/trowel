@@ -125,7 +125,6 @@ export type StorageDeps = {
 	gh: GhRunner
 	repoRoot: string
 	projectRoot: string
-	baseBranch: string
 	prdsDir: string
 	labels: { prd: string; readyForAgent: string; needsRevision: string }
 	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }

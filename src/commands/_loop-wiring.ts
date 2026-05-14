@@ -10,7 +10,6 @@ import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
-import { resolveBaseBranch } from '../utils/git.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runLoop } from '../work/loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
@@ -37,12 +36,10 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const log = (m: string) => process.stdout.write(`${m}\n`)
 	const git = createRepoGit(projectRoot)
 
-	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
-		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,
@@ -56,7 +53,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const makeRunAgent =
 		(integrationBranchName: string) =>
 		async ({ worktree, logPath, role }: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
-			const rendered = await loadPrompt(role, storage.name as StorageKind, { INTEGRATION_BRANCH: integrationBranchName })
+			const rendered = await loadPrompt(role, { integrationBranch: integrationBranchName, storage: storage.name as StorageKind })
 			const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
 			await writeFile(promptFile, rendered)
 

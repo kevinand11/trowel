@@ -6,7 +6,6 @@ import type { ClassifiedSlice, Storage, StorageDeps, PrdSummary } from '../stora
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
-import { resolveBaseBranch } from '../utils/git.ts'
 
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
 
@@ -75,13 +74,11 @@ export async function list(filter: PrdState, opts: { storage?: string }): Promis
 		process.exit(1)
 	}
 	const storageKind = opts.storage ?? config.storage
-	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,
-		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,

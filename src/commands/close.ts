@@ -7,13 +7,11 @@ import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
-import { resolveBaseBranch } from '../utils/git.ts'
 
 type OpenPr = { number: number; url: string }
 
 type CloseRuntime = {
 	storage: Storage
-	baseBranch: string
 	deleteBranchPolicy: DeleteBranchPolicy
 	confirm: (msg: string) => Promise<boolean>
 	stdout: (s: string) => void
@@ -23,6 +21,7 @@ type CloseRuntime = {
 
 async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
+	const baseBranch = await rt.git.baseBranch()
 
 	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
@@ -48,7 +47,7 @@ async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 	}
 
 	if (await rt.git.branchExists(prd.branch)) {
-		await maybeDeleteBranch(prd.branch, back, rt)
+		await maybeDeleteBranch(prd.branch, baseBranch, rt)
 	}
 
 	const current = await rt.git.currentBranch()
@@ -56,12 +55,12 @@ async function runClose(prdId: string, rt: CloseRuntime): Promise<void> {
 		if (await rt.git.branchExists(back)) {
 			await rt.git.checkout(back)
 		} else {
-			rt.stdout(`Switched to '${rt.baseBranch}' (was on deleted branch '${back}')\n`)
+			rt.stdout(`Switched to '${baseBranch}' (was on deleted branch '${back}')\n`)
 		}
 	}
 }
 
-async function maybeDeleteBranch(branch: string, backTo: string, rt: CloseRuntime): Promise<void> {
+async function maybeDeleteBranch(branch: string, baseBranch: string, rt: CloseRuntime): Promise<void> {
 	if (rt.deleteBranchPolicy === 'never') return
 	if (rt.deleteBranchPolicy === 'prompt') {
 		const ok = await rt.confirm(`Delete integration branch '${branch}' (local + origin)? [y/N]`)
@@ -76,21 +75,18 @@ async function maybeDeleteBranch(branch: string, backTo: string, rt: CloseRuntim
 		if (!ok) return
 	}
 
-	const merged = await rt.git.isMerged(branch, rt.baseBranch)
+	const merged = await rt.git.isMerged(branch, baseBranch)
 	if (!merged) {
-		const ok = await rt.confirm(`Branch '${branch}' contains commits not on '${rt.baseBranch}' — delete anyway? [y/N]`)
+		const ok = await rt.confirm(`Branch '${branch}' contains commits not on '${baseBranch}' — delete anyway? [y/N]`)
 		if (!ok) return
 	}
 
 	const current = await rt.git.currentBranch()
 	if (current === branch) {
-		await rt.git.checkout(rt.baseBranch)
+		await rt.git.checkout(baseBranch)
 	}
 
 	await rt.git.deleteBranch(branch)
-	if (backTo === branch) {
-		// Caller's BACK_TO has been destroyed; the post-loop will detect and message.
-	}
 }
 
 export async function close(prdId: string, opts: { storage?: string }): Promise<void> {
@@ -104,12 +100,10 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
 
 	const git = createRepoGit(projectRoot)
-	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
-		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,
@@ -127,7 +121,6 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	try {
 		await runClose(prdId, {
 			storage,
-			baseBranch,
 			deleteBranchPolicy: config.close.deleteBranch,
 			confirm: promptConfirm,
 			stdout: (s) => process.stdout.write(s),
@@ -198,6 +191,7 @@ if (import.meta.vitest) {
 		const calls: string[] = []
 		const git: GitOps = {
 			currentBranch: async () => state.current,
+			baseBranch: async () => 'main',
 			branchExists: async (b) => state.branches.has(b),
 			isMerged: async (b, base) => (state.mergedAncestors.get(b) ?? []).includes(base),
 			checkout: async (b) => {
@@ -234,7 +228,6 @@ if (import.meta.vitest) {
 			await expect(
 				runClose('99', {
 					storage,
-					baseBranch: 'main',
 					deleteBranchPolicy: 'never',
 					confirm: async () => false,
 					stdout: () => {},
@@ -261,7 +254,6 @@ if (import.meta.vitest) {
 			let stdoutBuf = ''
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => false,
 				stdout: (s) => {
@@ -288,7 +280,6 @@ if (import.meta.vitest) {
 			const { git, calls: gCalls } = fakeGit(gitState)
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => false,
 				stdout: () => {},
@@ -317,7 +308,6 @@ if (import.meta.vitest) {
 			let confirmMsg = ''
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async (m) => {
 					confirmMsg = m
@@ -346,7 +336,6 @@ if (import.meta.vitest) {
 			let stdoutBuf = ''
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => false,
 				stdout: (s) => {
@@ -373,7 +362,6 @@ if (import.meta.vitest) {
 			let confirmCalled = 0
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => {
 					confirmCalled++
@@ -403,7 +391,6 @@ if (import.meta.vitest) {
 			const { git, calls: gCalls } = fakeGit(gitState)
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => false,
 				stdout: () => {},
@@ -437,7 +424,6 @@ if (import.meta.vitest) {
 			let confirmCalls = 0
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => {
 					confirmCalls++
@@ -459,7 +445,6 @@ if (import.meta.vitest) {
 			const msgs: string[] = []
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'prompt',
 				confirm: async (m) => {
 					msgs.push(m)
@@ -482,7 +467,6 @@ if (import.meta.vitest) {
 			const msgs: string[] = []
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'prompt',
 				confirm: async (m) => {
 					msgs.push(m)
@@ -503,7 +487,6 @@ if (import.meta.vitest) {
 			let confirmCalls = 0
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'never',
 				confirm: async () => {
 					confirmCalls++
@@ -525,7 +508,6 @@ if (import.meta.vitest) {
 			let stdoutBuf = ''
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async (m) => {
 					msgs.push(m)
@@ -550,7 +532,6 @@ if (import.meta.vitest) {
 			const msgs: string[] = []
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async (m) => {
 					msgs.push(m)
@@ -571,7 +552,6 @@ if (import.meta.vitest) {
 			const { git } = fakeGit(gitState)
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
 				stdout: () => {},
@@ -598,7 +578,6 @@ if (import.meta.vitest) {
 			let stdoutBuf = ''
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
 				stdout: (s) => {
@@ -626,7 +605,6 @@ if (import.meta.vitest) {
 			const { git, calls: gCalls } = fakeGit(gitState)
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
 				stdout: () => {},
@@ -650,7 +628,6 @@ if (import.meta.vitest) {
 			const { git } = fakeGit(gitState)
 			await runClose('42', {
 				storage,
-				baseBranch: 'main',
 				deleteBranchPolicy: 'always',
 				confirm: async () => true,
 				stdout: () => {},

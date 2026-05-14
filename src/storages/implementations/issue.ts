@@ -58,7 +58,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', spec.body, '--label', deps.labels.prd])
 		const id = parseIssueNumberFromUrl(createOut)
 		const branch = `${id}-${slugify(spec.title)}`
-		await deps.git.createLocalBranch(branch, deps.baseBranch)
+		await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
 		await deps.git.pushSetUpstream(branch)
 		return { id, branch }
 	}
@@ -228,7 +228,6 @@ if (import.meta.vitest) {
 			gh,
 			repoRoot: '/tmp/x',
 			projectRoot: '/tmp/x',
-			baseBranch: 'main',
 			prdsDir: '/tmp/x/docs/prds',
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
@@ -243,6 +242,7 @@ if (import.meta.vitest) {
 				createLocalBranch: async (n, b) => { gitCalls.push(['createLocalBranch', n, b]) },
 				pushSetUpstream: async (b) => { gitCalls.push(['pushSetUpstream', b]) },
 				currentBranch: async () => '',
+				baseBranch: async () => 'develop',
 				branchExists: async () => false,
 				isMerged: async () => false,
 				deleteBranch: async () => {},
@@ -554,7 +554,7 @@ if (import.meta.vitest) {
 			expect(result).toEqual({ id: '42', branch: '42-fix-tabs-on-macos' })
 			expect(calls).toEqual([['issue', 'create', '--title', 'Fix Tabs on macOS', '--body', 'the spec', '--label', 'prd']])
 			expect(gitCalls).toEqual([
-				['createLocalBranch', '42-fix-tabs-on-macos', 'main'],
+				['createLocalBranch', '42-fix-tabs-on-macos', 'develop'],
 				['pushSetUpstream', '42-fix-tabs-on-macos'],
 			])
 		})
@@ -564,7 +564,6 @@ if (import.meta.vitest) {
 				{ match: (a) => a[1] === 'create', respond: { ok: true, stdout: 'https://github.com/o/r/issues/7\n', stderr: '' } },
 			])
 			deps.labels.prd = 'roadmap'
-			deps.baseBranch = 'develop'
 
 			const storage = createIssueStorage(deps)
 			const result = await storage.createPrd({ title: 'Add ORM', body: 'b' })
