@@ -5,6 +5,7 @@ import { getStorage } from '../storages/registry.ts'
 import type { ClassifiedSlice, Slice, Storage, StorageDeps, PrdRecord } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
+import { resolveBaseBranch } from '../utils/git.ts'
 
 // Bucket render order. Mirrors the predicate evaluation order in
 // `src/utils/bucket.ts` so the user reads buckets in the same flow as
@@ -94,12 +95,12 @@ export async function status(prdId: string, opts: { storage?: string }): Promise
 	}
 
 	const storageKind = opts.storage ?? config.storage
+	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
-		baseBranch: config.baseBranch,
-		branchPrefix: config.branchPrefix,
+		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,
@@ -129,7 +130,6 @@ if (import.meta.vitest) {
 	function fakeStorage(state: FakeStorageState): Storage {
 		return {
 			name: 'fake',
-			defaultBranchPrefix: '',
 			createPrd: async () => {
 				throw new Error('nyi')
 			},

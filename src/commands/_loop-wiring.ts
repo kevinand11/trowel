@@ -10,6 +10,7 @@ import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
+import { resolveBaseBranch } from '../utils/git.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runLoop } from '../work/loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
@@ -36,12 +37,12 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const log = (m: string) => process.stdout.write(`${m}\n`)
 	const git = createRepoGit(projectRoot)
 
+	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
-		baseBranch: config.baseBranch,
-		branchPrefix: config.branchPrefix,
+		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,
@@ -153,7 +154,6 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 				usePrs: config.work.usePrs,
 				review: config.work.review,
 				perSliceBranches: config.work.perSliceBranches,
-				maxIterations: config.work.maxIterations,
 				sliceStepCap: config.work.sliceStepCap,
 				maxConcurrent: config.turn.maxConcurrent,
 			},

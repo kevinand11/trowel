@@ -13,7 +13,6 @@ export type LoopConfig = {
 	usePrs: boolean
 	review: boolean
 	perSliceBranches: boolean
-	maxIterations: number
 	sliceStepCap: number
 	maxConcurrent: number | null
 }
@@ -62,31 +61,44 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 		return enrichSlicePrStates(deps.gh, prdId, raw)
 	}
 
-	for (let iter = 0; iter < config.maxIterations; iter++) {
+	let iter = 0
+	while (true) {
 		const before = await fetchEnriched()
 		await reconcileSlices(deps.gh, before, ctxOf())
 		const slices = classifySlices(await fetchEnriched())
-		const actionable = slices.filter((s) => !failed.has(s.id) && classify(s, ctxOf().config) !== 'done')
+		const actionable = slices.filter((s) => {
+			if (failed.has(s.id)) return false
+			const state = classify(s, ctxOf().config)
+			// 'done' and 'blocked' both mean "nothing to do this iteration":
+			// done = terminal; blocked = waiting on another slice (which, if it closes mid-run,
+			// flips this slice back to 'ready' on the next iter's classify and re-enters actionable).
+			return state !== 'done' && state !== 'blocked'
+		})
 		if (actionable.length === 0) {
 			deps.log(`${tag} no actionable slices; exiting after ${iter} iteration(s)`)
 			return
 		}
-		deps.log(`${tag} iter ${iter + 1}/${config.maxIterations}: ${actionable.length} actionable slice(s) [${actionable.map((s) => s.id).join(', ')}]`)
+		iter += 1
+		deps.log(`${tag} iter ${iter}: ${actionable.length} actionable slice(s) [${actionable.map((s) => s.id).join(', ')}]`)
 		const limit = effectiveConcurrency(config.perSliceBranches, config.maxConcurrent)
 		for (let start = 0; start < actionable.length; start += limit) {
 			const batch = actionable.slice(start, start + limit)
 			const results = await Promise.allSettled(batch.map((s) => processSlice(prdId, s, deps)))
 			results.forEach((r, i) => {
+				const slice = batch[i]!
 				if (r.status === 'rejected') {
-					const slice = batch[i]!
 					const msg = r.reason instanceof Error ? r.reason.message : String(r.reason)
 					deps.log(`[work prd-${prdId} slice-${slice.id}] error: ${msg}; skipping for the rest of this run`)
+					failed.add(slice.id)
+				} else if (r.value === 'partial') {
+					// A slice that returns `partial` doesn't transition state and would re-enter
+					// the actionable set forever. Skip it for the rest of this run.
+					deps.log(`[work prd-${prdId} slice-${slice.id}] partial; skipping for the rest of this run`)
 					failed.add(slice.id)
 				}
 			})
 		}
 	}
-	deps.log(`${tag} hit maxIterations (${config.maxIterations}); leaving remaining slices for next invocation`)
 }
 
 export async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
@@ -157,7 +169,6 @@ if (import.meta.vitest) {
 	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
 		return {
 			name: 'fake',
-			defaultBranchPrefix: '',
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async () => null,
@@ -229,7 +240,7 @@ if (import.meta.vitest) {
 			integrationBranch: 'integration',
 			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
-			config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 10, sliceStepCap: 5, maxConcurrent: null },
+			config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 5, maxConcurrent: null },
 			...overrides,
 		}
 	}
@@ -259,7 +270,7 @@ if (import.meta.vitest) {
 					return { ok: true, stdout: '', stderr: '' }
 				},
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
-				config: { usePrs: true, review: false, perSliceBranches: true, maxIterations: 1, sliceStepCap: 5, maxConcurrent: null },
+				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null },
 			}))
 			expect(ghCalls.find((args) => args[0] === 'pr' && args[1] === 'list')).toBeDefined()
 		})
@@ -279,19 +290,20 @@ if (import.meta.vitest) {
 			expect(after[0]!.state).toBe('CLOSED')
 		})
 
-		test('partial verdict: returns partial, leaves slice OPEN, exits this run', async () => {
+		test('partial verdict: slice added to skip set; outer loop exits after one iteration', async () => {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
 			let outerIters = 0
 			await runLoop('p1', makeDeps(storage, {
 				spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
 				log: (m) => {
-					if (/iter \d+\//.test(m)) outerIters++
+					if (/^\[work prd-p1\] iter \d+:/.test(m)) outerIters++
 				},
-				config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 5, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null },
 			}))
-			// step-cap=1 → one inner attempt, outer loop sees slice still actionable, retries until maxIterations
-			expect(outerIters).toBe(5)
+			// One outer iteration: slice tried once, returned partial, added to skip set.
+			// Next iteration sees no actionable slices and exits.
+			expect(outerIters).toBe(1)
 			const after = await storage.findSlices('p1')
 			expect(after[0]!.state).toBe('OPEN')
 		})
@@ -306,23 +318,11 @@ if (import.meta.vitest) {
 					calls.push(s.id)
 					return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
 				},
-				config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 5, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null },
 			}))
 			expect(calls).toContain('fine')
 			const after = await storage.findSlices('p1')
 			expect(after.find((s) => s.id === 'fine')!.state).toBe('CLOSED')
-		})
-
-		test('hitting maxIterations exits with a log message', async () => {
-			const slice = makeSlice({ id: 's1' })
-			const storage = makeStorage({ slices: [slice] })
-			const logs: string[] = []
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
-				log: (m) => logs.push(m),
-				config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 2, sliceStepCap: 1, maxConcurrent: null },
-			}))
-			expect(logs.some((m) => /maxIterations \(2\)/.test(m))).toBe(true)
 		})
 
 		test('a rejected slice (storage throws) is logged, added to skip set, not retried', async () => {
@@ -344,7 +344,7 @@ if (import.meta.vitest) {
 					return { verdict: 'partial', commits: 0 }
 				},
 				log: (m) => logs.push(m),
-				config: { usePrs: true, review: false, perSliceBranches: true, maxIterations: 3, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: null },
 			}))
 			// a fails in prepareImplement (no sandbox spawn); b spawns each iter, never reaches done because step-cap=1+partial
 			expect(calls.filter((id) => id === 'a')).toHaveLength(0)
@@ -365,7 +365,7 @@ if (import.meta.vitest) {
 					live--
 					return { verdict: 'partial', commits: 0 }
 				},
-				config: { usePrs: false, review: false, perSliceBranches: false, maxIterations: 1, sliceStepCap: 1, maxConcurrent: 3 },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: 3 },
 			}))
 			expect(peak).toBe(1)
 		})
@@ -383,7 +383,7 @@ if (import.meta.vitest) {
 					live--
 					return { verdict: 'partial', commits: 0 }
 				},
-				config: { usePrs: false, review: false, perSliceBranches: true, maxIterations: 1, sliceStepCap: 1, maxConcurrent: 2 },
+				config: { usePrs: false, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: 2 },
 			}))
 			expect(peak).toBeLessThanOrEqual(2)
 			expect(peak).toBeGreaterThan(1)
@@ -409,7 +409,7 @@ if (import.meta.vitest) {
 					}
 					return { ok: true, stdout: '', stderr: '' }
 				},
-				config: { usePrs: true, review: false, perSliceBranches: true, maxIterations: 1, sliceStepCap: 5, maxConcurrent: null },
+				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null },
 			}))
 			expect(outcome).toBe('done')
 			expect(prCreateCount).toBe(1)

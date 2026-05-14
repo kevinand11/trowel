@@ -59,7 +59,6 @@ if (import.meta.vitest) {
 	function makeStorage(name: string, slices: Slice[], hasPrd = true): Storage {
 		return {
 			name,
-			defaultBranchPrefix: '',
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			branchForExisting: async () => 'x',
 			findPrd: async (id) => (hasPrd ? { id, branch: 'b', title: 't', state: 'OPEN' } : null),

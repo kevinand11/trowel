@@ -7,12 +7,14 @@ import { v } from 'valleyed'
 
 import { pathForLayer } from '../config.ts'
 import { resolveProjectRoot } from '../project.ts'
-import { partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
+import { defaultConfig, partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
 import { storageFactories } from '../storages/registry.ts'
 
 type InitPrompts = {
 	storage: (current: string) => Promise<string>
-	branchPrefix: (current: string) => Promise<string>
+	agentModel: (current: string) => Promise<string>
+	usePrs: (current: boolean) => Promise<boolean>
+	review: (current: boolean) => Promise<boolean>
 	confirm: (msg: string) => Promise<boolean>
 }
 
@@ -54,10 +56,20 @@ async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 
 	const merged: Record<string, unknown> = { ...(existing ?? {}), storage: storageAnswer }
 
-	if (storageAnswer === 'issue') {
-		const currentPrefix = existing?.branchPrefix ?? 'prds-issue-'
-		merged.branchPrefix = await opts.prompts.branchPrefix(currentPrefix)
+	const currentModel = existing?.agent?.model ?? defaultConfig.agent.model
+	const modelAnswer = await opts.prompts.agentModel(currentModel)
+	merged.agent = { ...(existing?.agent ?? {}), model: modelAnswer }
+
+	const currentUsePrs = existing?.work?.usePrs ?? defaultConfig.work.usePrs
+	const usePrsAnswer = await opts.prompts.usePrs(currentUsePrs)
+	const workOut: Record<string, unknown> = { ...(existing?.work ?? {}), usePrs: usePrsAnswer }
+
+	if (usePrsAnswer) {
+		const currentReview = existing?.work?.review ?? defaultConfig.work.review
+		const reviewAnswer = await opts.prompts.review(currentReview)
+		workOut.review = reviewAnswer
 	}
+	merged.work = workOut
 
 	const json = JSON.stringify(merged, null, 2) + '\n'
 	const ok = await opts.prompts.confirm(`About to write to ${filePath}:\n\n${json}\nWrite?`)
@@ -87,9 +99,19 @@ export async function init(layerArg: string): Promise<void> {
 				choices: storageChoices,
 				default: current,
 			}),
-		branchPrefix: (current) =>
+		agentModel: (current) =>
 			input({
-				message: 'Branch prefix',
+				message: 'Agent model',
+				default: current,
+			}),
+		usePrs: (current) =>
+			confirm({
+				message: 'Open a draft PR per slice branch (work.usePrs)?',
+				default: current,
+			}),
+		review: (current) =>
+			confirm({
+				message: 'Run the agent reviewer/addresser against PRs (work.review)?',
 				default: current,
 			}),
 		confirm: (message) => confirm({ message, default: true }),
@@ -142,10 +164,12 @@ if (import.meta.vitest) {
 		await rm(path.dirname(f.home), { recursive: true, force: true })
 	}
 
-	function fixedPrompts(storage: string, branchPrefix: string, confirm: boolean): InitPrompts {
+	function fixedPrompts(storage: string, confirm: boolean): InitPrompts {
 		return {
 			storage: async () => storage,
-			branchPrefix: async () => branchPrefix,
+			agentModel: async (current) => current,
+			usePrs: async (current) => current,
+			review: async (current) => current,
 			confirm: async () => confirm,
 		}
 	}
@@ -159,22 +183,26 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('writes a sparse file with just the chosen storage at <projectRoot>/.trowel/config.json', async () => {
+		test('writes a sparse file at <projectRoot>/.trowel/config.json with the keys the wizard asked about', async () => {
 			const result = await runInit({
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
-				prompts: fixedPrompts('file', '', true),
+				prompts: fixedPrompts('file', true),
 				stdout: () => {},
 			})
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.project, '.trowel', 'config.json'))
 			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toEqual({ storage: 'file' })
+			expect(JSON.parse(raw)).toEqual({
+				storage: 'file',
+				agent: { model: 'claude-opus-4-6' },
+				work: { usePrs: false },
+			})
 		})
 	})
 
-	describe('init: branchPrefix prompt is conditional on storage', () => {
+	describe('init: agent.model prompt', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -183,69 +211,101 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('storage=file → branchPrefix prompt is NOT called; no branchPrefix in output', async () => {
-			let prefixCalled = 0
+		test('prompts for agent.model and writes the answer into the sparse file', async () => {
+			let modelDefault = ''
 			await runInit({
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
 				prompts: {
 					storage: async () => 'file',
-					branchPrefix: async () => {
-						prefixCalled++
-						return 'should-not-be-stored'
+					agentModel: async (current) => {
+						modelDefault = current
+						return 'claude-sonnet-4-6'
 					},
+					usePrs: async () => false,
+					review: async () => false,
 					confirm: async () => true,
 				},
 				stdout: () => {},
 			})
-			expect(prefixCalled).toBe(0)
+			expect(modelDefault).toBe('claude-opus-4-6')
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written).not.toHaveProperty('branchPrefix')
+			expect(written).toMatchObject({ agent: { model: 'claude-sonnet-4-6' } })
+		})
+	})
+
+	describe('init: work.usePrs and work.review prompts', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
 		})
 
-		test("storage=issue → branchPrefix prompt is called with 'prds-issue-' as default; value stored", async () => {
-			let prefixDefault = ''
+		test('prompts for work.usePrs unconditionally; writes the answer', async () => {
 			await runInit({
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					storage: async () => 'issue',
-					branchPrefix: async (current) => {
-						prefixDefault = current
-						return 'prds-issue-'
-					},
+					storage: async () => 'file',
+					agentModel: async (current) => current,
+					usePrs: async () => true,
+					review: async () => false,
 					confirm: async () => true,
 				},
 				stdout: () => {},
 			})
-			expect(prefixDefault).toBe('prds-issue-')
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written).toEqual({ storage: 'issue', branchPrefix: 'prds-issue-' })
+			expect(written.work.usePrs).toBe(true)
 		})
 
-		test('storage=issue + existing branchPrefix → prompt uses existing as default', async () => {
-			const configPath = path.join(f.project, '.trowel', 'config.json')
-			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ storage: 'issue', branchPrefix: 'feat/' }), 'utf8')
-
-			let prefixDefault = ''
+		test('work.review prompt is NOT called when usePrs is false; no review key in output', async () => {
+			let reviewCalls = 0
 			await runInit({
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
 				prompts: {
-					storage: async () => 'issue',
-					branchPrefix: async (current) => {
-						prefixDefault = current
-						return current
+					storage: async () => 'file',
+					agentModel: async (current) => current,
+					usePrs: async () => false,
+					review: async () => {
+						reviewCalls++
+						return true
 					},
 					confirm: async () => true,
 				},
 				stdout: () => {},
 			})
-			expect(prefixDefault).toBe('feat/')
+			expect(reviewCalls).toBe(0)
+			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
+			expect(written.work).not.toHaveProperty('review')
+		})
+
+		test('work.review prompt IS called when usePrs is true; value stored', async () => {
+			let reviewCalls = 0
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					agentModel: async (current) => current,
+					usePrs: async () => true,
+					review: async () => {
+						reviewCalls++
+						return true
+					},
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(reviewCalls).toBe(1)
+			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
+			expect(written.work).toMatchObject({ usePrs: true, review: true })
 		})
 	})
 
@@ -263,13 +323,13 @@ if (import.meta.vitest) {
 				layer: 'private',
 				cwd: f.project,
 				home: f.home,
-				prompts: fixedPrompts('file', '', true),
+				prompts: fixedPrompts('file', true),
 				stdout: () => {},
 			})
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.home, '.trowel', 'projects', f.project.replace(/^\//, ''), 'config.json'))
 			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toEqual({ storage: 'file' })
+			expect(JSON.parse(raw)).toMatchObject({ storage: 'file' })
 		})
 	})
 
@@ -291,7 +351,7 @@ if (import.meta.vitest) {
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
-				prompts: fixedPrompts('issue', '', true),
+				prompts: fixedPrompts('issue', true),
 				stdout: () => {},
 			})
 
@@ -317,7 +377,9 @@ if (import.meta.vitest) {
 						promptDefault = current
 						return 'issue'
 					},
-					branchPrefix: async () => '',
+					agentModel: async (current) => current,
+					usePrs: async (current) => current,
+					review: async (current) => current,
 					confirm: async () => true,
 				},
 				stdout: () => {},
@@ -331,7 +393,7 @@ if (import.meta.vitest) {
 					layer: 'project',
 					cwd: '/tmp/elsewhere',
 					home: f.home,
-					prompts: fixedPrompts('file', '', true),
+					prompts: fixedPrompts('file', true),
 					stdout: () => {},
 					resolveRoot: async () => null,
 				}),
@@ -344,7 +406,7 @@ if (import.meta.vitest) {
 					layer: 'private',
 					cwd: '/tmp/elsewhere',
 					home: f.home,
-					prompts: fixedPrompts('file', '', true),
+					prompts: fixedPrompts('file', true),
 					stdout: () => {},
 					resolveRoot: async () => null,
 				}),
@@ -356,14 +418,14 @@ if (import.meta.vitest) {
 				layer: 'global',
 				cwd: '/tmp/elsewhere',
 				home: f.home,
-				prompts: fixedPrompts('file', '', true),
+				prompts: fixedPrompts('file', true),
 				stdout: () => {},
 				resolveRoot: async () => null,
 			})
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.home, '.trowel', 'config.json'))
 			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toEqual({ storage: 'file' })
+			expect(JSON.parse(raw)).toMatchObject({ storage: 'file' })
 		})
 
 		test('user declines confirm → file is not written, returns wrote=false', async () => {
@@ -371,7 +433,7 @@ if (import.meta.vitest) {
 				layer: 'project',
 				cwd: f.project,
 				home: f.home,
-				prompts: fixedPrompts('issue', '', false),
+				prompts: fixedPrompts('issue', false),
 				stdout: () => {},
 			})
 			expect(result.wrote).toBe(false)
@@ -387,7 +449,9 @@ if (import.meta.vitest) {
 				home: f.home,
 				prompts: {
 					storage: async () => 'issue',
-					branchPrefix: async () => '',
+					agentModel: async (current) => current,
+					usePrs: async (current) => current,
+					review: async (current) => current,
 					confirm: async (m) => {
 						confirmMsg = m
 						return false
@@ -409,7 +473,7 @@ if (import.meta.vitest) {
 					layer: 'project',
 					cwd: f.project,
 					home: f.home,
-					prompts: fixedPrompts('file', '', true),
+					prompts: fixedPrompts('file', true),
 					stdout: () => {},
 				}),
 			).rejects.toThrow(/Invalid existing config/)

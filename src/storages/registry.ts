@@ -21,7 +21,6 @@ if (import.meta.vitest) {
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
 		baseBranch: 'main',
-		branchPrefix: null,
 		prdsDir: '/tmp/x/docs/prds',
 		labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },
@@ -41,9 +40,5 @@ if (import.meta.vitest) {
 			expect(() => getStorage('mongo', testDeps)).toThrow(/No storage registered/)
 		})
 
-		test('each storage exposes its defaultBranchPrefix', () => {
-			expect(getStorage('file', testDeps).defaultBranchPrefix).toBe('prd/')
-			expect(getStorage('issue', testDeps).defaultBranchPrefix).toBe('')
-		})
 	})
 }

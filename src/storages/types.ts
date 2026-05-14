@@ -126,7 +126,6 @@ export type StorageDeps = {
 	repoRoot: string
 	projectRoot: string
 	baseBranch: string
-	branchPrefix: string | null
 	prdsDir: string
 	labels: { prd: string; readyForAgent: string; needsRevision: string }
 	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
@@ -146,7 +145,6 @@ export type StorageFactory = (deps: StorageDeps) => Storage
 
 export interface Storage {
 	readonly name: string
-	readonly defaultBranchPrefix: string
 
 	// PRD lifecycle
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>

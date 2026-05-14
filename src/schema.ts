@@ -5,8 +5,6 @@ import { storageFactories } from './storages/registry.ts'
 export const partialConfigPipe = () =>
 	v.object({
 		storage: v.optional(v.in(Object.keys(storageFactories))),
-		branchPrefix: v.optional(v.nullable(v.string())),
-		baseBranch: v.optional(v.string()),
 		docs: v.optional(
 			v.object({
 				dir: v.optional(v.string()),
@@ -33,12 +31,6 @@ export const partialConfigPipe = () =>
 				model: v.optional(v.string()),
 			}),
 		),
-		preconditions: v.optional(
-			v.object({
-				requireCleanTree: v.optional(v.boolean()),
-				requireGitRoot: v.optional(v.boolean()),
-			}),
-		),
 		labels: v.optional(
 			v.object({
 				readyForAgent: v.optional(v.string()),
@@ -60,7 +52,6 @@ export const partialConfigPipe = () =>
 		),
 		work: v.optional(
 			v.object({
-				maxIterations: v.optional(v.number()),
 				sliceStepCap: v.optional(v.number()),
 				usePrs: v.optional(v.boolean()),
 				review: v.optional(v.boolean()),
@@ -74,8 +65,6 @@ export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
 	storage: string
-	branchPrefix: string | null
-	baseBranch: string
 	docs: {
 		dir: string
 		adrDir: string
@@ -94,10 +83,6 @@ export type Config = {
 	agent: {
 		model: string
 	}
-	preconditions: {
-		requireCleanTree: boolean
-		requireGitRoot: boolean
-	}
 	labels: {
 		readyForAgent: string
 		needsRevision: string
@@ -112,7 +97,6 @@ export type Config = {
 		maxConcurrent: number | null
 	}
 	work: {
-		maxIterations: number
 		sliceStepCap: number
 		usePrs: boolean
 		review: boolean
@@ -131,8 +115,6 @@ export type InitableLayer = Exclude<ConfigLayer, 'default'>
 // Hard-coded defaults — the 'default' layer. Every field present.
 export const defaultConfig: Config = {
 	storage: 'file',
-	branchPrefix: null,
-	baseBranch: 'main',
 	docs: {
 		dir: 'docs',
 		adrDir: 'docs/adr',
@@ -151,10 +133,6 @@ export const defaultConfig: Config = {
 	agent: {
 		model: 'claude-opus-4-6',
 	},
-	preconditions: {
-		requireCleanTree: true,
-		requireGitRoot: true,
-	},
 	labels: {
 		readyForAgent: 'ready-for-agent',
 		needsRevision: 'needs-revision',
@@ -169,7 +147,6 @@ export const defaultConfig: Config = {
 		maxConcurrent: 3,
 	},
 	work: {
-		maxIterations: 5,
 		sliceStepCap: 5,
 		// Default false: most projects start in host-merge mode regardless of storage.
 		// Set true to open a draft PR per slice branch (requires a GitHub remote + gh auth).
@@ -216,10 +193,6 @@ if (import.meta.vitest) {
 			expect(defaultConfig.storage).toBe('file')
 		})
 
-		test('branchPrefix is null by default (storage supplies its own)', () => {
-			expect(defaultConfig.branchPrefix).toBeNull()
-		})
-
 		test('labels.prd defaults to "prd"', () => {
 			expect(defaultConfig.labels.prd).toBe('prd')
 		})
@@ -238,8 +211,7 @@ if (import.meta.vitest) {
 			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
-		test('work loop defaults: 5 outer iters, 5 inner step cap, PRs off (matches default file storage), 24h worktree cleanup', () => {
-			expect(defaultConfig.work.maxIterations).toBe(5)
+		test('work loop defaults: 5 inner step cap, PRs off, 24h worktree cleanup', () => {
 			expect(defaultConfig.work.sliceStepCap).toBe(5)
 			expect(defaultConfig.work.usePrs).toBe(false)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
@@ -253,10 +225,6 @@ if (import.meta.vitest) {
 			expect(defaultConfig.work.perSliceBranches).toBe(true)
 		})
 
-		test('every preconditions check is on by default', () => {
-			expect(defaultConfig.preconditions.requireCleanTree).toBe(true)
-			expect(defaultConfig.preconditions.requireGitRoot).toBe(true)
-		})
 	})
 
 	describe('mergePartial', () => {
@@ -268,12 +236,7 @@ if (import.meta.vitest) {
 		test('overrides a primitive value at the top level', () => {
 			const result = mergePartial(defaultConfig, { storage: 'issue' })
 			expect(result.storage).toBe('issue')
-			expect(result.baseBranch).toBe(defaultConfig.baseBranch)
-		})
-
-		test('overrides branchPrefix from null to a string', () => {
-			const result = mergePartial(defaultConfig, { branchPrefix: 'feat/' })
-			expect(result.branchPrefix).toBe('feat/')
+			expect(result.docs.dir).toBe(defaultConfig.docs.dir)
 		})
 
 		test('deep-merges nested objects per-key', () => {
@@ -307,11 +270,6 @@ if (import.meta.vitest) {
 
 		test('accepts a partial with only one nested key set', () => {
 			const result = v.validate(partialConfigPipe(), { agent: { model: 'sonnet' } })
-			expect(result.valid).toBe(true)
-		})
-
-		test('accepts branchPrefix: null', () => {
-			const result = v.validate(partialConfigPipe(), { branchPrefix: null })
 			expect(result.valid).toBe(true)
 		})
 
@@ -359,19 +317,10 @@ if (import.meta.vitest) {
 			expect(v.validate(partialConfigPipe(), { work: { review: 'sometimes' } }).valid).toBe(false)
 		})
 
-		test('rejects work.maxIterations when non-numeric', () => {
-			const result = v.validate(partialConfigPipe(), { work: { maxIterations: 'lots' } })
-			expect(result.valid).toBe(false)
-		})
-
 		test('rejects an unknown storage value', () => {
 			const result = v.validate(partialConfigPipe(), { storage: 'mongo' })
 			expect(result.valid).toBe(false)
 		})
 
-		test('rejects a non-string branchPrefix', () => {
-			const result = v.validate(partialConfigPipe(), { branchPrefix: 42 })
-			expect(result.valid).toBe(false)
-		})
 	})
 }

@@ -24,6 +24,19 @@ export async function gitRemoteUrl(cwd: string, remote = 'origin'): Promise<stri
 	return result.stdout.trim()
 }
 
+/**
+ * Resolve the project's trunk branch by reading the remote's HEAD ref
+ * (`refs/remotes/origin/HEAD` → `refs/remotes/origin/<branch>`). Returns the bare branch name
+ * (e.g. `'main'`, `'master'`, `'develop'`). Falls back to `'main'` when no remote / no HEAD ref.
+ */
+export async function resolveBaseBranch(cwd: string): Promise<string> {
+	const result = await tryExec('git', ['-C', cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+	if (!result.ok) return 'main'
+	const trimmed = result.stdout.trim()
+	if (!trimmed) return 'main'
+	return trimmed.startsWith('origin/') ? trimmed.slice('origin/'.length) : trimmed
+}
+
 export async function fetch(cwd: string, remote: string, ref: string): Promise<void> {
 	await exec('git', ['-C', cwd, 'fetch', remote, ref])
 }
@@ -111,6 +124,24 @@ if (import.meta.vitest) {
 
 		test('gitRemoteUrl returns null when no origin remote exists', async () => {
 			expect(await gitRemoteUrl(repo)).toBeNull()
+		})
+
+		test('resolveBaseBranch falls back to "main" when no origin/HEAD is set', async () => {
+			expect(await resolveBaseBranch(repo)).toBe('main')
+		})
+
+		test('resolveBaseBranch reads origin/HEAD when configured', async () => {
+			const bare = await mkdtemp(path.join(tmpdir(), 'trowel-git-bare-'))
+			try {
+				await exec('git', ['init', '--bare', '-q', '-b', 'develop', bare])
+				await exec('git', ['-C', repo, 'remote', 'add', 'origin', bare])
+				await exec('git', ['-C', repo, 'branch', 'develop'])
+				await exec('git', ['-C', repo, 'push', '-q', '-u', 'origin', 'develop'])
+				await exec('git', ['-C', repo, 'remote', 'set-head', 'origin', 'develop'])
+				expect(await resolveBaseBranch(repo)).toBe('develop')
+			} finally {
+				await rm(bare, { recursive: true, force: true })
+			}
 		})
 	})
 }

@@ -7,6 +7,7 @@ import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
+import { resolveBaseBranch } from '../utils/git.ts'
 
 type OpenPr = { number: number; url: string }
 
@@ -103,12 +104,12 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
 
 	const git = createRepoGit(projectRoot)
+	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
 		repoRoot: projectRoot,
 		projectRoot,
-		baseBranch: config.baseBranch,
-		branchPrefix: config.branchPrefix,
+		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,
@@ -117,8 +118,8 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	}
 	const storage = getStorage(storageKind, storageDeps)
 
-	const listOpenPrs = async (baseBranch: string): Promise<OpenPr[]> => {
-		const r = await realGhRunner(['pr', 'list', '--base', baseBranch, '--state', 'open', '--json', 'number,url'])
+	const listOpenPrs = async (b: string): Promise<OpenPr[]> => {
+		const r = await realGhRunner(['pr', 'list', '--base', b, '--state', 'open', '--json', 'number,url'])
 		if (!r.ok) return []
 		return JSON.parse(r.stdout) as OpenPr[]
 	}
@@ -126,7 +127,7 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	try {
 		await runClose(prdId, {
 			storage,
-			baseBranch: config.baseBranch,
+			baseBranch,
 			deleteBranchPolicy: config.close.deleteBranch,
 			confirm: promptConfirm,
 			stdout: (s) => process.stdout.write(s),
@@ -151,7 +152,6 @@ if (import.meta.vitest) {
 		const calls: string[] = []
 		const storage: Storage = {
 			name: 'fake',
-			defaultBranchPrefix: '',
 			createPrd: async () => {
 				throw new Error('not implemented')
 			},

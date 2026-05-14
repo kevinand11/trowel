@@ -7,13 +7,10 @@ import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
-const DEFAULT_BRANCH_PREFIX = 'prd/'
-
 type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
 	const requireGit = () => {
 		if (!deps.git) throw new Error('file storage phase methods require git ops to be wired')
 		return deps.git
@@ -88,7 +85,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		const slug = slugify(spec.title)
 		const id = await generateUniqueId(prdIdIsAvailable, deps.generateId ? { gen: deps.generateId } : {})
 		const dir = path.join(deps.prdsDir, `${id}-${slug}`)
-		const branch = `${prefix}${id}-${slug}`
+		const branch = `${id}-${slug}`
 
 		await mkdir(dir, { recursive: true })
 		await writeFile(path.join(dir, 'README.md'), spec.body)
@@ -109,7 +106,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 
 	async function branchForExisting(id: string): Promise<string> {
 		const store = await readPrdStore(id)
-		return `${prefix}${store.id}-${store.slug}`
+		return `${store.id}-${store.slug}`
 	}
 
 	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
@@ -130,7 +127,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				summaries.push({
 					id: store.id,
 					title: store.title,
-					branch: `${prefix}${store.id}-${store.slug}`,
+					branch: `${store.id}-${store.slug}`,
 					createdAt: store.createdAt,
 				})
 			} catch {
@@ -232,7 +229,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const store = await readPrdStore(id)
 			return {
 				id: store.id,
-				branch: `${prefix}${store.id}-${store.slug}`,
+				branch: `${store.id}-${store.slug}`,
 				title: store.title,
 				state: store.closedAt === null ? 'OPEN' : 'CLOSED',
 			}
@@ -243,7 +240,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 
 	return {
 		name: 'file',
-		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
 		createPrd,
 		branchForExisting,
 		findPrd,
@@ -304,7 +300,6 @@ if (import.meta.vitest) {
 			repoRoot: work,
 			projectRoot: work,
 			baseBranch: 'main',
-			branchPrefix: null,
 			prdsDir,
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
@@ -613,7 +608,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const result = await storage.createPrd({ title: 'Fix Tabs', body: '# Hi\n\nthe body' })
 			expect(result.id).toMatch(/^[a-z0-9]{6}$/)
-			expect(result.branch).toBe(`prd/${result.id}-fix-tabs`)
+			expect(result.branch).toBe(`${result.id}-fix-tabs`)
 			const dir = path.join(f.prdsDir, `${result.id}-fix-tabs`)
 			expect(await exists(path.join(dir, 'README.md'))).toBe(true)
 			expect(await exists(path.join(dir, 'store.json'))).toBe(true)
@@ -657,17 +652,11 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('reads slug from store.json and composes the branch with the configured prefix', async () => {
+		test('reads slug from store.json and composes the branch from id + slug (no prefix)', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id, branch } = await storage.createPrd({ title: 'Fix Tabs', body: 'spec' })
 			expect(await storage.branchForExisting(id)).toBe(branch)
-		})
-
-		test('uses the user-provided branchPrefix when set, overriding default', async () => {
-			const deps: StorageDeps = { ...f.deps, branchPrefix: 'feat/' }
-			const storage = createFileStorage(deps)
-			const { id } = await storage.createPrd({ title: 'Fix Tabs', body: 'spec' })
-			expect(await storage.branchForExisting(id)).toBe(`feat/${id}-fix-tabs`)
+			expect(branch).toBe(`${id}-fix-tabs`)
 		})
 
 		test('throws when no PRD directory exists for the id', async () => {
@@ -719,7 +708,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const open = await storage.listPrds({ state: 'open' })
 			expect(open).toHaveLength(1)
-			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'prd/bbbbbb-beta', createdAt: '2026-05-11T00:00:00.000Z' })
+			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'bbbbbb-beta', createdAt: '2026-05-11T00:00:00.000Z' })
 		})
 
 		test('returns both open and closed PRDs when called with { state: "all" }', async () => {
@@ -803,7 +792,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const closed = await storage.listPrds({ state: 'closed' })
 			expect(closed).toHaveLength(1)
-			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'prd/aaaaaa-alpha', createdAt: '2026-05-11T00:00:00.000Z' })
+			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'aaaaaa-alpha', createdAt: '2026-05-11T00:00:00.000Z' })
 		})
 	})
 

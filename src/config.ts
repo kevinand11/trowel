@@ -77,18 +77,6 @@ export async function loadConfig(cwd: string = process.cwd(), home: string = hom
 		}
 	}
 
-	// Derive collision branchPattern if empty.
-	// Build a fresh object instead of mutating — `config.collision` may share
-	// a reference with `defaultConfig.collision` when no layer touched it.
-	// branchPrefix may be null (means "use storage default"); we leave the
-	// pattern empty in that case — callers resolve against the storage.
-	if (!config.collision.branchPattern && config.branchPrefix !== null) {
-		config = {
-			...config,
-			collision: { ...config.collision, branchPattern: `${config.branchPrefix}*` },
-		}
-	}
-
 	validateCapabilities(config)
 
 	return { config, projectRoot, loaded }
@@ -170,37 +158,31 @@ if (import.meta.vitest) {
 		})
 
 		test('applies the global layer when present', async () => {
-			await writeLayer(path.join(home, '.trowel', 'config.json'), { baseBranch: 'develop' })
+			await writeLayer(path.join(home, '.trowel', 'config.json'), { agent: { model: 'sonnet' } })
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.baseBranch).toBe('develop')
+			expect(resolved.config.agent.model).toBe('sonnet')
 			expect(resolved.loaded.map((l) => l.layer)).toEqual(['global'])
 		})
 
 		test('project layer wins outright over private and global (β precedence)', async () => {
-			await writeLayer(path.join(home, '.trowel', 'config.json'), { baseBranch: 'global-branch' })
-			await writeLayer(path.join(home, '.trowel', 'projects', project.replace(/^\//, ''), 'config.json'), { baseBranch: 'private-branch' })
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { baseBranch: 'project-branch' })
+			await writeLayer(path.join(home, '.trowel', 'config.json'), { agent: { model: 'global-model' } })
+			await writeLayer(path.join(home, '.trowel', 'projects', project.replace(/^\//, ''), 'config.json'), { agent: { model: 'private-model' } })
+			await writeLayer(path.join(project, '.trowel', 'config.json'), { agent: { model: 'project-model' } })
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.baseBranch).toBe('project-branch')
+			expect(resolved.config.agent.model).toBe('project-model')
 			expect(resolved.loaded.map((l) => l.layer)).toEqual(['global', 'private', 'project'])
 		})
 
 		test('private overrides global when project layer is absent', async () => {
-			await writeLayer(path.join(home, '.trowel', 'config.json'), { baseBranch: 'global-branch' })
-			await writeLayer(path.join(home, '.trowel', 'projects', project.replace(/^\//, ''), 'config.json'), { baseBranch: 'private-branch' })
+			await writeLayer(path.join(home, '.trowel', 'config.json'), { agent: { model: 'global-model' } })
+			await writeLayer(path.join(home, '.trowel', 'projects', project.replace(/^\//, ''), 'config.json'), { agent: { model: 'private-model' } })
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.baseBranch).toBe('private-branch')
+			expect(resolved.config.agent.model).toBe('private-model')
 		})
 
 		test('rejects an invalid storage in a layer file', async () => {
 			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'mongo' })
 			await expect(loadConfig(project, home)).rejects.toThrow(/Invalid config at/)
-		})
-
-		test("derives collision.branchPattern from branchPrefix when not set explicitly", async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { branchPrefix: 'prds-issue-' })
-			const resolved = await loadConfig(project, home)
-			expect(resolved.config.collision.branchPattern).toBe('prds-issue-*')
 		})
 
 		test('accepts usePrs: true against the file storage (capability gating retired)', async () => {

@@ -4,8 +4,6 @@ import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
-const DEFAULT_BRANCH_PREFIX = ''
-
 /**
  * Compose the slice branch name (`prd-<prdId>/slice-<sliceId>-<slug>`) and create
  * it as a new remote branch off the integration branch's tip, then fetch it locally
@@ -39,7 +37,6 @@ async function createSliceBranch(
 }
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	const prefix = deps.branchPrefix ?? DEFAULT_BRANCH_PREFIX
 	const requireGit = () => {
 		if (!deps.git) throw new Error('issue storage createPrd requires git ops to be wired')
 		return deps.git
@@ -66,7 +63,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		const git = requireGit()
 		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', spec.body, '--label', deps.labels.prd])
 		const id = parseIssueNumberFromUrl(createOut)
-		const branch = `${prefix}${id}-${slugify(spec.title)}`
+		const branch = `${id}-${slugify(spec.title)}`
 		await git.createLocalBranch(branch, deps.baseBranch)
 		await git.pushSetUpstream(branch)
 		return { id, branch }
@@ -78,7 +75,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		// after creation, the original branch persists and this lookup will drift.
 		const viewOut = await ghOrThrow(['issue', 'view', id, '--json', 'title'])
 		const parsed = JSON.parse(viewOut) as { title: string }
-		return `${prefix}${id}-${slugify(parsed.title)}`
+		return `${id}-${slugify(parsed.title)}`
 	}
 
 	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
@@ -165,7 +162,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		const parsed = JSON.parse(viewResult.stdout) as { number: number; title: string; state: string }
 		return {
 			id: String(parsed.number),
-			branch: `${prefix}${parsed.number}-${slugify(parsed.title)}`,
+			branch: `${parsed.number}-${slugify(parsed.title)}`,
 			title: parsed.title,
 			state: parsed.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 		}
@@ -177,14 +174,13 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return issues.map((issue) => ({
 			id: String(issue.number),
 			title: issue.title,
-			branch: `${prefix}${issue.number}-${slugify(issue.title)}`,
+			branch: `${issue.number}-${slugify(issue.title)}`,
 			createdAt: issue.createdAt,
 		}))
 	}
 
 	return {
 		name: 'issue',
-		defaultBranchPrefix: DEFAULT_BRANCH_PREFIX,
 		createPrd,
 		branchForExisting,
 		findPrd,
@@ -249,7 +245,6 @@ if (import.meta.vitest) {
 			repoRoot: '/tmp/x',
 			projectRoot: '/tmp/x',
 			baseBranch: 'main',
-			branchPrefix: null,
 			prdsDir: '/tmp/x/docs/prds',
 			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
@@ -580,22 +575,21 @@ if (import.meta.vitest) {
 			])
 		})
 
-		test('applies configured branchPrefix and labels.prd, and respects custom baseBranch', async () => {
+		test('applies configured labels.prd and respects custom baseBranch', async () => {
 			const { deps, calls, gitCalls } = makeDeps([
 				{ match: (a) => a[1] === 'create', respond: { ok: true, stdout: 'https://github.com/o/r/issues/7\n', stderr: '' } },
 			])
-			deps.branchPrefix = 'feat/'
 			deps.labels.prd = 'roadmap'
 			deps.baseBranch = 'develop'
 
 			const storage = createIssueStorage(deps)
 			const result = await storage.createPrd({ title: 'Add ORM', body: 'b' })
-			expect(result).toEqual({ id: '7', branch: 'feat/7-add-orm' })
+			expect(result).toEqual({ id: '7', branch: '7-add-orm' })
 			expect(calls[0]).toContain('--label')
 			expect(calls[0][calls[0].indexOf('--label') + 1]).toBe('roadmap')
 			expect(gitCalls).toEqual([
-				['createLocalBranch', 'feat/7-add-orm', 'develop'],
-				['pushSetUpstream', 'feat/7-add-orm'],
+				['createLocalBranch', '7-add-orm', 'develop'],
+				['pushSetUpstream', '7-add-orm'],
 			])
 		})
 
@@ -619,17 +613,6 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([['issue', 'view', '42', '--json', 'title']])
 		})
 
-		test('applies the configured branchPrefix when set', async () => {
-			const { deps } = makeDeps([
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'view',
-					respond: { ok: true, stdout: JSON.stringify({ title: 'Add ORM' }), stderr: '' },
-				},
-			])
-			deps.branchPrefix = 'feat/'
-			const storage = createIssueStorage(deps)
-			expect(await storage.branchForExisting('7')).toBe('feat/7-add-orm')
-		})
 	})
 
 	describe('issue storage: listPrds', () => {
