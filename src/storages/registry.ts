@@ -16,15 +16,25 @@ export function getStorage(kind: string, deps: StorageDeps): Storage {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
+	const noopGit = {
+		fetch: async () => {}, push: async () => {}, checkout: async () => {},
+		mergeNoFf: async () => {}, deleteRemoteBranch: async () => {},
+		createRemoteBranch: async () => {}, createLocalBranch: async () => {},
+		pushSetUpstream: async () => {}, currentBranch: async () => '',
+		branchExists: async () => false, isMerged: async () => false,
+		deleteBranch: async () => {}, worktreeAdd: async () => {},
+		worktreeRemove: async () => {}, worktreeList: async () => [],
+		restoreAll: async () => {}, cleanUntracked: async () => {},
+	}
 	const testDeps: StorageDeps = {
 		gh: async () => ({ ok: true, stdout: '', stderr: '' }),
+		git: noopGit,
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
 		baseBranch: 'main',
 		prdsDir: '/tmp/x/docs/prds',
 		labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },
-		// registry tests only verify storage construction; no git/confirm/log needed.
 	}
 
 	describe('getStorage', () => {

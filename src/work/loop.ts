@@ -170,7 +170,6 @@ if (import.meta.vitest) {
 		return {
 			name: 'fake',
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			branchForExisting: async () => 'x',
 			findPrd: async () => null,
 			listPrds: async () => [],
 			closePrd: async () => {},

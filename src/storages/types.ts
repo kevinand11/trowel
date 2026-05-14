@@ -135,7 +135,7 @@ export type StorageDeps = {
 	 * the top if invoked without their channel. See ADR `unified-gitops-via-module-factory`.
 	 */
 	confirm?: (msg: string) => Promise<boolean>
-	git?: GitOps
+	git: GitOps
 	log?: (msg: string) => void
 	// Optional override for id generation (file storage). Default: imported generateId.
 	generateId?: () => string
@@ -148,7 +148,6 @@ export interface Storage {
 
 	// PRD lifecycle
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
-	branchForExisting(id: string): Promise<string>
 	findPrd(id: string): Promise<PrdRecord | null>
 	listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]>
 	closePrd(id: string): Promise<void>

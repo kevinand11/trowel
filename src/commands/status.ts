@@ -5,6 +5,7 @@ import { getStorage } from '../storages/registry.ts'
 import type { ClassifiedSlice, Slice, Storage, StorageDeps, PrdRecord } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { realGhRunner } from '../utils/gh-runner.ts'
+import { createRepoGit } from '../utils/git-ops.ts'
 import { resolveBaseBranch } from '../utils/git.ts'
 
 // Bucket render order. Mirrors the predicate evaluation order in
@@ -98,13 +99,13 @@ export async function status(prdId: string, opts: { storage?: string }): Promise
 	const baseBranch = await resolveBaseBranch(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh: realGhRunner,
+		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,
 		baseBranch,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
 		labels: config.labels,
 		closeOptions: config.close,
-		// status is read-only: no git, no confirm, no log needed.
 	}
 	const storage = getStorage(storageKind, storageDeps)
 
@@ -131,9 +132,6 @@ if (import.meta.vitest) {
 		return {
 			name: 'fake',
 			createPrd: async () => {
-				throw new Error('nyi')
-			},
-			branchForExisting: async () => {
 				throw new Error('nyi')
 			},
 			findPrd: async (id) => {

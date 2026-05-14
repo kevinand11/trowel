@@ -11,11 +11,6 @@ type PrdStore = { id: string; slug: string; title: string; createdAt: string; cl
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	const requireGit = () => {
-		if (!deps.git) throw new Error('file storage phase methods require git ops to be wired')
-		return deps.git
-	}
-
 	async function prdIdIsAvailable(candidate: string): Promise<boolean> {
 		let entries: string[]
 		try {
@@ -81,7 +76,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
-		const git = requireGit()
 		const slug = slugify(spec.title)
 		const id = await generateUniqueId(prdIdIsAvailable, deps.generateId ? { gen: deps.generateId } : {})
 		const dir = path.join(deps.prdsDir, `${id}-${slug}`)
@@ -98,15 +92,10 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 		await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-		await git.createLocalBranch(branch, deps.baseBranch)
-		await git.pushSetUpstream(branch)
+		await deps.git.createLocalBranch(branch, deps.baseBranch)
+		await deps.git.pushSetUpstream(branch)
 
 		return { id, branch }
-	}
-
-	async function branchForExisting(id: string): Promise<string> {
-		const store = await readPrdStore(id)
-		return `${store.id}-${store.slug}`
 	}
 
 	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
@@ -241,7 +230,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	return {
 		name: 'file',
 		createPrd,
-		branchForExisting,
 		findPrd,
 		listPrds,
 		closePrd,
@@ -640,28 +628,6 @@ if (import.meta.vitest) {
 			const result = await storage.createPrd({ title: 'Foo', body: 'spec' })
 			expect(result.id).toBe('bbbbbb')
 			expect(await exists(path.join(f.prdsDir, 'bbbbbb-foo'))).toBe(true)
-		})
-	})
-
-	describe('file storage: branchForExisting', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('reads slug from store.json and composes the branch from id + slug (no prefix)', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id, branch } = await storage.createPrd({ title: 'Fix Tabs', body: 'spec' })
-			expect(await storage.branchForExisting(id)).toBe(branch)
-			expect(branch).toBe(`${id}-fix-tabs`)
-		})
-
-		test('throws when no PRD directory exists for the id', async () => {
-			const storage = createFileStorage(f.deps)
-			await expect(storage.branchForExisting('zzzzzz')).rejects.toThrow(/no PRD/i)
 		})
 	})
 

@@ -10,6 +10,16 @@ export async function ghInstalled(runner: ShellRunner = realShellRunner): Promis
 	return result.ok
 }
 
+export async function gitInstalled(runner: ShellRunner = realShellRunner): Promise<boolean> {
+	const result = await runner('git', ['--version'])
+	return result.ok
+}
+
+export async function claudeInstalled(runner: ShellRunner = realShellRunner): Promise<boolean> {
+	const result = await runner('claude', ['--version'])
+	return result.ok
+}
+
 export async function nodeVersion(runner: ShellRunner = realShellRunner): Promise<string | null> {
 	const result = await runner('node', ['--version'])
 	if (!result.ok) return null
@@ -78,6 +88,40 @@ if (import.meta.vitest) {
 				gh: async () => ({ ok: false, error: new Error('not logged in') }),
 			})
 			expect(await ghIsAuthenticated(runner)).toBe(false)
+		})
+	})
+
+	describe('gitInstalled', () => {
+		test('returns true when git --version succeeds', async () => {
+			const { runner, calls } = mockRunner({
+				git: async () => ({ ok: true, stdout: 'git version 2.43.0\n', stderr: '' }),
+			})
+			expect(await gitInstalled(runner)).toBe(true)
+			expect(calls).toEqual([{ cmd: 'git', args: ['--version'] }])
+		})
+
+		test('returns false when git is not on PATH', async () => {
+			const { runner } = mockRunner({
+				git: async () => ({ ok: false, error: new Error('ENOENT') }),
+			})
+			expect(await gitInstalled(runner)).toBe(false)
+		})
+	})
+
+	describe('claudeInstalled', () => {
+		test('returns true when claude --version succeeds', async () => {
+			const { runner, calls } = mockRunner({
+				claude: async () => ({ ok: true, stdout: 'claude 1.2.3\n', stderr: '' }),
+			})
+			expect(await claudeInstalled(runner)).toBe(true)
+			expect(calls).toEqual([{ cmd: 'claude', args: ['--version'] }])
+		})
+
+		test('returns false when claude is not on PATH', async () => {
+			const { runner } = mockRunner({
+				claude: async () => ({ ok: false, error: new Error('ENOENT') }),
+			})
+			expect(await claudeInstalled(runner)).toBe(false)
 		})
 	})
 }

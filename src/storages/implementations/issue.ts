@@ -37,11 +37,6 @@ async function createSliceBranch(
 }
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	const requireGit = () => {
-		if (!deps.git) throw new Error('issue storage createPrd requires git ops to be wired')
-		return deps.git
-	}
-
 	function parseIssueNumberFromUrl(url: string): string {
 		const trimmed = url.trim()
 		const last = trimmed.split('/').pop() ?? ''
@@ -60,22 +55,12 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
-		const git = requireGit()
 		const createOut = await ghOrThrow(['issue', 'create', '--title', spec.title, '--body', spec.body, '--label', deps.labels.prd])
 		const id = parseIssueNumberFromUrl(createOut)
 		const branch = `${id}-${slugify(spec.title)}`
-		await git.createLocalBranch(branch, deps.baseBranch)
-		await git.pushSetUpstream(branch)
+		await deps.git.createLocalBranch(branch, deps.baseBranch)
+		await deps.git.pushSetUpstream(branch)
 		return { id, branch }
-	}
-
-	async function branchForExisting(id: string): Promise<string> {
-		// Computed from the current issue title rather than recovered from a GitHub-side
-		// branch↔issue linkage. The branch is the source of truth; if the issue is renamed
-		// after creation, the original branch persists and this lookup will drift.
-		const viewOut = await ghOrThrow(['issue', 'view', id, '--json', 'title'])
-		const parsed = JSON.parse(viewOut) as { title: string }
-		return `${id}-${slugify(parsed.title)}`
 	}
 
 	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
@@ -182,7 +167,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	return {
 		name: 'issue',
 		createPrd,
-		branchForExisting,
 		findPrd,
 		listPrds,
 		closePrd,
@@ -598,21 +582,6 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			await expect(storage.createPrd({ title: 'Fix', body: 'b' })).rejects.toThrow(/rate limited/)
 		})
-	})
-
-	describe('issue storage: branchForExisting', () => {
-		test('computes the branch from the current issue title via gh issue view', async () => {
-			const { deps, calls } = makeDeps([
-				{
-					match: (a) => a[0] === 'issue' && a[1] === 'view',
-					respond: { ok: true, stdout: JSON.stringify({ title: 'Fix Tabs on macOS' }), stderr: '' },
-				},
-			])
-			const storage = createIssueStorage(deps)
-			expect(await storage.branchForExisting('42')).toBe('42-fix-tabs-on-macos')
-			expect(calls).toEqual([['issue', 'view', '42', '--json', 'title']])
-		})
-
 	})
 
 	describe('issue storage: listPrds', () => {

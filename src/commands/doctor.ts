@@ -1,5 +1,5 @@
 import { loadConfig } from '../config.ts'
-import { ghInstalled, ghIsAuthenticated, nodeVersion } from '../utils/gh.ts'
+import { claudeInstalled, ghInstalled, ghIsAuthenticated, gitInstalled, nodeVersion } from '../utils/cli.ts'
 
 type Check = { label: string; ok: boolean; detail: string }
 
@@ -13,11 +13,25 @@ export async function doctor(): Promise<void> {
 		detail: node ?? 'not found on PATH',
 	})
 
+	const gitPresent = await gitInstalled()
+	checks.push({
+		label: 'git CLI installed',
+		ok: gitPresent,
+		detail: gitPresent ? 'found' : 'install git (every storage uses git for branches/worktrees)',
+	})
+
+	const claudePresent = await claudeInstalled()
+	checks.push({
+		label: 'claude CLI installed',
+		ok: claudePresent,
+		detail: claudePresent ? 'found' : 'install from https://claude.com/claude-code (required by `trowel work`)',
+	})
+
 	const ghPresent = await ghInstalled()
 	checks.push({
 		label: 'gh CLI installed',
 		ok: ghPresent,
-		detail: ghPresent ? 'found' : 'install from https://cli.github.com/',
+		detail: ghPresent ? 'found' : 'install from https://cli.github.com/ (required by issue storage and `usePrs: true`)',
 	})
 
 	const ghAuthed = await ghIsAuthenticated()

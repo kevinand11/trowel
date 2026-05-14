@@ -155,10 +155,6 @@ if (import.meta.vitest) {
 			createPrd: async () => {
 				throw new Error('not implemented')
 			},
-			branchForExisting: async (id) => {
-				if (!state.prd || state.prd.id !== id) throw new Error('not found')
-				return state.prd.branch
-			},
 			findPrd: async (id) => {
 				calls.push(`findPrd(${id})`)
 				if (!state.prd || state.prd.id !== id) return null
