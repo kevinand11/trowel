@@ -8,7 +8,7 @@ import { loadConfig } from '../config.ts'
 import type { Config } from '../schema.ts'
 import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
-import { realGhRunner } from '../utils/gh-runner.ts'
+import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runLoop } from '../work/loop.ts'
@@ -35,9 +35,10 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 
 	const log = (m: string) => process.stdout.write(`${m}\n`)
 	const git = createRepoGit(projectRoot)
+	const gh = createGh()
 
 	const storageDeps: StorageDeps = {
-		gh: realGhRunner,
+		gh,
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
@@ -117,7 +118,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const runOnePhase = async (prdId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await integrationBranch(prdId)
 		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
-		const phaseDeps: PhaseDeps = { storage, git, gh: realGhRunner, log }
+		const phaseDeps: PhaseDeps = { storage, git, gh, log }
 		const prep = role === 'implement'
 			? await prepareImplement(phaseDeps, slice, ctx)
 			: role === 'review'
@@ -143,7 +144,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 		await runLoop(prdId, {
 			storage,
 			git,
-			gh: realGhRunner,
+			gh,
 			integrationBranch: branch,
 			spawnTurn: makeSpawnTurnFor(prdId, branch),
 			log,

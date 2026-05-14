@@ -55,10 +55,9 @@ export async function spawnTurn(args: SpawnTurnArgs, deps: SpawnTurnDeps): Promi
 
 if (import.meta.vitest) {
 	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
-	const { exec } = await import('../utils/shell.ts')
 	const { createRepoGit } = await import('../utils/git-ops.ts')
-	const { mkdtemp, rm, realpath, stat } = await import('node:fs/promises')
-	const { tmpdir } = await import('node:os')
+	const { setupTestRepo } = await import('../test-utils/git-repo.ts')
+	const { stat } = await import('node:fs/promises')
 
 	function makeArgs(overrides: Partial<SpawnTurnArgs> = {}): SpawnTurnArgs {
 		const slice: Slice = {
@@ -84,21 +83,16 @@ if (import.meta.vitest) {
 	describe('spawnTurn (persistent worktree, host-mode)', () => {
 		let projectRoot: string
 		let git: GitOps
+		let cleanupRepo: () => Promise<void>
 
 		beforeEach(async () => {
-			const raw = await mkdtemp(path.join(tmpdir(), 'trowel-spawnturn-'))
-			projectRoot = await realpath(raw)
-			await exec('git', ['-C', projectRoot, 'init', '-q', '-b', 'main'])
-			await exec('git', ['-C', projectRoot, 'config', 'user.email', 't@t.t'])
-			await exec('git', ['-C', projectRoot, 'config', 'user.name', 'T'])
-			await writeFile(path.join(projectRoot, 'README.md'), 'x\n')
-			await exec('git', ['-C', projectRoot, 'add', '.'])
-			await exec('git', ['-C', projectRoot, 'commit', '-q', '-m', 'init'])
-			await exec('git', ['-C', projectRoot, 'branch', 'feature'])
+			const r = await setupTestRepo({ prefix: 'trowel-spawnturn-', branches: ['feature'] })
+			projectRoot = r.root
+			cleanupRepo = r.cleanup
 			git = createRepoGit(projectRoot)
 		})
 		afterEach(async () => {
-			if (projectRoot) await rm(projectRoot, { recursive: true, force: true })
+			if (cleanupRepo) await cleanupRepo()
 		})
 
 		test('writes turn-in.json into the worktree and reads turn-out.json into the parsed verdict', async () => {

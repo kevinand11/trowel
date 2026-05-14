@@ -15,6 +15,7 @@ export function getStorage(kind: string, deps: StorageDeps): Storage {
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 
 	const noopGit = {
 		fetch: async () => {}, push: async () => {}, checkout: async () => {},
@@ -28,7 +29,7 @@ if (import.meta.vitest) {
 		baseBranch: async () => 'main',
 	}
 	const testDeps: StorageDeps = {
-		gh: async () => ({ ok: true, stdout: '', stderr: '' }),
+		gh: recordingGhOps().gh,
 		git: noopGit,
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',

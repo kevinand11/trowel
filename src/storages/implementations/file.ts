@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { classifySlices } from '../../utils/bucket.ts'
-import { generateUniqueId } from '../../utils/id.ts'
+import { generateId } from '../../utils/id.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
@@ -11,16 +11,6 @@ type PrdStore = { id: string; slug: string; title: string; createdAt: string; cl
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	async function prdIdIsAvailable(candidate: string): Promise<boolean> {
-		let entries: string[]
-		try {
-			entries = await readdir(deps.prdsDir)
-		} catch {
-			return true
-		}
-		return !entries.some((e) => e.startsWith(`${candidate}-`))
-	}
-
 	async function findPrdDir(id: string): Promise<string> {
 		let entries: string[]
 		try {
@@ -56,28 +46,9 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return path.join(dir, match)
 	}
 
-	async function sliceIdIsAvailable(candidate: string): Promise<boolean> {
-		try {
-			const entries = await readdir(deps.prdsDir)
-			for (const prd of entries) {
-				const sl = path.join(deps.prdsDir, prd, 'slices')
-				let slEntries: string[]
-				try {
-					slEntries = await readdir(sl)
-				} catch {
-					continue
-				}
-				if (slEntries.some((e) => e.startsWith(`${candidate}-`))) return false
-			}
-			return true
-		} catch {
-			return true
-		}
-	}
-
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
 		const slug = slugify(spec.title)
-		const id = await generateUniqueId(prdIdIsAvailable, deps.generateId ? { gen: deps.generateId } : {})
+		const id = await generateId()
 		const dir = path.join(deps.prdsDir, `${id}-${slug}`)
 		const branch = `${id}-${slug}`
 
@@ -137,7 +108,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 
 	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
 		const slug = slugify(spec.title)
-		const id = await generateUniqueId(sliceIdIsAvailable, deps.generateId ? { gen: deps.generateId } : {})
+		const id = await generateId()
 		const slicesPath = await slicesDir(prdId)
 		const dir = path.join(slicesPath, `${id}-${slug}`)
 
@@ -242,22 +213,17 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 if (import.meta.vitest) {
 	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
 	const path = await import('node:path')
-	const { mkdir, mkdtemp, rm, readFile, stat, writeFile } = await import('node:fs/promises')
-	const { tmpdir } = await import('node:os')
+	const { mkdir, rm, readFile, stat, writeFile } = await import('node:fs/promises')
 	const { exec } = await import('../../utils/shell.ts')
+	const { setupTestRepoWithBare } = await import('../../test-utils/git-repo.ts')
+	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 
 	type Fixture = { work: string; bare: string; prdsDir: string; deps: StorageDeps; calls: { git: Array<[string, ...string[]]>; log: string[] } }
 
 	async function setup(): Promise<Fixture> {
-		const bare = await mkdtemp(path.join(tmpdir(), 'trowel-file-bare-'))
-		await exec('git', ['init', '--bare', '-q', '-b', 'main', bare])
-		const work = await mkdtemp(path.join(tmpdir(), 'trowel-file-work-'))
-		await exec('git', ['-C', work, 'init', '-q', '-b', 'main'])
-		await exec('git', ['-C', work, 'config', 'user.email', 't@t.t'])
-		await exec('git', ['-C', work, 'config', 'user.name', 'T'])
-		await exec('git', ['-C', work, 'remote', 'add', 'origin', bare])
-		await exec('git', ['-C', work, 'commit', '-q', '--allow-empty', '-m', 'init'])
-		await exec('git', ['-C', work, 'push', '-q', '-u', 'origin', 'main'])
+		const repo = await setupTestRepoWithBare({ prefix: 'trowel-file-' })
+		const work = repo.work
+		const bare = repo.bare
 		const prdsDir = path.join(work, 'docs', 'prds')
 		const calls: { git: Array<[string, ...string[]]>; log: string[] } = { git: [], log: [] }
 		const { createRepoGit } = await import('../../utils/git-ops.ts')
@@ -284,8 +250,9 @@ if (import.meta.vitest) {
 			restoreAll: async (p: string) => { await realGit.restoreAll(p) },
 			cleanUntracked: async (p: string) => { await realGit.cleanUntracked(p) },
 		}
+		const { gh } = recordingGhOps()
 		const deps: StorageDeps = {
-			gh: async () => ({ ok: true, stdout: '', stderr: '' }),
+			gh,
 			repoRoot: work,
 			projectRoot: work,
 			prdsDir,
@@ -536,11 +503,7 @@ if (import.meta.vitest) {
 					restoreAll: async () => {},
 					cleanUntracked: async () => {},
 				}
-				const ghCalls: string[][] = []
-				const gh = async (args: string[]) => {
-					ghCalls.push(args)
-					return { ok: true as const, stdout: '', stderr: '' }
-				}
+				const { gh, calls: ghCalls } = recordingGhOps()
 				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log! }
 
 				const outcome = await landImplement(
@@ -555,8 +518,8 @@ if (import.meta.vitest) {
 				// No merge/delete on this code path — PR creation is the terminus.
 				expect(gitCalls.map((c) => c[0])).not.toContain('mergeNoFf')
 				expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
-				// gh pr create was invoked.
-				expect(ghCalls.find((args) => args[0] === 'pr' && args[1] === 'create')).toBeDefined()
+				// createDraftPr was invoked.
+				expect(ghCalls.find((c) => c[0] === 'createDraftPr')).toBeDefined()
 				// Slice not closed (PR awaits merge).
 				const after = await storage.findSlices(prdId)
 				expect(after[0]!.state).toBe('OPEN')
@@ -571,8 +534,13 @@ if (import.meta.vitest) {
 				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
 				const ctx = { prdId: 'p1', integrationBranch: 'prd/p1-x', config: { usePrs: true, review: true, perSliceBranches: true } }
-				const deps = makePhaseDeps(f, storage)
-				// f.deps.gh returns empty stdout, so findPrNumber throws "no PR found".
+				const { gh } = recordingGhOps({
+					findPrNumberByHead: async (head) => {
+						throw new Error(`no PR found for head '${head}'`)
+					},
+				})
+				const deps: PhaseDeps = { storage, git: f.deps.git!, gh, log: f.deps.log! }
+				// No PR exists, so findPrNumberByHead throws "no PR found".
 				// The point: that's now the failure mode, not "requires capability 'prFlow'".
 				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/no PR found/)
 				await expect(prepareAddress(deps, slice, ctx)).rejects.toThrow(/no PR found/)
@@ -619,17 +587,6 @@ if (import.meta.vitest) {
 			// no commits beyond the base branch — the integration branch is empty relative to main
 			const commitDelta = (await exec('git', ['-C', f.work, 'rev-list', '--count', `main..${result.branch}`])).stdout.trim()
 			expect(commitDelta).toBe('0')
-		})
-
-		test('retries id generation on collision with an existing PRD directory', async () => {
-			const ids = ['aaaaaa', 'bbbbbb']
-			let i = 0
-			const deps: StorageDeps = { ...f.deps, generateId: () => ids[i++]! }
-			await mkdir(path.join(f.prdsDir, 'aaaaaa-foo'), { recursive: true })
-			const storage = createFileStorage(deps)
-			const result = await storage.createPrd({ title: 'Foo', body: 'spec' })
-			expect(result.id).toBe('bbbbbb')
-			expect(await exists(path.join(f.prdsDir, 'bbbbbb-foo'))).toBe(true)
 		})
 	})
 

@@ -4,7 +4,7 @@ import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
 import type { ClassifiedSlice, Slice, Storage, StorageDeps, PrdRecord } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
-import { realGhRunner } from '../utils/gh-runner.ts'
+import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 
 // Bucket render order. Mirrors the predicate evaluation order in
@@ -96,7 +96,7 @@ export async function status(prdId: string, opts: { storage?: string }): Promise
 
 	const storageKind = opts.storage ?? config.storage
 	const storageDeps: StorageDeps = {
-		gh: realGhRunner,
+		gh: createGh(),
 		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,

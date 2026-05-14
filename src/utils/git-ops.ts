@@ -132,28 +132,22 @@ function parseWorktreePorcelain(stdout: string): Array<{ path: string; branch: s
 if (import.meta.vitest) {
 	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
 	const path = await import('node:path')
-	const { mkdtemp, rm, writeFile, readFile, stat, mkdir } = await import('node:fs/promises')
-	const { tmpdir } = await import('node:os')
-	const { realpath } = await import('node:fs/promises')
+	const { writeFile, readFile, stat, mkdir } = await import('node:fs/promises')
+	const { setupTestRepo } = await import('../test-utils/git-repo.ts')
 
 	describe('GitOps worktree primitives (real git on tmp repos)', () => {
 		let repo: string
 		let git: GitOps
+		let cleanupRepo: () => Promise<void>
 
 		beforeEach(async () => {
-			const raw = await mkdtemp(path.join(tmpdir(), 'trowel-gitops-'))
-			repo = await realpath(raw)
-			await exec('git', ['-C', repo, 'init', '-q', '-b', 'main'])
-			await exec('git', ['-C', repo, 'config', 'user.email', 't@t.t'])
-			await exec('git', ['-C', repo, 'config', 'user.name', 'T'])
-			await writeFile(path.join(repo, 'README.md'), 'x\n')
-			await exec('git', ['-C', repo, 'add', '.'])
-			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'init'])
-			await exec('git', ['-C', repo, 'branch', 'feature'])
+			const r = await setupTestRepo({ prefix: 'trowel-gitops-', branches: ['feature'] })
+			repo = r.root
+			cleanupRepo = r.cleanup
 			git = createRepoGit(repo)
 		})
 		afterEach(async () => {
-			if (repo) await rm(repo, { recursive: true, force: true })
+			if (cleanupRepo) await cleanupRepo()
 		})
 
 		test('worktreeAdd checks out the branch at a new worktree path', async () => {

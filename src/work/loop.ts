@@ -6,7 +6,7 @@ import { reconcileSlices } from './reconcile.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
-import type { GhRunner } from '../utils/gh-runner.ts'
+import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
 export type LoopConfig = {
@@ -20,7 +20,7 @@ export type LoopConfig = {
 export type LoopDeps = {
 	storage: Storage
 	git: GitOps
-	gh: GhRunner
+	gh: GhOps
 	integrationBranch: string
 	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
@@ -161,6 +161,7 @@ function callLand(phaseDeps: PhaseDeps, role: Role, slice: Slice, verdict: TurnO
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 
 	type FakeState = {
 		slices: Slice[]
@@ -228,15 +229,13 @@ if (import.meta.vitest) {
 	}
 
 	function makeDeps(storage: Storage, overrides: Partial<LoopDeps> = {}): LoopDeps {
+		// Default GhOps: listOpenPrs returns [] so PR-state enrichment is a clean no-op on
+		// usePrs=true tests. Per-test gh overrides handle create / list-with-results cases.
+		const { gh } = recordingGhOps()
 		return {
 			storage,
 			git: noopGit(),
-			// Default: `pr list` returns an empty array so PR-state enrichment is a clean no-op on
-			// usePrs=true tests. Per-test gh overrides handle the create / list-with-results cases.
-			gh: async (args) => {
-				if (args[0] === 'pr' && args[1] === 'list') return { ok: true, stdout: '[]', stderr: '' }
-				return { ok: true, stdout: '', stderr: '' }
-			},
+			gh,
 			integrationBranch: 'integration',
 			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
@@ -259,20 +258,16 @@ if (import.meta.vitest) {
 			expect(sandboxCalls).toBe(0)
 		})
 
-		test('fetchEnriched runs gh pr list whenever config.usePrs is true, regardless of storage capability', async () => {
+		test('fetchEnriched runs gh listOpenPrs whenever config.usePrs is true, regardless of storage capability', async () => {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
-			const ghCalls: string[][] = []
+			const { gh, calls } = recordingGhOps()
 			await runLoop('p1', makeDeps(storage, {
-				gh: async (args) => {
-					ghCalls.push(args)
-					if (args[0] === 'pr' && args[1] === 'list') return { ok: true, stdout: '[]', stderr: '' }
-					return { ok: true, stdout: '', stderr: '' }
-				},
+				gh,
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null },
 			}))
-			expect(ghCalls.find((args) => args[0] === 'pr' && args[1] === 'list')).toBeDefined()
+			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeDefined()
 		})
 
 		test('ready slice: runs implementer, lands done, exits with empty actionable queue', async () => {
@@ -399,16 +394,16 @@ if (import.meta.vitest) {
 			const state = { slices: [slice] }
 			const storage = makeStorage(state)
 			let prCreateCount = 0
+			const { gh } = recordingGhOps({
+				createDraftPr: async () => {
+					prCreateCount++
+					const real = state.slices.find((x) => x.id === slice.id)
+					if (real) real.state = 'CLOSED'
+				},
+			})
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
-				gh: async (args) => {
-					if (args[0] === 'pr' && args[1] === 'create') {
-						prCreateCount++
-						const real = state.slices.find((x) => x.id === slice.id)
-						if (real) real.state = 'CLOSED'
-					}
-					return { ok: true, stdout: '', stderr: '' }
-				},
+				gh,
 				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null },
 			}))
 			expect(outcome).toBe('done')

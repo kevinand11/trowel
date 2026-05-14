@@ -1,5 +1,5 @@
 import type { Bucket } from '../utils/bucket.ts'
-import type { GhRunner } from '../utils/gh-runner.ts'
+import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import type { TurnIn } from '../work/verdict.ts'
 
@@ -122,7 +122,7 @@ export type PhaseCtx = {
 }
 
 export type StorageDeps = {
-	gh: GhRunner
+	gh: GhOps
 	repoRoot: string
 	projectRoot: string
 	prdsDir: string

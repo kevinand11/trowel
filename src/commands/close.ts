@@ -5,7 +5,7 @@ import { confirm as inqConfirm } from '@inquirer/prompts'
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
-import { realGhRunner } from '../utils/gh-runner.ts'
+import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
 
 type OpenPr = { number: number; url: string }
@@ -100,8 +100,9 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
 
 	const git = createRepoGit(projectRoot)
+	const gh = createGh()
 	const storageDeps: StorageDeps = {
-		gh: realGhRunner,
+		gh,
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
@@ -113,9 +114,12 @@ export async function close(prdId: string, opts: { storage?: string }): Promise<
 	const storage = getStorage(storageKind, storageDeps)
 
 	const listOpenPrs = async (b: string): Promise<OpenPr[]> => {
-		const r = await realGhRunner(['pr', 'list', '--base', b, '--state', 'open', '--json', 'number,url'])
-		if (!r.ok) return []
-		return JSON.parse(r.stdout) as OpenPr[]
+		try {
+			const prs = await gh.listOpenPrs({ base: b })
+			return prs.map((p) => ({ number: p.number, url: p.url ?? '' }))
+		} catch {
+			return []
+		}
 	}
 
 	try {

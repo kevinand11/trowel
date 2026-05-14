@@ -4,7 +4,7 @@ import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
 import type { ClassifiedSlice, Storage, StorageDeps, PrdSummary } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
-import { realGhRunner } from '../utils/gh-runner.ts'
+import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
@@ -75,7 +75,7 @@ export async function list(filter: PrdState, opts: { storage?: string }): Promis
 	}
 	const storageKind = opts.storage ?? config.storage
 	const storageDeps: StorageDeps = {
-		gh: realGhRunner,
+		gh: createGh(),
 		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,

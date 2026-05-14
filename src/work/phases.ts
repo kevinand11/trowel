@@ -1,7 +1,7 @@
-import { fetchPrFeedback, findPrNumber, markPrReady, openDraftPr } from './pr-flow.ts'
+import { fetchPrFeedback } from './pr-flow.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { PhaseCtx, PhaseOutcome, PreparedPhase, Slice, Storage } from '../storages/types.ts'
-import type { GhRunner } from '../utils/gh-runner.ts'
+import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { slug as slugify } from '../utils/slug.ts'
 
@@ -16,7 +16,7 @@ import { slug as slugify } from '../utils/slug.ts'
 export type PhaseDeps = {
 	storage: Storage
 	git: GitOps
-	gh: GhRunner
+	gh: GhOps
 	log: (msg: string) => void
 }
 
@@ -90,7 +90,7 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Turn
 	deps.log(`${tag} pushed ${branch}`)
 
 	if (ctx.config.usePrs) {
-		await openDraftPr(deps.gh, slice, branch, ctx.integrationBranch)
+		await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.integrationBranch, body: `Closes #${slice.id}` })
 		deps.log(`${tag} opened draft PR for ${branch}`)
 		return 'progress'
 	}
@@ -116,7 +116,7 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Turn
  */
 export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
 	const branch = sliceBranchFor(ctx.prdId, slice)
-	const prNumber = await findPrNumber(deps.gh, branch)
+	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },
 		pr: { number: prNumber, branch },
@@ -145,8 +145,8 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut
 			await deps.git.push(branch)
 			deps.log(`${tag} pushed ${branch}`)
 		}
-		const prNumber = await findPrNumber(deps.gh, branch)
-		await markPrReady(deps.gh, prNumber)
+		const prNumber = await deps.gh.findPrNumberByHead(branch)
+		await deps.gh.markPrReady(prNumber)
 		deps.log(`${tag} marked PR #${prNumber} ready for merge`)
 		return 'progress'
 	}
@@ -171,7 +171,7 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut
  */
 export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
 	const branch = sliceBranchFor(ctx.prdId, slice)
-	const prNumber = await findPrNumber(deps.gh, branch)
+	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
 	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },

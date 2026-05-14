@@ -128,9 +128,9 @@ export function parseDurationMs(input: string): number {
 
 if (import.meta.vitest) {
 	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
-	const { exec } = await import('../utils/shell.ts')
 	const { createRepoGit } = await import('../utils/git-ops.ts')
-	const { mkdir: fsMkdir, mkdtemp, readFile: fsReadFile, rm: fsRm, writeFile: fsWriteFile, stat: fsStat, realpath } = await import('node:fs/promises')
+	const { setupTestRepo } = await import('../test-utils/git-repo.ts')
+	const { mkdir: fsMkdir, mkdtemp, readFile: fsReadFile, rm: fsRm, writeFile: fsWriteFile, stat: fsStat } = await import('node:fs/promises')
 	const { tmpdir } = await import('node:os')
 
 	describe('ensureTrowelDir', () => {
@@ -213,22 +213,16 @@ if (import.meta.vitest) {
 	describe('ensureWorktree / resetWorktree / destroyWorktree / sweepOrphanWorktrees (real git)', () => {
 		let projectRoot: string
 		let git: GitOps
+		let cleanupRepo: () => Promise<void>
 
 		beforeEach(async () => {
-			const raw = await mkdtemp(path.join(tmpdir(), 'trowel-wt-'))
-			projectRoot = await realpath(raw)
-			await exec('git', ['-C', projectRoot, 'init', '-q', '-b', 'main'])
-			await exec('git', ['-C', projectRoot, 'config', 'user.email', 't@t.t'])
-			await exec('git', ['-C', projectRoot, 'config', 'user.name', 'T'])
-			await fsWriteFile(path.join(projectRoot, 'README.md'), 'x\n')
-			await exec('git', ['-C', projectRoot, 'add', '.'])
-			await exec('git', ['-C', projectRoot, 'commit', '-q', '-m', 'init'])
-			await exec('git', ['-C', projectRoot, 'branch', 'feature-a'])
-			await exec('git', ['-C', projectRoot, 'branch', 'feature-b'])
+			const r = await setupTestRepo({ prefix: 'trowel-wt-', branches: ['feature-a', 'feature-b'] })
+			projectRoot = r.root
+			cleanupRepo = r.cleanup
 			git = createRepoGit(projectRoot)
 		})
 		afterEach(async () => {
-			if (projectRoot) await fsRm(projectRoot, { recursive: true, force: true })
+			if (cleanupRepo) await cleanupRepo()
 		})
 
 		test('ensureWorktree creates a new worktree at .trowel/worktrees/<prdId>/<slug>/', async () => {
