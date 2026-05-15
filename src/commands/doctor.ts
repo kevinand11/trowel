@@ -1,17 +1,10 @@
 import { loadConfig } from '../config.ts'
-import { claudeInstalled, ghInstalled, ghIsAuthenticated, gitInstalled, nodeVersion } from '../utils/cli.ts'
+import { claudeInstalled, ghInstalled, ghIsAuthenticated, gitInstalled } from '../utils/cli.ts'
 
 type Check = { label: string; ok: boolean; detail: string }
 
 export async function doctor(): Promise<void> {
 	const checks: Check[] = []
-
-	const node = await nodeVersion()
-	checks.push({
-		label: 'node',
-		ok: node !== null,
-		detail: node ?? 'not found on PATH',
-	})
 
 	const gitPresent = await gitInstalled()
 	checks.push({

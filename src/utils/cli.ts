@@ -20,12 +20,6 @@ export async function claudeInstalled(runner: ShellRunner = realShellRunner): Pr
 	return result.ok
 }
 
-export async function nodeVersion(runner: ShellRunner = realShellRunner): Promise<string | null> {
-	const result = await runner('node', ['--version'])
-	if (!result.ok) return null
-	return result.stdout.trim()
-}
-
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
@@ -39,23 +33,6 @@ if (import.meta.vitest) {
 		}
 		return { runner, calls }
 	}
-
-	describe('nodeVersion', () => {
-		test('returns the trimmed stdout when node exits cleanly', async () => {
-			const { runner, calls } = mockRunner({
-				node: async () => ({ ok: true, stdout: 'v22.4.0\n', stderr: '' }),
-			})
-			expect(await nodeVersion(runner)).toBe('v22.4.0')
-			expect(calls).toEqual([{ cmd: 'node', args: ['--version'] }])
-		})
-
-		test('returns null when node is unavailable or fails', async () => {
-			const { runner } = mockRunner({
-				node: async () => ({ ok: false, error: new Error('ENOENT') }),
-			})
-			expect(await nodeVersion(runner)).toBeNull()
-		})
-	})
 
 	describe('ghInstalled', () => {
 		test('returns true when gh --version succeeds', async () => {
