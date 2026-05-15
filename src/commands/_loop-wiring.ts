@@ -6,14 +6,14 @@ import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
 import type { Config } from '../schema.ts'
-import { getStorage } from '../storages/registry.ts'
+import { getStorage, type StorageKind } from '../storages/registry.ts'
 import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runLoop } from '../work/loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
-import { loadPrompt, type StorageKind, type Role } from '../work/prompts.ts'
+import { loadPrompt, type Role } from '../work/prompts.ts'
 import { spawnTurn } from '../work/turn.ts'
 import type { TurnIn, TurnOut } from '../work/verdict.ts'
 import { ensureTrowelDir, sweepOrphanWorktrees, type TurnWorktree } from '../work/worktrees.ts'
@@ -27,7 +27,7 @@ type LoopWiring = {
 	runLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
 }
 
-export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopWiring> {
+export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<LoopWiring> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) throw new Error('no project root found')
 
@@ -54,7 +54,7 @@ export async function buildLoopWiring(opts: { storage?: string }): Promise<LoopW
 	const makeRunAgent =
 		(integrationBranchName: string) =>
 		async ({ worktree, logPath, role }: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
-			const rendered = await loadPrompt(role, { integrationBranch: integrationBranchName, storage: storage.name as StorageKind })
+			const rendered = await loadPrompt(role, { integrationBranch: integrationBranchName, storage: storageKind })
 			const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
 			await writeFile(promptFile, rendered)
 

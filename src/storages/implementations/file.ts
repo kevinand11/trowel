@@ -218,7 +218,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	return {
-		name: 'file',
 		createPrd,
 		findPrd,
 		listPrds,

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
 import { loadConfig } from '../config.ts'
-import { getStorage } from '../storages/registry.ts'
+import { getStorage, type StorageKind } from '../storages/registry.ts'
 import type { Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
@@ -89,7 +89,7 @@ async function maybeDeleteBranch(branch: string, baseBranch: string, rt: CloseRu
 	await rt.git.deleteBranch(branch)
 }
 
-export async function close(prdId: string, opts: { storage?: string }): Promise<void> {
+export async function close(prdId: string, opts: { storage?: StorageKind }): Promise<void> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel close: no project root found\n')
@@ -148,7 +148,6 @@ if (import.meta.vitest) {
 	function fakeStorage(state: FakeStorageState): { storage: Storage; calls: string[] } {
 		const calls: string[] = []
 		const storage: Storage = {
-			name: 'fake',
 			createPrd: async () => {
 				throw new Error('not implemented')
 			},

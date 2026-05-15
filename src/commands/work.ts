@@ -1,4 +1,5 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
+import type { StorageKind } from '../storages/registry.ts'
 import type { Storage } from '../storages/types.ts'
 
 type WorkRuntime = {
@@ -16,7 +17,7 @@ async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
 /**
  * Production entry. Wires real gh/git/turn callbacks (via _loop-wiring) and calls runWork.
  */
-export async function work(prdId: string, opts: { storage?: string }): Promise<void> {
+export async function work(prdId: string, opts: { storage?: StorageKind }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
 		await runWork(prdId, {
@@ -33,9 +34,8 @@ export async function work(prdId: string, opts: { storage?: string }): Promise<v
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function makeStorage(name: string, prd: { branch: string; title: string } | null): Storage {
+	function makeStorage(prd: { branch: string; title: string } | null): Storage {
 		return {
-			name,
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			findPrd: async (id) => (prd ? { id, branch: prd.branch, title: prd.title, state: 'OPEN' } : null),
 			listPrds: async () => [],
@@ -50,7 +50,7 @@ if (import.meta.vitest) {
 
 	describe('runWork', () => {
 		test('calls runLoop with prdId and the PRD\'s integration branch (no per-storage dispatch)', async () => {
-			const storage = makeStorage('file', { branch: 'prd/abc123-feature', title: 'Feature' })
+			const storage = makeStorage({ branch: 'prd/abc123-feature', title: 'Feature' })
 			const calls: Array<{ prdId: string; branch: string }> = []
 			await runWork('abc123', {
 				storage,
@@ -63,7 +63,7 @@ if (import.meta.vitest) {
 		})
 
 		test('also calls runLoop on the issue storage (no per-storage dispatch)', async () => {
-			const storage = makeStorage('issue', { branch: 'prds-issue-142', title: 'SSO' })
+			const storage = makeStorage({ branch: 'prds-issue-142', title: 'SSO' })
 			const calls: Array<{ prdId: string; branch: string }> = []
 			await runWork('142', {
 				storage,
@@ -76,7 +76,7 @@ if (import.meta.vitest) {
 		})
 
 		test('throws when PRD is not found', async () => {
-			const storage = makeStorage('file', null)
+			const storage = makeStorage(null)
 			await expect(
 				runWork('zzz', {
 					storage,

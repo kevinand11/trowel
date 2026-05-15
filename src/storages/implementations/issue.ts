@@ -99,7 +99,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	return {
-		name: 'issue',
 		createPrd,
 		findPrd,
 		listPrds,

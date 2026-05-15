@@ -141,8 +141,6 @@ export type StorageDeps = {
 export type StorageFactory = (deps: StorageDeps) => Storage
 
 export interface Storage {
-	readonly name: string
-
 	// PRD lifecycle
 	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
 	findPrd(id: string): Promise<PrdRecord | null>

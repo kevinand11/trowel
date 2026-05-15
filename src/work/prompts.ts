@@ -2,8 +2,9 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import type { StorageKind } from '../storages/registry'
+
 export type Role = 'implement' | 'review' | 'address'
-export type StorageKind = 'issue' | 'file'
 
 export type PromptPlaceholders = {
 	integrationBranch: string

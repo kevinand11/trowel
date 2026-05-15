@@ -1,7 +1,6 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
-import type { Storage, Slice, ClassifiedSlice } from '../storages/types.ts'
+import type { ClassifiedSlice, Slice, Storage } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
-
 
 export async function review(prdId: string, sliceId: string): Promise<void> {
 	try {
@@ -24,9 +23,6 @@ type ReviewRuntime = {
 }
 
 async function runReview(prdId: string, sliceId: string, rt: ReviewRuntime): Promise<void> {
-	if (rt.storage.name !== 'issue') {
-		throw new Error(`'${rt.storage.name}' storage does not support review. PR-driven review is an issue-storage feature.`)
-	}
 	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 	const slice = classifySlices(await rt.storage.findSlices(prdId)).find((s) => s.id === sliceId)
@@ -59,9 +55,8 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function makeStorage(name: string, slices: Slice[]): Storage {
+	function makeStorage(slices: Slice[]): Storage {
 		return {
-			name,
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
 			listPrds: async () => [],
@@ -77,7 +72,7 @@ if (import.meta.vitest) {
 	describe('runReview', () => {
 		test('on an in-flight slice (issue storage): calls runOnePhase exactly once', async () => {
 			const slice = makeSlice({ id: 's1', bucket: 'in-flight' })
-			const storage = makeStorage('issue', [slice])
+			const storage = makeStorage([slice])
 			const calls: Slice[] = []
 			await runReview('p1', 's1', {
 				storage,
@@ -89,20 +84,12 @@ if (import.meta.vitest) {
 			expect(calls).toHaveLength(1)
 		})
 
-		test('refuses on the file storage with a storage-aware message', async () => {
-			const slice = makeSlice({ id: 's1', bucket: 'in-flight' })
-			const storage = makeStorage('file', [slice])
-			await expect(
-				runReview('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} }),
-			).rejects.toThrow(/file.*storage.*does not support.*review/i)
-		})
-
 		test('refuses when slice bucket is not "in-flight"', async () => {
 			const slice = makeSlice({ id: 's1', prState: null }) // no PR → bucket 'ready'
-			const storage = makeStorage('issue', [slice])
-			await expect(
-				runReview('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} }),
-			).rejects.toThrow(/bucket 'ready'/)
+			const storage = makeStorage([slice])
+			await expect(runReview('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} })).rejects.toThrow(
+				/bucket 'ready'/,
+			)
 		})
 	})
 }

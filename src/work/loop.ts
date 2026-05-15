@@ -169,7 +169,6 @@ if (import.meta.vitest) {
 
 	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
 		return {
-			name: 'fake',
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			findPrd: async () => null,
 			listPrds: async () => [],

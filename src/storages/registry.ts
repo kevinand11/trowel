@@ -2,10 +2,12 @@ import { createFileStorage } from './implementations/file.ts'
 import { createIssueStorage } from './implementations/issue.ts'
 import type { Storage, StorageDeps, StorageFactory } from './types.ts'
 
-export const storageFactories: Record<string, StorageFactory> = {
+export const storageFactories = {
 	file: createFileStorage,
 	issue: createIssueStorage,
-}
+} satisfies Record<string, StorageFactory>
+
+export type StorageKind = keyof typeof storageFactories
 
 export function getStorage(kind: string, deps: StorageDeps): Storage {
 	const factory = storageFactories[kind]
@@ -18,14 +20,23 @@ if (import.meta.vitest) {
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 
 	const noopGit = {
-		fetch: async () => {}, push: async () => {}, checkout: async () => {},
-		mergeNoFf: async () => {}, deleteRemoteBranch: async () => {},
-		createRemoteBranch: async () => {}, createLocalBranch: async () => {},
-		pushSetUpstream: async () => {}, currentBranch: async () => '',
-		branchExists: async () => false, isMerged: async () => false,
-		deleteBranch: async () => {}, worktreeAdd: async () => {},
-		worktreeRemove: async () => {}, worktreeList: async () => [],
-		restoreAll: async () => { }, cleanUntracked: async () => { },
+		fetch: async () => {},
+		push: async () => {},
+		checkout: async () => {},
+		mergeNoFf: async () => {},
+		deleteRemoteBranch: async () => {},
+		createRemoteBranch: async () => {},
+		createLocalBranch: async () => {},
+		pushSetUpstream: async () => {},
+		currentBranch: async () => '',
+		branchExists: async () => false,
+		isMerged: async () => false,
+		deleteBranch: async () => {},
+		worktreeAdd: async () => {},
+		worktreeRemove: async () => {},
+		worktreeList: async () => [],
+		restoreAll: async () => {},
+		cleanUntracked: async () => {},
 		baseBranch: async () => 'main',
 	}
 	const testDeps: StorageDeps = {
@@ -39,17 +50,8 @@ if (import.meta.vitest) {
 	}
 
 	describe('getStorage', () => {
-		test('returns the file storage when kind is "file"', () => {
-			expect(getStorage('file', testDeps).name).toBe('file')
-		})
-
-		test('returns the issue storage when kind is "issue"', () => {
-			expect(getStorage('issue', testDeps).name).toBe('issue')
-		})
-
 		test('throws when no storage is registered for the kind', () => {
 			expect(() => getStorage('mongo', testDeps)).toThrow(/No storage registered/)
 		})
-
 	})
 }

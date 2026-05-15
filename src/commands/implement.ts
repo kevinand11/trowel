@@ -56,9 +56,8 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function makeStorage(name: string, slices: Slice[], hasPrd = true): Storage {
+	function makeStorage(slices: Slice[], hasPrd = true): Storage {
 		return {
-			name,
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			findPrd: async (id) => (hasPrd ? { id, branch: 'b', title: 't', state: 'OPEN' } : null),
 			listPrds: async () => [],
@@ -74,7 +73,7 @@ if (import.meta.vitest) {
 	describe('runImplement', () => {
 		test('on a ready slice: calls runOnePhase exactly once with that slice', async () => {
 			const slice = makeSlice({ id: 's1', bucket: 'ready' })
-			const storage = makeStorage('file', [slice])
+			const storage = makeStorage([slice])
 			const calls: Slice[] = []
 			await runImplement('p1', 's1', {
 				storage,
@@ -88,14 +87,14 @@ if (import.meta.vitest) {
 		})
 
 		test('throws when PRD is not found', async () => {
-			const storage = makeStorage('file', [], false)
+			const storage = makeStorage([], false)
 			await expect(
 				runImplement('zzz', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} }),
 			).rejects.toThrow(/PRD 'zzz' not found/)
 		})
 
 		test('throws when slice id is not in the PRD', async () => {
-			const storage = makeStorage('file', [makeSlice({ id: 'other' })])
+			const storage = makeStorage([makeSlice({ id: 'other' })])
 			await expect(
 				runImplement('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} }),
 			).rejects.toThrow(/slice 's1' not found/)
@@ -103,7 +102,7 @@ if (import.meta.vitest) {
 
 		test('refuses when slice bucket is not "ready", naming the actual bucket', async () => {
 			const slice = makeSlice({ id: 's1', bucket: 'draft', readyForAgent: false })
-			const storage = makeStorage('file', [slice])
+			const storage = makeStorage([slice])
 			let phaseCalled = false
 			await expect(
 				runImplement('p1', 's1', {

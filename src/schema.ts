@@ -1,6 +1,6 @@
 import { v, type DeepPartial, type PipeOutput } from 'valleyed'
 
-import { storageFactories } from './storages/registry.ts'
+import { storageFactories, type StorageKind } from './storages/registry.ts'
 
 export const partialConfigPipe = () =>
 	v.object({
@@ -8,7 +8,7 @@ export const partialConfigPipe = () =>
 		// autocomplete; runtime code never reads it. `trowel init` writes it
 		// pointing at ~/.trowel/schema.json.
 		$schema: v.optional(v.string()),
-		storage: v.optional(v.in(Object.keys(storageFactories))),
+		storage: v.optional(v.in(Object.keys(storageFactories) as StorageKind[])),
 		docs: v.optional(
 			v.object({
 				prdsDir: v.optional(v.string()),
@@ -53,7 +53,7 @@ export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
 	$schema?: string
-	storage: string
+	storage: StorageKind
 	docs: {
 		prdsDir: string
 	}

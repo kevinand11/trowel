@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, Slice, Storage, StorageDeps, PrdRecord } from '../storages/types.ts'
+import type { ClassifiedSlice, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
@@ -127,7 +127,6 @@ if (import.meta.vitest) {
 
 	function fakeStorage(state: FakeStorageState): Storage {
 		return {
-			name: 'fake',
 			createPrd: async () => {
 				throw new Error('nyi')
 			},
@@ -158,7 +157,7 @@ if (import.meta.vitest) {
 			expect(buf).toContain('(no slices)')
 		})
 
-		test("error when PRD not found", async () => {
+		test('error when PRD not found', async () => {
 			const storage = fakeStorage({ prd: null, rawSlices: [] })
 			await expect(runStatus('zzzzzz', { storage, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
 		})
@@ -179,17 +178,13 @@ if (import.meta.vitest) {
 		})
 
 		test('"done" section appears for CLOSED slices', () => {
-			const out = renderStatus(prd, [
-				{ ...slice({ id: '142', title: 'Schema migration', state: 'CLOSED' }), bucket: 'done' },
-			])
+			const out = renderStatus(prd, [{ ...slice({ id: '142', title: 'Schema migration', state: 'CLOSED' }), bucket: 'done' }])
 			expect(out).toMatch(/^ {2}done$/m)
 			expect(out).toMatch(/142 +Schema migration/)
 		})
 
 		test('"ready" section appears for ready slices', () => {
-			const out = renderStatus(prd, [
-				{ ...slice({ id: '147', title: 'Audit log', readyForAgent: true }), bucket: 'ready' },
-			])
+			const out = renderStatus(prd, [{ ...slice({ id: '147', title: 'Audit log', readyForAgent: true }), bucket: 'ready' }])
 			expect(out).toMatch(/^ {2}ready$/m)
 			expect(out).toMatch(/147 +Audit log/)
 		})
@@ -200,16 +195,12 @@ if (import.meta.vitest) {
 		})
 
 		test('"needs-revision" section appears for needsRevision slices', () => {
-			const out = renderStatus(prd, [
-				{ ...slice({ id: '150', title: 'Fix me', needsRevision: true }), bucket: 'needs-revision' },
-			])
+			const out = renderStatus(prd, [{ ...slice({ id: '150', title: 'Fix me', needsRevision: true }), bucket: 'needs-revision' }])
 			expect(out).toMatch(/^ {2}needs-revision$/m)
 		})
 
 		test('"in-flight" section appears for in-flight slices', () => {
-			const out = renderStatus(prd, [
-				{ ...slice({ id: '145', title: 'Session middleware' }), bucket: 'in-flight' },
-			])
+			const out = renderStatus(prd, [{ ...slice({ id: '145', title: 'Session middleware' }), bucket: 'in-flight' }])
 			expect(out).toMatch(/^ {2}in-flight$/m)
 		})
 

@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, PrdSummary } from '../storages/types.ts'
+import type { ClassifiedSlice, PrdSummary, Storage, StorageDeps } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
@@ -179,7 +179,6 @@ if (import.meta.vitest) {
 	describe('runListPrds', () => {
 		function fakeStorage(overrides: Partial<Storage>): Storage {
 			return {
-				name: 'fake',
 				createPrd: async () => {
 					throw new Error('nyi')
 				},
