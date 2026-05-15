@@ -23,7 +23,7 @@ These decisions cross every pending session. Don't reopen unless you have a conc
   - `private` — `~/.trowel/projects/<full-path-mirrored>/config.json` (user per-project, this machine only)
   - `project` — `<project root>/.trowel/config.json` (**wins**)
 - **Project root resolution.** Walk up from cwd to the nearest `.trowel/` (preferred) or `.git/` (fallback).
-- **Failure recovery model.** Idempotent — re-run with `--prd <id>` to resume after any abort. No atomic rollback.
+- **Failure recovery model.** `trowel work <id>` is idempotent — re-run after any abort. `trowel start` is one-shot; aborted runs leave an orphan PRD closeable via `trowel close <id>`. No atomic rollback.
 - **Working-tree precondition.** Strict clean tree at command start; `try/finally` restores the captured **BACK_TO branch** on exit.
 - **Style.** Tabs, single quotes, kebab-case filenames, `@k11/configs` for tsconfig/eslint/prettier. Mirrors equipped's conventions.
 
@@ -31,82 +31,114 @@ Each pending session expands on one slice of the design; assume everything above
 
 ---
 
-## 1. `trowel start` flow + `start.md` / `resume.md` prompts
+## 1. `trowel start` flow + `start.md` prompt
 
-**Goal.** The orchestration we've grilled — preflight → grill → create PRD → branch → slice → restore — wired up as a real command, with the Claude prompt that drives it.
+**Status.** Design fully grilled and locked. Ready to implement. Pick this up cold — every decision is recorded inline below.
 
-**Files to write.**
+**Goal.** Single-shot orchestration: host launches interactive Claude, user grills out a PRD spec + slices, Claude writes the structured result to `.trowel/start-out.json` and exits, host materialises the PRD + slices via the existing Storage interface and leaves the user on the integration branch.
 
-- `src/commands/start.ts` — replaces the stub in `src/commands/stubs.ts:start`.
-- `src/prompts/start.md` — initial-launch prompt.
-- `src/prompts/resume.md` — `--prd <id>` mode prompt.
+**Files to write or edit.**
 
-**Flow under (a) strict-precondition + (Y) bookended trap.**
+- **`src/commands/start.ts`** — new file; replaces the stub in `src/commands/stubs.ts:start`.
+- **`src/prompts/start.md`** — new file; single self-contained prompt with **no template variables**.
+- **`src/work/verdict.ts`** — tighten validation to fail loudly on malformed `turn-out.json` instead of coercing to `partial`. Same strict valleyed pipe shape is reused for parsing `start-out.json`.
+- **`src/prompts/implement.md` / `review.md` / `address.md`** — drop `{{INTEGRATION_BRANCH}}` and `{{STORAGE}}`; delete the `{{#issue}}` / `{{#file}}` conditional blocks in `implement.md` (the loader in `src/prompts/load.ts:22` doesn't support mustache conditionals anyway, so they're already emitted verbatim today).
+- **`src/commands/_loop-wiring.ts:57`** — `loadPrompt(role, { integrationBranch, storage })` becomes `loadPrompt(role, {})`.
+- **`src/cli.ts`** — point `start` at the real command; remove the `--prd <id>` option line.
+- **`src/commands/stubs.ts`** — delete the `start` export.
+
+**CLI surface.**
+
+```
+trowel start [--storage <kind>]
+```
+
+No `--prd` flag. No resume mode.
+
+**Host flow.**
+
+1. **Preflight (fail-fast).** Project root resolvable; clean working tree (`git status --porcelain` empty); `claude` on PATH; `gh` on PATH + `gh auth status` succeeds. Applied unconditionally regardless of storage.
+2. **Capture BACK_TO** via the existing `GitOps.currentBranch()`.
+3. **Render prompt.** `loadPrompt('start', {})` — no variable substitution.
+4. **Launch interactive Claude.** Spawn `claude --append-system-prompt @<path-to-rendered>` (verify exact flag against current Claude Code CLI at implementation time; fall back to a project-level slash-command pattern if the flag has dropped). `stdio: 'inherit'`, `cwd: projectRoot`. **No log capture** — the user *is* the output.
+5. **On Claude exit, read `.trowel/start-out.json`.**
+    - Missing → print "PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep." Restore BACK_TO via `finally`. Exit non-zero.
+    - Present → continue.
+6. **Validate schema.** Run through a valleyed pipe (shape below). Then host-side checks: every index in `slices[*].blockedBy` ∈ `[0, slices.length)`; no self-references; no cycles (DAG check). On any violation: print the offending slice + reason; restore BACK_TO; exit non-zero.
+7. **Stash any dirty tree.** `git stash --include-untracked`. If clean, skip the stash entirely (no `git stash` call).
+8. **`storage.createPrd({title: prd.title, body: prd.body})`** → `{id, branch}`. Storage handles slug derivation, integration-branch creation off `git.baseBranch()`, and any side artifacts.
+9. **`git switch <branch>`** onto the new integration branch.
+10. **`git stash pop`** (only if a stash was made). On conflict: leave the user on integration with conflict markers, print the stash hash, exit non-zero. Do **not** restore BACK_TO — the grill output is too expensive to discard.
+11. **Create slices in array order.** For each `spec.slices[i]`: `storage.createSlice(prdId, {title, body, blockedBy: []})`. Keep an array `realIds[i]` of returned slice ids.
+12. **Resolve and patch.** For each slice, map `blockedBy: number[]` to `realIds[...]` and call `storage.updateSlice(prdId, sliceId, {blockedBy: resolvedIds, readyForAgent: spec.slices[i].readyForAgent})`.
+13. **Print summary** — PRD id, integration branch, slice list with ids + titles, list of uncommitted paths from `git status --porcelain` as a reminder for the user to review and commit at their discretion, and a `Next: trowel work <id>` hint.
+14. **`finally` clause.**
+    - Success → **no branch restore** (user stays on integration).
+    - Failure before step 8 → restore BACK_TO. Tree state stays as Claude left it; user inspects and discards.
+    - Failure after step 8 → leave user where they are. The PRD exists and can be closed via `trowel close <id>`.
+
+**`start-out.json` schema.**
 
 ```ts
-async function start(opts: { prd?: string; storage?: string }) {
-  const { config, projectRoot } = await loadConfig()
-  if (!projectRoot) crash('no project root')
-
-  // 0. Preflight (refuse on failure)
-  const failures = await runPreflight({ config, projectRoot })
-  if (failures.length) crashWithFailures(failures)
-
-  // 1. Capture BACK_TO branch
-  const backTo = await captureBranch(projectRoot)
-
-  // 2. Fetch base
-  await fetchBase(projectRoot, config.baseBranch)
-
-  // 3. Cross-PRD collision warning (see §4)
-  const collisions = await detectCollisions({ config, projectRoot })
-  if (collisions.length) printAndConfirm(collisions) // y/N prompt
-
-  // 4. Resolve storage (CLI flag → config → default)
-  const kind = (opts.storage as StorageKind) ?? config.storage
-  const storage = getStorage(kind)
-
-  // 5. Launch Claude with start.md (or resume.md if --prd was passed),
-  //    interpolating { BACK_TO, PROJECT_ROOT, STORAGE, PRD_ID? } via loadPrompt().
-  //    Use try/finally to restore branch:
-  try {
-    await spawnClaude(promptText, { agent: config.agent })
-  } finally {
-    if (backTo) await switchBranch(projectRoot, backTo)
-  }
+{
+  prd: { title: string, body: string },
+  slices: Array<{
+    title: string,
+    body: string,
+    blockedBy: number[],   // 0-based indexes into `slices`
+    readyForAgent: boolean
+  }>
 }
 ```
 
-**Prompt outline (`start.md`).**
+Validated by a valleyed pipe (same discipline as `src/schema.ts:partialConfigPipe`). Then DAG-checked host-side.
 
-```
-You are running inside a `trowel start` orchestration session for project at
-{{PROJECT_ROOT}}. The chosen storage is {{STORAGE}}.
+**`start.md` outline (single self-contained file, no template variables).**
 
-The user is starting a new feature. Your job:
+1. **Role.** "You are inside a `trowel start` orchestration. Your output target is the file `.trowel/start-out.json` in the current working directory."
+2. **Pre-grill reading list.** `CONTEXT.md`, `CONTEXT-MAP.md` (if present), every file under `docs/adr/`, `README.md`, and the top-level `src/` directory listing.
+3. **Grilling discipline (inlined — do not depend on any user-installed skill).**
+    - One question at a time; wait for feedback before continuing.
+    - Provide a recommended default with every question.
+    - Cross-reference with code; surface contradictions immediately.
+    - Sharpen fuzzy language; challenge against the existing glossary.
+    - Discuss concrete scenarios to probe boundaries.
+    - Update CONTEXT.md inline as terms resolve.
+    - Offer ADRs **only** when all three hold: (a) hard-to-reverse, (b) surprising without context, (c) the result of a real trade-off.
+4. **CONTEXT.md format spec (inlined verbatim).** Title and one-paragraph description; `## Language` with bold-name definitions plus `_Avoid_:` alias lines; `## Relationships` (bold-name terms with cardinality); `## Example dialogue`; `## Flagged ambiguities`. Rules: be opinionated, flag conflicts explicitly, keep definitions tight (one sentence — define what it IS, not what it does), show relationships, only domain-specific terms (no general programming concepts), group under subheadings when natural clusters emerge, write an example dialogue.
+5. **ADR format spec (inlined verbatim).** Lives in `docs/adr/` with sequential `NNNN-slug.md` numbering. Body can be 1–3 sentences. Optional `Status` frontmatter, `Considered Options`, `Consequences` sections — only when they add value.
+6. **Doc-edit scope rule.** During the grill, Claude may edit **only** `CONTEXT.md`, `CONTEXT-MAP.md`, files under `docs/adr/`, and per-context `CONTEXT.md` files. No other working-tree writes.
+7. **Phase 1 — grill.** Run until the user signals "grill done." Vocabulary, scope, and design questions are all on the table.
+8. **Phase 2a — draft the PRD body in markdown.** Template (adapted from the `to-prd` skill; inline verbatim):
+    - `## Problem Statement` — user's-perspective description of the problem.
+    - `## Solution` — user's-perspective description of the solution.
+    - `## User Stories` — numbered list, `As a <actor>, I want <feature>, so that <benefit>`. Extensive.
+    - `## Implementation Decisions` — modules built/modified, interfaces, schema changes, API contracts, architectural decisions. **No** specific file paths or code snippets.
+    - `## Testing Decisions` — what makes a good test (external behavior, not implementation), modules to test, prior art.
+    - `## Out of Scope`.
+    - `## Further Notes`.
+    - Show the drafted markdown body in chat; user pushes back or locks before continuing.
+9. **Phase 2b — draft slices.** Present as a markdown table — columns: index, title, AFK/HITL, blocked-by-indexes, one-line summary. Inline vertical-slice rules (from the `to-issues` skill): each slice cuts end-to-end through every layer (schema → API → UI → tests); a completed slice is demoable on its own; prefer many thin slices over few thick ones. All blockers are treated as hard — there is no soft/hard distinction in trowel. User pushes back or locks.
+10. **Slice body template (markdown).** Two sections only:
+    - `## What to build` — end-to-end behavior of this vertical slice. Not layer-by-layer.
+    - `## Acceptance criteria` — checkbox list.
+    No `Blocked by` section in the body; the data lives only in the JSON's `blockedBy` array.
+11. **Final step.** Serialize the locked spec to JSON matching the schema, write to `.trowel/start-out.json`, then print "ready — exit when you're done" so the user can close the Claude session.
 
-1. Grill them on the design, sharpening vocabulary and updating docs/CONTEXT.md
-   and docs/adr/ as decisions crystallise (read .claude/skills/grill-with-docs/).
-2. When the user confirms grilling is done, produce a PRD spec body.
-3. Call the appropriate gh / git commands to materialise the PRD per storage:
-   - file: generate id, write docs/prds/<id>-<slug>/{README.md, store.json}, create branch prd/<id>-<slug>, commit, push.
-   - issue: gh issue create, then create prds-issue-<N>, commit docs, push, gh issue develop.
-4. Slice the PRD into vertical-slice GitHub issues, each carrying the
-   sliceMarker for this storage ({{SLICE_MARKER_TEMPLATE}}).
-5. Apply the `ready-for-agent` label to each slice.
-6. Print a summary: PRD identifier, branch, slice URLs.
+**Verification path.**
 
-Do not switch back to {{BACK_TO_BRANCH}} — the host script's `finally` clause
-handles that.
-```
+1. Scratch repo with `storage: file` and a clean tree.
+2. Run `trowel start` from `main`. Grill a tiny feature (e.g. "rename Foo to Bar"); draft a 2-slice PRD.
+3. Verify: integration branch checked out; `docs/prds/<id>-<slug>/{README.md, store.json}` written; two slice directories with bodies; `readyForAgent: true` in each slice's `store.json` per the spec; summary printed.
+4. Repeat on a scratch GitHub repo with `storage: issue`; verify the GH issue + sub-issues are created; integration branch from `gh issue develop` checked out; labels applied.
+5. Abort path: run `trowel start`, exit Claude without writing `start-out.json`. Verify host prints recovery message; user back on BACK_TO; working tree retains Claude's CONTEXT/ADR edits for manual handling.
+6. Validation path: hand-craft a `.trowel/start-out.json` with an out-of-range `blockedBy` index; verify host fails with the offending slice's index named and no `createPrd` call.
 
-**Open questions to grill.**
+**Non-goals for this session.**
 
-- **One prompt or per-storage prompts?** Default pick: one prompt with conditional sections keyed by `{{STORAGE}}`; Claude reads its own storage and follows the matching block.
-- **Where does the slug come from in start mode?** Claude proposes; user confirms? Or trowel asks before invoking Claude? Default pick: Claude proposes mid-grill, locks it before writing artifacts.
-- **Cross-grill skill invocation.** Should `start.md` instruct Claude to invoke the `/grill-with-docs` skill? Default pick: yes — its `grill-with-docs` skill is the de-facto grilling discipline.
-
-**Verification path.** Run on a tiny scratch repo with the `file` storage; verify the branch, doc commit, and two slice issues land.
+- Cross-PRD collision warning (dropped — see deleted §4 in git history).
+- Worktree usage for the grill (start runs in the user's main checkout, not a worktree).
+- Auto-committing CONTEXT/ADR edits on the integration branch (user commits at their discretion; host only stash-dances them across the branch switch).
 
 ---
 
@@ -184,26 +216,7 @@ async function diagnose(description: string) {
 
 ---
 
-## 4. Cross-PRD collision warning
-
-**Goal.** Warn the user when starting a new PRD if other in-flight PRD branches have already touched files. Intended as a pre-step inside `trowel start` (see §1).
-
-**Design (re-grill before implementing — the previous `config.collision.*` knobs were stripped from the schema as unused).**
-
-- List branches on origin matching the PRD branch pattern (e.g. `prd/*` for `file`, `prds-issue-*` for `issue`).
-- For each: `git diff --name-only ${config.baseBranch}...${branch}` → file set.
-- Return `[{ branch, files }]`; `start` prints them and prompts `[y/N]`.
-
-**Catch.** The session hasn't *yet* touched files when the collision check runs — we can only show "what other branches have changed," not "what overlaps." Trade-off: show all branches with any in-flight changes; let the user judge.
-
-**Files.** New `src/preflight.ts` (or wire directly into `src/commands/start.ts`). Re-introduce a `collision` schema block only if the implementation genuinely needs config knobs.
-
-**Verification path.** Tested via integration with `trowel start` on a repo with active integration branches.
-
----
-
 ## Order of work (suggested)
 
 1. `trowel start` flow end-to-end against the `file` storage (the simpler of the two; no GitHub round-trip for the PRD itself).
-2. Cross-PRD collision warning (pre-step inside `start`).
-3. `fix` + `diagnose` flows.
+2. `fix` + `diagnose` flows.

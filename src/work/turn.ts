@@ -118,7 +118,7 @@ if (import.meta.vitest) {
 			expect(out.commits).toBe(2)
 		})
 
-		test('coerces missing turn-out.json to partial verdict', async () => {
+		test('lets parseVerdict throw bubble when turn-out.json is missing (no coercion to partial)', async () => {
 			const deps: SpawnTurnDeps = {
 				prdId: '142',
 				projectRoot,
@@ -127,9 +127,7 @@ if (import.meta.vitest) {
 				runAgent: async () => ({ commits: 0 }),
 				randId: () => 'r1',
 			}
-			const out = await spawnTurn(makeArgs(), deps)
-			expect(out.verdict).toBe('partial')
-			expect(out.notes).toMatch(/missing/i)
+			await expect(spawnTurn(makeArgs(), deps)).rejects.toThrow(/verdict file missing/i)
 		})
 
 		test('logPath is under <projectRoot>/.trowel/logs/<prdId>/ containing slice id, role and runId', async () => {

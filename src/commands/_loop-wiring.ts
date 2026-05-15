@@ -51,10 +51,8 @@ export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<
 
 	await ensureTrowelDir(projectRoot)
 
-	const makeRunAgent =
-		(integrationBranchName: string) =>
-		async ({ worktree, logPath, role }: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
-			const rendered = await loadPrompt(role, { integrationBranch: integrationBranchName, storage: storageKind })
+	const runAgent = async ({ worktree, logPath, role }: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
+			const rendered = await loadPrompt(role, {})
 			const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
 			await writeFile(promptFile, rendered)
 
@@ -98,13 +96,13 @@ export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<
 			return { commits }
 		}
 
-	const makeSpawnTurnFor = (prdId: string, integrationBranchName: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
+	const makeSpawnTurnFor = (prdId: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
 		spawnTurn(args, {
 			prdId,
 			projectRoot,
 			copyToWorktree: config.turn.copyToWorktree,
 			git,
-			runAgent: makeRunAgent(integrationBranchName),
+			runAgent,
 			randId: () => randomBytes(3).toString('hex'),
 			log,
 		})
@@ -124,7 +122,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<
 			: role === 'review'
 				? await prepareReview(phaseDeps, slice, ctx)
 				: await prepareAddress(phaseDeps, slice, ctx)
-		const verdict: TurnOut = await makeSpawnTurnFor(prdId, branch)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
+		const verdict: TurnOut = await makeSpawnTurnFor(prdId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
 		if (role === 'implement') await landImplement(phaseDeps, slice, verdict, ctx)
 		else if (role === 'review') await landReview(phaseDeps, slice, verdict, ctx)
 		else await landAddress(phaseDeps, slice, verdict, ctx)
@@ -146,7 +144,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<
 			git,
 			gh,
 			integrationBranch: branch,
-			spawnTurn: makeSpawnTurnFor(prdId, branch),
+			spawnTurn: makeSpawnTurnFor(prdId),
 			log,
 			config: {
 				usePrs: config.work.usePrs,

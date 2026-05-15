@@ -1,3 +1,5 @@
+import { v } from 'valleyed'
+
 import type { Role } from './prompts.ts'
 
 export type VerdictKind = 'ready' | 'needs-revision' | 'no-work-needed' | 'partial'
@@ -19,7 +21,7 @@ export type TurnIn = {
 	feedback?: FeedbackEntry[]
 }
 
-const ALL_VERDICTS: VerdictKind[] = ['ready', 'needs-revision', 'no-work-needed', 'partial']
+const ALL_VERDICTS = ['ready', 'needs-revision', 'no-work-needed', 'partial'] as const
 
 const ROLE_VERDICTS: Record<Role, VerdictKind[]> = {
 	implement: ['ready', 'no-work-needed', 'partial'],
@@ -27,33 +29,42 @@ const ROLE_VERDICTS: Record<Role, VerdictKind[]> = {
 	address: ['ready', 'no-work-needed', 'partial'],
 }
 
+const turnOutPipe = () =>
+	v.object({
+		verdict: v.in(ALL_VERDICTS),
+		notes: v.optional(v.string()),
+	})
+
 export function parseVerdict(raw: string | null, role: Role, commits: number): TurnOut {
-	if (raw === null) return { verdict: 'partial', notes: 'verdict file missing', commits }
+	if (raw === null) throw new Error('verdict file missing (.trowel/turn-out.json)')
 	let parsed: unknown
 	try {
 		parsed = JSON.parse(raw)
 	} catch (e) {
-		return { verdict: 'partial', notes: `verdict file parse error: ${(e as Error).message}`, commits }
+		throw new Error(`verdict file parse error: ${(e as Error).message}`)
 	}
-	if (!isObject(parsed) || typeof parsed.verdict !== 'string') {
-		return { verdict: 'partial', notes: 'verdict file parse error: missing or non-string `verdict` field', commits }
+	// Peek at the verdict field before pipe validation so the unknown-verdict error
+	// surfaces the offending value (the pipe's "not in enum" message doesn't).
+	if (typeof parsed === 'object' && parsed !== null && 'verdict' in parsed) {
+		const v = (parsed as { verdict: unknown }).verdict
+		if (typeof v === 'string' && !ALL_VERDICTS.includes(v as VerdictKind)) {
+			throw new Error(`verdict file rejected: unknown verdict kind '${v}'`)
+		}
 	}
-	if (!ALL_VERDICTS.includes(parsed.verdict as VerdictKind)) {
-		return { verdict: 'partial', notes: `unknown verdict kind: ${parsed.verdict}`, commits }
+	const result = v.validate(turnOutPipe(), parsed)
+	if (!result.valid) {
+		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
+		throw new Error(`verdict file rejected:\n${messages}`)
 	}
-	const kind = parsed.verdict as VerdictKind
+	const kind = result.value.verdict as VerdictKind
 	if (!ROLE_VERDICTS[role].includes(kind)) {
-		return { verdict: 'partial', notes: `verdict '${kind}' is not valid for role '${role}'`, commits }
+		throw new Error(`verdict '${kind}' is not valid for role '${role}'`)
 	}
 	if (role === 'implement' && kind === 'ready' && commits === 0) {
-		return { verdict: 'partial', notes: 'implementer reported ready but made no commits', commits }
+		throw new Error('implementer reported ready but made no commits')
 	}
-	const notes = typeof parsed.notes === 'string' ? parsed.notes : undefined
+	const notes = result.value.notes
 	return notes === undefined ? { verdict: kind, commits } : { verdict: kind, notes, commits }
-}
-
-function isObject(x: unknown): x is Record<string, unknown> {
-	return typeof x === 'object' && x !== null && !Array.isArray(x)
 }
 
 if (import.meta.vitest) {
@@ -70,38 +81,27 @@ if (import.meta.vitest) {
 			expect(out.commits).toBe(3)
 		})
 
-		test('coerces a null input (missing verdict file) to partial with notes', () => {
-			const out = parseVerdict(null, 'implement', 0)
-			expect(out.verdict).toBe('partial')
-			expect(out.notes).toMatch(/missing/i)
+		test('throws on null input (missing verdict file) with a message naming the missing file', () => {
+			expect(() => parseVerdict(null, 'implement', 0)).toThrow(/verdict file missing/i)
 		})
 
-		test('coerces malformed JSON to partial with notes', () => {
-			const out = parseVerdict('this is not json {{{', 'implement', 0)
-			expect(out.verdict).toBe('partial')
-			expect(out.notes).toMatch(/parse/i)
+		test('throws on malformed JSON', () => {
+			expect(() => parseVerdict('this is not json {{{', 'implement', 0)).toThrow(/verdict file/i)
 		})
 
-		test('coerces an unknown verdict kind to partial with notes', () => {
-			const out = parseVerdict('{"verdict":"something-weird"}', 'implement', 0)
-			expect(out.verdict).toBe('partial')
-			expect(out.notes).toMatch(/something-weird/)
+		test('throws on missing or non-string verdict field', () => {
+			expect(() => parseVerdict('{}', 'implement', 0)).toThrow(/verdict/i)
+			expect(() => parseVerdict('{"verdict":42}', 'implement', 0)).toThrow(/verdict/i)
 		})
 
-		test('coerces a role-invalid verdict to partial', () => {
-			// implementer cannot return needs-revision (reviewer's verdict)
-			const impl = parseVerdict('{"verdict":"needs-revision"}', 'implement', 0)
-			expect(impl.verdict).toBe('partial')
-			expect(impl.notes).toMatch(/needs-revision/)
-			expect(impl.notes).toMatch(/implement/)
+		test('throws on an unknown verdict kind, surfacing the offending value', () => {
+			expect(() => parseVerdict('{"verdict":"something-weird"}', 'implement', 0)).toThrow(/something-weird/)
+		})
 
-			// reviewer cannot return no-work-needed (implementer/addresser verdict)
-			const rev = parseVerdict('{"verdict":"no-work-needed"}', 'review', 0)
-			expect(rev.verdict).toBe('partial')
-
-			// addresser cannot return needs-revision (reviewer's verdict)
-			const addr = parseVerdict('{"verdict":"needs-revision"}', 'address', 0)
-			expect(addr.verdict).toBe('partial')
+		test('throws on a role-invalid verdict, naming both the kind and the role', () => {
+			expect(() => parseVerdict('{"verdict":"needs-revision"}', 'implement', 0)).toThrow(/needs-revision.*implement|implement.*needs-revision/i)
+			expect(() => parseVerdict('{"verdict":"no-work-needed"}', 'review', 0)).toThrow(/no-work-needed.*review|review.*no-work-needed/i)
+			expect(() => parseVerdict('{"verdict":"needs-revision"}', 'address', 0)).toThrow(/needs-revision.*address|address.*needs-revision/i)
 		})
 
 		test('accepts the valid verdicts for each role', () => {
@@ -125,17 +125,12 @@ if (import.meta.vitest) {
 			expect(out.notes).toBe('hit cap mid-test')
 		})
 
-		test('ignores a non-string notes field', () => {
-			const out = parseVerdict('{"verdict":"ready","notes":42}', 'implement', 1)
-			expect(out.verdict).toBe('ready')
-			expect(out.notes).toBeUndefined()
+		test('throws on a non-string notes field (no silent coercion)', () => {
+			expect(() => parseVerdict('{"verdict":"ready","notes":42}', 'implement', 1)).toThrow(/verdict file rejected/i)
 		})
 
-		test('coerces implementer ready + zero commits to partial with a logged reason', () => {
-			const out = parseVerdict('{"verdict":"ready"}', 'implement', 0)
-			expect(out.verdict).toBe('partial')
-			expect(out.notes).toMatch(/implementer.*no commits/i)
-			expect(out.commits).toBe(0)
+		test('throws when implementer reports ready but made zero commits', () => {
+			expect(() => parseVerdict('{"verdict":"ready"}', 'implement', 0)).toThrow(/implementer.*no commits|no commits.*implementer/i)
 		})
 
 		test('reviewer and addresser ready + zero commits stay ready (coercion is implementer-only)', () => {

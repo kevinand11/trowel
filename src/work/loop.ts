@@ -208,6 +208,9 @@ if (import.meta.vitest) {
 			worktreeList: async () => [],
 			restoreAll: async () => {},
 			cleanUntracked: async () => {},
+			isWorkingTreeClean: async () => true,
+			stashPush: async () => {},
+			stashPop: async () => {},
 		}
 	}
 
@@ -282,6 +285,28 @@ if (import.meta.vitest) {
 			expect(roles).toEqual(['implement'])
 			const after = await storage.findSlices('p1')
 			expect(after[0]!.state).toBe('CLOSED')
+		})
+
+		test('spawnTurn throws → loop catches, logs the error, returns partial (one bad slice does not abort the batch)', async () => {
+			const stuck = makeSlice({ id: 'stuck' })
+			const fine = makeSlice({ id: 'fine' })
+			const storage = makeStorage({ slices: [stuck, fine] })
+			const logs: string[] = []
+			let spawnCalls = 0
+			await runLoop('p1', makeDeps(storage, {
+				spawnTurn: async ({ slice }) => {
+					spawnCalls++
+					if (slice.id === 'stuck') throw new Error('verdict file missing (.trowel/turn-out.json)')
+					return { verdict: 'ready', commits: 1 }
+				},
+				log: (m) => { logs.push(m) },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null },
+			}))
+			expect(spawnCalls).toBeGreaterThanOrEqual(2) // both slices were attempted
+			expect(logs.some((m) => /verdict file missing/.test(m))).toBe(true)
+			const after = await storage.findSlices('p1')
+			expect(after.find((s) => s.id === 'fine')!.state).toBe('CLOSED')
+			expect(after.find((s) => s.id === 'stuck')!.state).toBe('OPEN')
 		})
 
 		test('partial verdict: slice added to skip set; outer loop exits after one iteration', async () => {

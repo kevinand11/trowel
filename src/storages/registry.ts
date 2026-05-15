@@ -38,6 +38,9 @@ if (import.meta.vitest) {
 		restoreAll: async () => {},
 		cleanUntracked: async () => {},
 		baseBranch: async () => 'main',
+		isWorkingTreeClean: async () => true,
+		stashPush: async () => {},
+		stashPop: async () => {},
 	}
 	const testDeps: StorageDeps = {
 		gh: recordingGhOps().gh,

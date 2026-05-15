@@ -185,6 +185,9 @@ if (import.meta.vitest) {
 				worktreeList: async () => [],
 				restoreAll: async () => {},
 				cleanUntracked: async () => {},
+				isWorkingTreeClean: async () => true,
+				stashPush: async () => {},
+				stashPop: async () => {},
 			},
 			log: (m) => { logCalls.push(m) },
 		}

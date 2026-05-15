@@ -324,6 +324,9 @@ if (import.meta.vitest) {
 			cleanUntracked: async (p: string) => {
 				await realGit.cleanUntracked(p)
 			},
+			isWorkingTreeClean: async () => realGit.isWorkingTreeClean(),
+			stashPush: async (opts) => realGit.stashPush(opts),
+			stashPop: async () => realGit.stashPop(),
 		}
 		const { gh } = recordingGhOps()
 		const deps: StorageDeps = {
@@ -546,6 +549,9 @@ if (import.meta.vitest) {
 					worktreeList: async () => [],
 					restoreAll: async () => {},
 					cleanUntracked: async () => {},
+					isWorkingTreeClean: async () => true,
+					stashPush: async () => {},
+					stashPop: async () => {},
 				}
 				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log! }
 
@@ -609,6 +615,9 @@ if (import.meta.vitest) {
 					worktreeList: async () => [],
 					restoreAll: async () => {},
 					cleanUntracked: async () => {},
+					isWorkingTreeClean: async () => true,
+					stashPush: async () => {},
+					stashPop: async () => {},
 				}
 				const { gh, calls: ghCalls } = recordingGhOps()
 				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log! }

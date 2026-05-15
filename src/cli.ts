@@ -8,6 +8,7 @@ import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
 import { list, type PrdState } from './commands/list.ts'
 import { review } from './commands/review.ts'
+import { start } from './commands/start.ts'
 import { status } from './commands/status.ts'
 import * as stubs from './commands/stubs.ts'
 import { work } from './commands/work.ts'
@@ -20,10 +21,9 @@ export function run(): void {
 	program
 		.command('start')
 		.description('Start a new PRD: grill, create artifacts, branch, slice')
-		.option('--prd <id>', 'Resume an existing PRD by id')
 		.option('--storage <kind>', 'Override project storage')
-		.action(async (opts) => {
-			await stubs.start(opts)
+		.action(async (opts: { storage?: string }) => {
+			await start(opts)
 		})
 
 	program

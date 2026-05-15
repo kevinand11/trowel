@@ -9,10 +9,6 @@ function notImplemented(commandName: string, reason: string): never {
 	process.exit(1)
 }
 
-export async function start(opts: { prd?: string; storage?: string }): Promise<void> {
-	notImplemented('start', `Requires a storage implementation. Storages are deferred to per-storage grilling. Opts: ${JSON.stringify(opts)}`)
-}
-
 export async function diagnose(desc: string): Promise<void> {
 	notImplemented('diagnose', `Diagnostic workflow pending. Description: ${desc}`)
 }
