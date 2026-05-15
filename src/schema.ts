@@ -4,6 +4,10 @@ import { storageFactories } from './storages/registry.ts'
 
 export const partialConfigPipe = () =>
 	v.object({
+		// File-only annotation. Editors use it to fetch a JSON Schema for
+		// autocomplete; runtime code never reads it. `trowel init` writes it
+		// pointing at ~/.trowel/schema.json.
+		$schema: v.optional(v.string()),
 		storage: v.optional(v.in(Object.keys(storageFactories))),
 		docs: v.optional(
 			v.object({
@@ -48,6 +52,7 @@ export const partialConfigPipe = () =>
 export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
+	$schema?: string
 	storage: string
 	docs: {
 		prdsDir: string
@@ -118,6 +123,19 @@ export const defaultConfig: Config = {
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
 	},
+}
+
+// Emit a JSON Schema for the partial-config shape. Editors fetch this via the
+// `$schema` key in user config files to drive autocomplete and validation.
+export function emitJsonSchema(): Record<string, unknown> {
+	// Valleyed's .schema(context) walks the pipe; we pass an empty context
+	// because there is no enclosing object — the partial-config pipe is the root.
+	const inner = (partialConfigPipe().schema as (ctx: Record<string, unknown>) => Record<string, unknown>)({})
+	return {
+		$schema: 'http://json-schema.org/draft-07/schema#',
+		title: 'Trowel config',
+		...inner,
+	}
 }
 
 // Deep-merge a partial layer onto an existing Config, producing a new Config.
@@ -281,5 +299,49 @@ if (import.meta.vitest) {
 			expect(result.valid).toBe(false)
 		})
 
+		test('accepts $schema as a string (file annotation passes validation)', () => {
+			const result = v.validate(partialConfigPipe(), { $schema: '/home/me/.trowel/schema.json' })
+			expect(result.valid).toBe(true)
+		})
+	})
+
+	describe('emitJsonSchema', () => {
+		test('declares the draft-07 meta-schema and a title', () => {
+			const schema = emitJsonSchema()
+			expect(schema.$schema).toBe('http://json-schema.org/draft-07/schema#')
+			expect(schema.title).toBe('Trowel config')
+		})
+
+		test('emits properties for every top-level config key', () => {
+			const schema = emitJsonSchema() as { properties: Record<string, unknown> }
+			expect(Object.keys(schema.properties)).toEqual(
+				expect.arrayContaining(['$schema', 'storage', 'docs', 'agent', 'labels', 'close', 'turn', 'work']),
+			)
+		})
+
+		test('storage property emits the storage enum', () => {
+			const schema = emitJsonSchema() as { properties: { storage: { enum: string[] } } }
+			expect(schema.properties.storage.enum).toEqual(expect.arrayContaining(['file', 'issue']))
+		})
+
+		test('close.deleteBranch property emits the policy enum', () => {
+			const schema = emitJsonSchema() as {
+				properties: { close: { properties: { deleteBranch: { enum: string[] } } } }
+			}
+			expect(schema.properties.close.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
+		})
+
+		test('turn.maxConcurrent accepts number or null', () => {
+			const schema = emitJsonSchema() as {
+				properties: { turn: { properties: { maxConcurrent: { oneOf: Array<{ type: string }> } } } }
+			}
+			const types = schema.properties.turn.properties.maxConcurrent.oneOf.map((b) => b.type)
+			expect(types).toEqual(expect.arrayContaining(['number', 'null']))
+		})
+
+		test('top-level forbids additional properties (catches typos in editors)', () => {
+			const schema = emitJsonSchema() as { additionalProperties: boolean }
+			expect(schema.additionalProperties).toBe(false)
+		})
 	})
 }

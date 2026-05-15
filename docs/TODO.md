@@ -36,6 +36,7 @@ Each pending session expands on one slice of the design; assume everything above
 **Goal.** The orchestration we've grilled — preflight → grill → create PRD → branch → slice → restore — wired up as a real command, with the Claude prompt that drives it.
 
 **Files to write.**
+
 - `src/commands/start.ts` — replaces the stub in `src/commands/stubs.ts:start`.
 - `src/prompts/start.md` — initial-launch prompt.
 - `src/prompts/resume.md` — `--prd <id>` mode prompt.
@@ -100,6 +101,7 @@ handles that.
 ```
 
 **Open questions to grill.**
+
 - **One prompt or per-storage prompts?** Default pick: one prompt with conditional sections keyed by `{{STORAGE}}`; Claude reads its own storage and follows the matching block.
 - **Where does the slug come from in start mode?** Claude proposes; user confirms? Or trowel asks before invoking Claude? Default pick: Claude proposes mid-grill, locks it before writing artifacts.
 - **Cross-grill skill invocation.** Should `start.md` instruct Claude to invoke the `/grill-with-docs` skill? Default pick: yes — its `grill-with-docs` skill is the de-facto grilling discipline.
@@ -113,6 +115,7 @@ handles that.
 **Goal.** Bug-fix flow that bypasses PRD machinery. **Always creates a new GitHub issue, opens a PR, and links the PR to the issue.**
 
 **Files to write.**
+
 - `src/commands/fix.ts` — replaces stub.
 - `src/prompts/fix.md` — Claude prompt for the fix flow.
 
@@ -133,11 +136,13 @@ async function fix(description: string) {
 ```
 
 **Locked (per user instruction).**
+
 - Always creates an issue. No "optional" mode.
 - Always opens a PR (against `config.baseBranch`, not against any integration branch).
 - PR body contains `Closes #<N>` so merging the PR auto-closes the issue.
 
 **Open questions to grill.**
+
 - **Branch prefix for fix branches.** Default `fix/`? Or `config.fixBranchPrefix`? Default pick: hard-coded `fix/` — small enough to not earn a config knob until needed.
 - **Skip grilling entirely, or light grill?** Default pick: skip; just go straight to implementation. The fix flow is supposed to be the lighter cousin of `start`.
 
@@ -150,6 +155,7 @@ async function fix(description: string) {
 **Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel work <prd>`, `trowel fix <desc>`, or `trowel start <feature>`). Does **not** auto-invoke any of them.
 
 **Files to write.**
+
 - `src/commands/diagnose.ts` — replaces stub.
 - `src/prompts/diagnose.md`.
 
@@ -170,6 +176,7 @@ async function diagnose(description: string) {
 ```
 
 **Open questions to grill.**
+
 - **Should diagnose preflight require a clean tree?** Default pick: no — diagnosing a bug while you have dirty changes is a real case.
 - **Should diagnose persist its analysis?** E.g., write to `docs/diagnoses/<date>.md` so re-running the same query can pick up. Default pick: no — too much for v0; user can copy paste.
 
@@ -195,34 +202,8 @@ async function diagnose(description: string) {
 
 ---
 
-## 5. JSON Schema emission (deferred)
-
-**Goal.** Emit a JSON Schema from `partialConfigPipe()` and write to `~/.trowel/schema.json`. `trowel init` writes `"$schema": "<absolute path>"` into new config files.
-
-**Why deferred.** The user dropped `$schema` from v0. Re-enable when editor autocomplete pain becomes real.
-
-**Files.** New `src/commands/emit-schema.ts` (or sub-command of `init`).
-
----
-
-## 6. ADR backlog
-
-Decisions worth turning into ADRs once the implementation stabilises:
-
-- **β precedence (project file wins outright).** Genuine trade-off; future-self will wonder why.
-- **`private` layer keyed by full-path mirror.** Alternatives considered (basename, encoded segment, git remote).
-- **Two storages, one interface.** The strategy pattern + the choice of which operations live on the interface.
-- **pnpm-only.** Cross-cutting; matches the user's standing preference (already in personal memory).
-
-Write each as `docs/adr/YYYY-MM-DD-<slug>.md` when the relevant implementation lands.
-
----
-
 ## Order of work (suggested)
 
 1. `trowel start` flow end-to-end against the `file` storage (the simpler of the two; no GitHub round-trip for the PRD itself).
-2. `fix` + `diagnose` flows.
-3. Cross-PRD collision warning (pre-step inside `start`).
-4. ADR backlog cleanup.
-
-Both storages (`file`, `issue`) are implemented; all four AFK-loop commands (`work`, `implement`, `review`, `address`) are wired end-to-end against the host-mode Turn flow. `init`, `close`, `status`, and blocker-storage migration are done. The remaining unblockers are the workflows above.
+2. Cross-PRD collision warning (pre-step inside `start`).
+3. `fix` + `diagnose` flows.

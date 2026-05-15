@@ -7,7 +7,7 @@ import { v } from 'valleyed'
 
 import { pathForLayer } from '../config.ts'
 import { resolveProjectRoot } from '../project.ts'
-import { defaultConfig, partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
+import { defaultConfig, emitJsonSchema, partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
 import { storageFactories } from '../storages/registry.ts'
 
 type InitPrompts = {
@@ -51,10 +51,23 @@ async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 
 	const existing = await readExisting(filePath)
 
+	// Always (re)emit the JSON Schema next to the config file so editors can
+	// drive autocomplete via the `$schema` key we write below. Idempotent — a
+	// re-run after a trowel upgrade refreshes the schema in place.
+	const schemaPath = path.join(path.dirname(filePath), 'schema.json')
+	await mkdir(path.dirname(schemaPath), { recursive: true })
+	await writeFile(schemaPath, JSON.stringify(emitJsonSchema(), null, 2) + '\n', 'utf8')
+	stdout(`Wrote ${schemaPath}\n`)
+
 	const currentStorage = existing?.storage ?? 'file'
 	const storageAnswer = await opts.prompts.storage(currentStorage)
 
-	const merged: Record<string, unknown> = { ...(existing ?? {}), storage: storageAnswer }
+	// Drop the existing `$schema` so we can re-insert it as the first key
+	// pointing at the freshly-emitted file. JSON property order isn't speced
+	// but Node + every editor preserves insertion order — keeping $schema
+	// first matches how npm/gh/Renovate scaffold their own configs.
+	const { $schema: _existingSchema, ...rest } = existing ?? {}
+	const merged: Record<string, unknown> = { $schema: './schema.json', ...rest, storage: storageAnswer }
 
 	const currentModel = existing?.agent?.model ?? defaultConfig.agent.model
 	const modelAnswer = await opts.prompts.agentModel(currentModel)
@@ -195,10 +208,49 @@ if (import.meta.vitest) {
 			expect(result.path).toBe(path.join(f.project, '.trowel', 'config.json'))
 			const raw = await read(result.path, 'utf8')
 			expect(JSON.parse(raw)).toEqual({
+				$schema: './schema.json',
 				storage: 'file',
 				agent: { model: 'claude-opus-4-6' },
 				work: { usePrs: false },
 			})
+		})
+
+		test('emits schema.json alongside the config file', async () => {
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: fixedPrompts('file', true),
+				stdout: () => {},
+			})
+			const schemaPath = path.join(f.project, '.trowel', 'schema.json')
+			const schema = JSON.parse(await read(schemaPath, 'utf8'))
+			expect(schema.title).toBe('Trowel config')
+			expect(schema.properties).toMatchObject({ storage: expect.any(Object) })
+		})
+
+		test('written config opens with $schema as the first key', async () => {
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: fixedPrompts('file', true),
+				stdout: () => {},
+			})
+			const raw = await read(path.join(f.project, '.trowel', 'config.json'), 'utf8')
+			expect(Object.keys(JSON.parse(raw))[0]).toBe('$schema')
+		})
+
+		test('global layer emits schema alongside the global config (not project)', async () => {
+			await runInit({
+				layer: 'global',
+				cwd: f.project,
+				home: f.home,
+				prompts: fixedPrompts('file', true),
+				stdout: () => {},
+			})
+			const schemaPath = path.join(f.home, '.trowel', 'schema.json')
+			expect(JSON.parse(await read(schemaPath, 'utf8')).title).toBe('Trowel config')
 		})
 	})
 

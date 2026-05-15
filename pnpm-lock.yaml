@@ -15,8 +15,8 @@ importers:
         specifier: ^14.0.3
         version: 14.0.3
       valleyed:
-        specifier: 4.5.19
-        version: 4.5.19
+        specifier: 4.5.20
+        version: 4.5.20
     devDependencies:
       '@k11/configs':
         specifier: ^0.1.2
@@ -1932,8 +1932,8 @@ packages:
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
 
-  valleyed@4.5.19:
-    resolution: {integrity: sha512-lrqZtE+RyY2WRVfuhUa19FQFr8nzj9yd9yEJTEJ/+FU+/BjgIwK32F99N7pjyPcKaaXBrMXQzYYyxEz4rl6mDQ==}
+  valleyed@4.5.20:
+    resolution: {integrity: sha512-YPnzucaJwVrRSFL4O16IaQkaH18V8CyyCZSG+86dwBCk869hCtFuZGVyBf7Fe1PisIYp4DkV1eqMSgf1OWzW1w==}
 
   vite@8.0.12:
     resolution: {integrity: sha512-w2dDofOWv2QB09ZITZBsvKTVAlYvPR4IAmrY/v0ir9KvLs0xybR7i48wxhM1/oyBWO34wPns+bPGw5ZrZqDpZg==}
@@ -4042,7 +4042,7 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  valleyed@4.5.19:
+  valleyed@4.5.20:
     dependencies:
       '@standard-schema/spec': 1.1.0
       url-regex-safe: 4.0.0
