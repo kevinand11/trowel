@@ -136,8 +136,6 @@ export type StorageDeps = {
 	confirm?: (msg: string) => Promise<boolean>
 	git: GitOps
 	log?: (msg: string) => void
-	// Optional override for id generation (file storage). Default: imported generateId.
-	generateId?: () => string
 }
 
 export type StorageFactory = (deps: StorageDeps) => Storage
@@ -155,5 +153,4 @@ export interface Storage {
 	createSlice(prdId: string, spec: SliceSpec): Promise<Slice>
 	findSlices(prdId: string): Promise<Slice[]>
 	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
-
 }

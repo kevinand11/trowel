@@ -7,23 +7,7 @@ export const partialConfigPipe = () =>
 		storage: v.optional(v.in(Object.keys(storageFactories))),
 		docs: v.optional(
 			v.object({
-				dir: v.optional(v.string()),
-				adrDir: v.optional(v.string()),
-				contextMapPath: v.optional(v.string()),
 				prdsDir: v.optional(v.string()),
-			}),
-		),
-		phases: v.optional(
-			v.object({
-				grill: v.optional(v.boolean()),
-				createPrd: v.optional(v.boolean()),
-				slice: v.optional(v.boolean()),
-			}),
-		),
-		collision: v.optional(
-			v.object({
-				enabled: v.optional(v.boolean()),
-				branchPattern: v.optional(v.string()),
 			}),
 		),
 		agent: v.optional(
@@ -66,19 +50,7 @@ export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 export type Config = {
 	storage: string
 	docs: {
-		dir: string
-		adrDir: string
-		contextMapPath: string
 		prdsDir: string
-	}
-	phases: {
-		grill: boolean
-		createPrd: boolean
-		slice: boolean
-	}
-	collision: {
-		enabled: boolean
-		branchPattern: string
 	}
 	agent: {
 		model: string
@@ -116,19 +88,7 @@ export type InitableLayer = Exclude<ConfigLayer, 'default'>
 export const defaultConfig: Config = {
 	storage: 'file',
 	docs: {
-		dir: 'docs',
-		adrDir: 'docs/adr',
-		contextMapPath: 'docs/CONTEXT-MAP.md',
 		prdsDir: 'docs/prds',
-	},
-	phases: {
-		grill: true,
-		createPrd: true,
-		slice: true,
-	},
-	collision: {
-		enabled: true,
-		branchPattern: '',
 	},
 	agent: {
 		model: 'claude-opus-4-6',
@@ -236,7 +196,6 @@ if (import.meta.vitest) {
 		test('overrides a primitive value at the top level', () => {
 			const result = mergePartial(defaultConfig, { storage: 'issue' })
 			expect(result.storage).toBe('issue')
-			expect(result.docs.dir).toBe(defaultConfig.docs.dir)
 		})
 
 		test('deep-merges nested objects per-key', () => {

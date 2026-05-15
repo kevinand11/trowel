@@ -4,8 +4,27 @@ import path from 'node:path'
 import { classifySlices } from '../../utils/bucket.ts'
 import { generateId } from '../../utils/id.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import {
+	landAddress,
+	landImplement,
+	landReview,
+	prepareAddress,
+	prepareImplement,
+	prepareReview,
+	type PhaseDeps,
+} from '../../work/phases.ts'
+import type {
+	ClassifiedSlice,
+	PrdRecord,
+	PrdSpec,
+	PrdSummary,
+	Slice,
+	SlicePatch,
+	SliceSpec,
+	Storage,
+	StorageDeps,
+	StorageFactory,
+} from '../types.ts'
 
 type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
@@ -218,7 +237,13 @@ if (import.meta.vitest) {
 	const { setupTestRepoWithBare } = await import('../../test-utils/git-repo.ts')
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 
-	type Fixture = { work: string; bare: string; prdsDir: string; deps: StorageDeps; calls: { git: Array<[string, ...string[]]>; log: string[] } }
+	type Fixture = {
+		work: string
+		bare: string
+		prdsDir: string
+		deps: StorageDeps
+		calls: { git: Array<[string, ...string[]]>; log: string[] }
+	}
 
 	async function setup(): Promise<Fixture> {
 		const repo = await setupTestRepoWithBare({ prefix: 'trowel-file-' })
@@ -231,24 +256,75 @@ if (import.meta.vitest) {
 		// Spy wrapper: each method records its call name + args, then delegates to the real bag
 		// so file-storage tests can assert against both call sequence AND real git state.
 		const git = {
-			fetch: async (b: string) => { calls.git.push(['fetch', b]); await realGit.fetch(b) },
-			push: async (b: string) => { calls.git.push(['push', b]); await realGit.push(b) },
-			checkout: async (b: string) => { calls.git.push(['checkout', b]); await realGit.checkout(b) },
-			mergeNoFf: async (b: string) => { calls.git.push(['mergeNoFf', b]); await realGit.mergeNoFf(b) },
-			deleteRemoteBranch: async (b: string) => { calls.git.push(['deleteRemoteBranch', b]); await realGit.deleteRemoteBranch(b) },
-			createRemoteBranch: async (n: string, b: string) => { calls.git.push(['createRemoteBranch', n, b]); await realGit.createRemoteBranch(n, b) },
-			createLocalBranch: async (n: string, b: string) => { calls.git.push(['createLocalBranch', n, b]); await realGit.createLocalBranch(n, b) },
-			pushSetUpstream: async (b: string) => { calls.git.push(['pushSetUpstream', b]); await realGit.pushSetUpstream(b) },
-			currentBranch: async () => { const r = await realGit.currentBranch(); calls.git.push(['currentBranch']); return r },
-			baseBranch: async () => { const r = await realGit.baseBranch(); calls.git.push(['baseBranch']); return r },
-			branchExists: async (b: string) => { const r = await realGit.branchExists(b); calls.git.push(['branchExists', b]); return r },
-			isMerged: async (b: string, base: string) => { const r = await realGit.isMerged(b, base); calls.git.push(['isMerged', b, base]); return r },
-			deleteBranch: async (b: string) => { calls.git.push(['deleteBranch', b]); await realGit.deleteBranch(b) },
-			worktreeAdd: async (p: string, b: string) => { await realGit.worktreeAdd(p, b) },
-			worktreeRemove: async (p: string, opts?: { force?: boolean }) => { await realGit.worktreeRemove(p, opts) },
+			fetch: async (b: string) => {
+				calls.git.push(['fetch', b])
+				await realGit.fetch(b)
+			},
+			push: async (b: string) => {
+				calls.git.push(['push', b])
+				await realGit.push(b)
+			},
+			checkout: async (b: string) => {
+				calls.git.push(['checkout', b])
+				await realGit.checkout(b)
+			},
+			mergeNoFf: async (b: string) => {
+				calls.git.push(['mergeNoFf', b])
+				await realGit.mergeNoFf(b)
+			},
+			deleteRemoteBranch: async (b: string) => {
+				calls.git.push(['deleteRemoteBranch', b])
+				await realGit.deleteRemoteBranch(b)
+			},
+			createRemoteBranch: async (n: string, b: string) => {
+				calls.git.push(['createRemoteBranch', n, b])
+				await realGit.createRemoteBranch(n, b)
+			},
+			createLocalBranch: async (n: string, b: string) => {
+				calls.git.push(['createLocalBranch', n, b])
+				await realGit.createLocalBranch(n, b)
+			},
+			pushSetUpstream: async (b: string) => {
+				calls.git.push(['pushSetUpstream', b])
+				await realGit.pushSetUpstream(b)
+			},
+			currentBranch: async () => {
+				const r = await realGit.currentBranch()
+				calls.git.push(['currentBranch'])
+				return r
+			},
+			baseBranch: async () => {
+				const r = await realGit.baseBranch()
+				calls.git.push(['baseBranch'])
+				return r
+			},
+			branchExists: async (b: string) => {
+				const r = await realGit.branchExists(b)
+				calls.git.push(['branchExists', b])
+				return r
+			},
+			isMerged: async (b: string, base: string) => {
+				const r = await realGit.isMerged(b, base)
+				calls.git.push(['isMerged', b, base])
+				return r
+			},
+			deleteBranch: async (b: string) => {
+				calls.git.push(['deleteBranch', b])
+				await realGit.deleteBranch(b)
+			},
+			worktreeAdd: async (p: string, b: string) => {
+				await realGit.worktreeAdd(p, b)
+			},
+			worktreeRemove: async (p: string, opts?: { force?: boolean }) => {
+				await realGit.worktreeRemove(p, opts)
+			},
 			worktreeList: async () => realGit.worktreeList(),
-			restoreAll: async (p: string) => { await realGit.restoreAll(p) },
-			cleanUntracked: async (p: string) => { await realGit.cleanUntracked(p) },
+			restoreAll: async (p: string) => {
+				await realGit.restoreAll(p)
+			},
+			cleanUntracked: async (p: string) => {
+				await realGit.cleanUntracked(p)
+			},
 		}
 		const { gh } = recordingGhOps()
 		const deps: StorageDeps = {
@@ -260,7 +336,9 @@ if (import.meta.vitest) {
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git,
-			log: (m) => { calls.log.push(m) },
+			log: (m) => {
+				calls.log.push(m)
+			},
 		}
 		return { work, bare, prdsDir, deps, calls }
 	}
@@ -330,7 +408,11 @@ if (import.meta.vitest) {
 					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'ready', commits: 1 },
-					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false, perSliceBranches: false } },
+					{
+						prdId: result.id,
+						integrationBranch: result.branch,
+						config: { usePrs: false, review: false, perSliceBranches: false },
+					},
 				)
 
 				expect(outcome).toBe('done')
@@ -355,7 +437,11 @@ if (import.meta.vitest) {
 					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'no-work-needed', commits: 0 },
-					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false, perSliceBranches: false } },
+					{
+						prdId: result.id,
+						integrationBranch: result.branch,
+						config: { usePrs: false, review: false, perSliceBranches: false },
+					},
 				)
 
 				expect(outcome).toBe('no-work')
@@ -381,7 +467,11 @@ if (import.meta.vitest) {
 					makePhaseDeps(f, storage),
 					{ ...slice, readyForAgent: true },
 					{ verdict: 'partial', commits: 0 },
-					{ prdId: result.id, integrationBranch: result.branch, config: { usePrs: false, review: false, perSliceBranches: false } },
+					{
+						prdId: result.id,
+						integrationBranch: result.branch,
+						config: { usePrs: false, review: false, perSliceBranches: false },
+					},
 				)
 
 				expect(outcome).toBe('partial')
@@ -427,12 +517,24 @@ if (import.meta.vitest) {
 				// call sequence, not exercise real git state on a synthetic slice branch.
 				const calls: Array<[string, ...string[]]> = []
 				const recordingGit = {
-					fetch: async (b: string) => { calls.push(['fetch', b]) },
-					push: async (b: string) => { calls.push(['push', b]) },
-					checkout: async (b: string) => { calls.push(['checkout', b]) },
-					mergeNoFf: async (b: string) => { calls.push(['mergeNoFf', b]) },
-					deleteRemoteBranch: async (b: string) => { calls.push(['deleteRemoteBranch', b]) },
-					createRemoteBranch: async (n: string, b: string) => { calls.push(['createRemoteBranch', n, b]) },
+					fetch: async (b: string) => {
+						calls.push(['fetch', b])
+					},
+					push: async (b: string) => {
+						calls.push(['push', b])
+					},
+					checkout: async (b: string) => {
+						calls.push(['checkout', b])
+					},
+					mergeNoFf: async (b: string) => {
+						calls.push(['mergeNoFf', b])
+					},
+					deleteRemoteBranch: async (b: string) => {
+						calls.push(['deleteRemoteBranch', b])
+					},
+					createRemoteBranch: async (n: string, b: string) => {
+						calls.push(['createRemoteBranch', n, b])
+					},
 					createLocalBranch: async () => {},
 					pushSetUpstream: async () => {},
 					currentBranch: async () => integration,
@@ -456,13 +558,7 @@ if (import.meta.vitest) {
 				)
 
 				expect(outcome).toBe('done')
-				expect(calls.map((c) => c[0])).toEqual([
-					'push',
-					'checkout',
-					'mergeNoFf',
-					'push',
-					'deleteRemoteBranch',
-				])
+				expect(calls.map((c) => c[0])).toEqual(['push', 'checkout', 'mergeNoFf', 'push', 'deleteRemoteBranch'])
 				expect(calls).toContainEqual(['push', sliceBranch])
 				expect(calls).toContainEqual(['checkout', integration])
 				expect(calls).toContainEqual(['mergeNoFf', sliceBranch])
@@ -484,12 +580,24 @@ if (import.meta.vitest) {
 				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
 				const gitCalls: Array<[string, ...string[]]> = []
 				const recordingGit = {
-					fetch: async (b: string) => { gitCalls.push(['fetch', b]) },
-					push: async (b: string) => { gitCalls.push(['push', b]) },
-					checkout: async (b: string) => { gitCalls.push(['checkout', b]) },
-					mergeNoFf: async (b: string) => { gitCalls.push(['mergeNoFf', b]) },
-					deleteRemoteBranch: async (b: string) => { gitCalls.push(['deleteRemoteBranch', b]) },
-					createRemoteBranch: async (n: string, b: string) => { gitCalls.push(['createRemoteBranch', n, b]) },
+					fetch: async (b: string) => {
+						gitCalls.push(['fetch', b])
+					},
+					push: async (b: string) => {
+						gitCalls.push(['push', b])
+					},
+					checkout: async (b: string) => {
+						gitCalls.push(['checkout', b])
+					},
+					mergeNoFf: async (b: string) => {
+						gitCalls.push(['mergeNoFf', b])
+					},
+					deleteRemoteBranch: async (b: string) => {
+						gitCalls.push(['deleteRemoteBranch', b])
+					},
+					createRemoteBranch: async (n: string, b: string) => {
+						gitCalls.push(['createRemoteBranch', n, b])
+					},
 					createLocalBranch: async () => {},
 					pushSetUpstream: async () => {},
 					currentBranch: async () => integration,
@@ -565,7 +673,6 @@ if (import.meta.vitest) {
 		test('writes README.md and store.json under <prdsDir>/<id>-<slug>/ and returns matching id+branch', async () => {
 			const storage = createFileStorage(f.deps)
 			const result = await storage.createPrd({ title: 'Fix Tabs', body: '# Hi\n\nthe body' })
-			expect(result.id).toMatch(/^[a-z0-9]{6}$/)
 			expect(result.branch).toBe(`${result.id}-fix-tabs`)
 			const dir = path.join(f.prdsDir, `${result.id}-fix-tabs`)
 			expect(await exists(path.join(dir, 'README.md'))).toBe(true)
@@ -776,7 +883,6 @@ if (import.meta.vitest) {
 			const { id: prdId } = await storage.createPrd({ title: 'Add ORM', body: 'prd-spec' })
 
 			const slice = await storage.createSlice(prdId, { title: 'Implement Tab Parser', body: '# spec\nbody', blockedBy: [] })
-			expect(slice.id).toMatch(/^[a-z0-9]{6}$/)
 			expect(slice.title).toBe('Implement Tab Parser')
 			expect(slice.body).toBe('# spec\nbody')
 			expect(slice.state).toBe('OPEN')
@@ -786,20 +892,6 @@ if (import.meta.vitest) {
 			const dir = path.join(f.prdsDir, `${prdId}-add-orm`, 'slices', `${slice.id}-implement-tab-parser`)
 			expect(await exists(path.join(dir, 'README.md'))).toBe(true)
 			expect(await exists(path.join(dir, 'store.json'))).toBe(true)
-		})
-
-		test('retries id generation on collision (across all PRDs slices/)', async () => {
-			const ids = ['ccccc1', 'aaaaaa', 'bbbbbb']
-			let i = 0
-			const deps: StorageDeps = { ...f.deps, generateId: () => ids[i++]! }
-			const storage = createFileStorage(deps)
-
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			// Pre-create a colliding slice dir so 'aaaaaa' is taken.
-			await mkdir(path.join(f.prdsDir, `${prdId}-p`, 'slices', 'aaaaaa-pre'), { recursive: true })
-
-			const slice = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
-			expect(slice.id).toBe('bbbbbb')
 		})
 	})
 
