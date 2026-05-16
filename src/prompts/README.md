@@ -1,6 +1,6 @@
 # Prompts
 
-Markdown templates fed to Claude when trowel launches an agent session. Each prompt uses `{{PLACEHOLDER}}` tokens that `loadPrompt(name, args)` substitutes at runtime.
+Markdown templates fed to the configured agent harness when trowel launches an agent session. Each prompt uses `{{PLACEHOLDER}}` tokens that `loadPrompt(name, args)` substitutes at runtime.
 
 This directory is empty in v0 — the actual prompts (`start.md`, `resume.md`, `implement.md`, `review.md`, `respond-to-feedback.md`) arrive together with the backend implementations and the sandcastle port. See `docs/CONTEXT.md` for the deferred-work list.
 

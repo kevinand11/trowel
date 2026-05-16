@@ -6,6 +6,7 @@ import { confirm, input, select } from '@inquirer/prompts'
 import { v } from 'valleyed'
 
 import { pathForLayer } from '../config.ts'
+import { harnessFactories } from '../harnesses/registry.ts'
 import { resolveProjectRoot } from '../project.ts'
 import { defaultConfig, emitJsonSchema, partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
 import { storageFactories } from '../storages/registry.ts'
@@ -13,6 +14,7 @@ import { storageFactories } from '../storages/registry.ts'
 type InitPrompts = {
 	storage: (current: string) => Promise<string>
 	prdsDir: (current: string) => Promise<string>
+	agentHarness: (current: string) => Promise<string>
 	agentModel: (current: string) => Promise<string>
 	usePrs: (current: boolean) => Promise<boolean>
 	review: (current: boolean) => Promise<boolean>
@@ -76,9 +78,20 @@ async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 		merged.docs = { ...(existing?.docs ?? {}), prdsDir: prdsDirAnswer }
 	}
 
-	const currentModel = existing?.agent?.model ?? defaultConfig.agent.model
-	const modelAnswer = await opts.prompts.agentModel(currentModel)
-	merged.agent = { ...(existing?.agent ?? {}), model: modelAnswer }
+	const currentHarness = existing?.agent?.harness ?? defaultConfig.agent.harness
+	const harnessAnswer = await opts.prompts.agentHarness(currentHarness)
+	const harness = harnessFactories[harnessAnswer as keyof typeof harnessFactories]
+	if (!harness) throw new Error(`unknown harness '${harnessAnswer}'`)
+
+	// Preserve the existing model only when the harness is unchanged; otherwise reset to the
+	// new harness's defaultModel (the old model string is almost certainly wrong cross-harness).
+	const existingHarness = existing?.agent?.harness ?? defaultConfig.agent.harness
+	const modelDefault =
+		existingHarness === harnessAnswer
+			? (existing?.agent?.model ?? harness.defaultModel)
+			: harness.defaultModel
+	const modelAnswer = await opts.prompts.agentModel(modelDefault)
+	merged.agent = { ...(existing?.agent ?? {}), harness: harnessAnswer, model: modelAnswer }
 
 	const currentUsePrs = existing?.work?.usePrs ?? defaultConfig.work.usePrs
 	const usePrsAnswer = await opts.prompts.usePrs(currentUsePrs)
@@ -112,6 +125,7 @@ export async function init(layerArg: string): Promise<void> {
 	}
 
 	const storageChoices = Object.keys(storageFactories).map((name) => ({ name, value: name }))
+	const harnessChoices = Object.keys(harnessFactories).map((name) => ({ name, value: name }))
 	const prompts: InitPrompts = {
 		storage: (current) =>
 			select({
@@ -124,6 +138,12 @@ export async function init(layerArg: string): Promise<void> {
 				message: 'PRD docs directory (project-relative)',
 				default: current,
 				validate: validatePrdsDir,
+			}),
+		agentHarness: (current) =>
+			select({
+				message: 'Agent harness',
+				choices: harnessChoices,
+				default: current,
 			}),
 		agentModel: (current) =>
 			input({
@@ -200,6 +220,7 @@ if (import.meta.vitest) {
 		return {
 			storage: async () => storage,
 			prdsDir: async (current) => current,
+			agentHarness: async (current) => current,
 			agentModel: async (current) => current,
 			usePrs: async (current) => current,
 			review: async (current) => current,
@@ -250,7 +271,7 @@ if (import.meta.vitest) {
 				$schema: './schema.json',
 				storage: 'file',
 				docs: { prdsDir: 'docs/prds' },
-				agent: { model: 'claude-opus-4-6' },
+				agent: { harness: 'claude', model: 'claude-opus-4-6' },
 				work: { usePrs: false },
 			})
 		})
@@ -311,6 +332,7 @@ if (import.meta.vitest) {
 				prompts: {
 					storage: async () => 'file',
 					prdsDir: async () => 'custom/prds-here',
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => false,
 					review: async () => false,
@@ -344,6 +366,7 @@ if (import.meta.vitest) {
 						prdsDirCalls++
 						return current
 					},
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => false,
 					review: async () => false,
@@ -393,6 +416,7 @@ if (import.meta.vitest) {
 						seenDefault = current
 						return current
 					},
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => false,
 					review: async () => false,
@@ -419,6 +443,7 @@ if (import.meta.vitest) {
 						seenDefault = current
 						return current
 					},
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => false,
 					review: async () => false,
@@ -448,6 +473,7 @@ if (import.meta.vitest) {
 				prompts: {
 					storage: async () => 'file',
 					prdsDir: async (current) => current,
+					agentHarness: async (current) => current,
 					agentModel: async (current) => {
 						modelDefault = current
 						return 'claude-sonnet-4-6'
@@ -461,6 +487,124 @@ if (import.meta.vitest) {
 			expect(modelDefault).toBe('claude-opus-4-6')
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written).toMatchObject({ agent: { model: 'claude-sonnet-4-6' } })
+		})
+	})
+
+	describe('init: agent.harness prompt', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('fresh project → harness default is "claude" and gets written', async () => {
+			let seenHarnessDefault: string | undefined
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async (current) => current,
+					agentHarness: async (current) => {
+						seenHarnessDefault = current
+						return current
+					},
+					agentModel: async (current) => current,
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(seenHarnessDefault).toBe('claude')
+			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
+			expect(written.agent.harness).toBe('claude')
+		})
+
+		test('switching harness resets the model default to the new harness\'s defaultModel', async () => {
+			const configPath = path.join(f.project, '.trowel', 'config.json')
+			await mk(path.dirname(configPath), { recursive: true })
+			await write(configPath, JSON.stringify({ agent: { harness: 'claude', model: 'claude-opus-4-6' } }), 'utf8')
+
+			let seenModelDefault: string | undefined
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async (current) => current,
+					agentHarness: async () => 'pi',
+					agentModel: async (current) => {
+						seenModelDefault = current
+						return current
+					},
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			// pi's defaultModel is 'anthropic/claude-sonnet-4-5'; the old 'claude-opus-4-6' must not be reused.
+			expect(seenModelDefault).not.toBe('claude-opus-4-6')
+			expect(seenModelDefault?.startsWith('anthropic/')).toBe(true)
+		})
+
+		test('keeping the same harness preserves the existing model as the prompt default', async () => {
+			const configPath = path.join(f.project, '.trowel', 'config.json')
+			await mk(path.dirname(configPath), { recursive: true })
+			await write(configPath, JSON.stringify({ agent: { harness: 'claude', model: 'claude-sonnet-4-6' } }), 'utf8')
+
+			let seenModelDefault: string | undefined
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async (current) => current,
+					agentHarness: async () => 'claude',
+					agentModel: async (current) => {
+						seenModelDefault = current
+						return current
+					},
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(seenModelDefault).toBe('claude-sonnet-4-6')
+		})
+
+		test('legacy config with bare agent.model and no agent.harness → treated as claude (model preserved)', async () => {
+			const configPath = path.join(f.project, '.trowel', 'config.json')
+			await mk(path.dirname(configPath), { recursive: true })
+			await write(configPath, JSON.stringify({ agent: { model: 'claude-sonnet-4-6' } }), 'utf8')
+
+			let seenModelDefault: string | undefined
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async (current) => current,
+					agentHarness: async () => 'claude',
+					agentModel: async (current) => {
+						seenModelDefault = current
+						return current
+					},
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(seenModelDefault).toBe('claude-sonnet-4-6')
 		})
 	})
 
@@ -481,6 +625,7 @@ if (import.meta.vitest) {
 				prompts: {
 					storage: async () => 'file',
 					prdsDir: async (current) => current,
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => true,
 					review: async () => false,
@@ -501,6 +646,7 @@ if (import.meta.vitest) {
 				prompts: {
 					storage: async () => 'file',
 					prdsDir: async (current) => current,
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => false,
 					review: async () => {
@@ -525,6 +671,7 @@ if (import.meta.vitest) {
 				prompts: {
 					storage: async () => 'file',
 					prdsDir: async (current) => current,
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => true,
 					review: async () => {
@@ -610,6 +757,7 @@ if (import.meta.vitest) {
 						return 'issue'
 					},
 					prdsDir: async (current) => current,
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async (current) => current,
 					review: async (current) => current,
@@ -683,6 +831,7 @@ if (import.meta.vitest) {
 				prompts: {
 					storage: async () => 'issue',
 					prdsDir: async (current) => current,
+					agentHarness: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async (current) => current,
 					review: async (current) => current,

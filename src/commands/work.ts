@@ -1,4 +1,5 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
+import type { HarnessKind } from '../harnesses/registry.ts'
 import type { StorageKind } from '../storages/registry.ts'
 import type { Storage } from '../storages/types.ts'
 
@@ -17,7 +18,7 @@ async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
 /**
  * Production entry. Wires real gh/git/turn callbacks (via _loop-wiring) and calls runWork.
  */
-export async function work(prdId: string, opts: { storage?: StorageKind }): Promise<void> {
+export async function work(prdId: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
 		await runWork(prdId, {

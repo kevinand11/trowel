@@ -253,4 +253,4 @@ Write the JSON to `.trowel/start-out.json` in the current working directory. The
 
 > ready — exit when you're done
 
-Do not exit the session yourself. The user closes the Claude session; the host then reads the JSON and materialises the PRD.
+Do not exit the session yourself. The user closes the agent session; the host then reads the JSON and materialises the PRD.

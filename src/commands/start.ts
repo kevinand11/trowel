@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process'
 import { readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
 import { loadConfig } from '../config.ts'
+import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt } from '../prompts/load.ts'
 import { getStorage, type StorageKind } from '../storages/registry.ts'
 import type { Storage, StorageDeps } from '../storages/types.ts'
@@ -147,7 +147,7 @@ async function unlinkSwallowEnoent(p: string): Promise<void> {
 	}
 }
 
-export async function start(opts: { storage?: string }): Promise<void> {
+export async function start(opts: { storage?: string; harness?: string }): Promise<void> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel start: no project root found\n')
@@ -155,6 +155,8 @@ export async function start(opts: { storage?: string }): Promise<void> {
 	}
 
 	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage
+	const harnessKind = (opts.harness as HarnessKind | undefined) ?? config.agent.harness
+	const harness = getHarness(harnessKind)
 	const git = createRepoGit(projectRoot)
 	const gh = createGh()
 	const storageDeps: StorageDeps = {
@@ -175,16 +177,13 @@ export async function start(opts: { storage?: string }): Promise<void> {
 		git,
 		startPromptText: await loadPrompt('start', {}),
 		runInteractive: async ({ promptText, cwd }) => {
-			const child = spawn('claude', ['--append-system-prompt', promptText], {
+			const { waitForExit } = await harness.spawnInteractive({
+				model: config.agent.model,
+				systemPrompt: promptText,
 				cwd,
-				env: process.env,
-				stdio: 'inherit',
 			})
-			const code: number = await new Promise((resolve, reject) => {
-				child.on('error', reject)
-				child.on('exit', (c) => resolve(c ?? -1))
-			})
-			if (code !== 0) throw new Error(`claude exited with code ${code}`)
+			const code = await waitForExit
+			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
 		},
 		readStartOut: async () => {
 			try {
@@ -197,8 +196,8 @@ export async function start(opts: { storage?: string }): Promise<void> {
 		preflight: async () => {
 			const failures: string[] = []
 			if (!(await git.isWorkingTreeClean())) failures.push('working tree is not clean — commit or stash before running trowel start')
-			const claudeR = await tryExec('claude', ['--version'])
-			if (!claudeR.ok) failures.push('claude CLI not found on PATH (required for trowel start)')
+			const harnessV = await harness.detectVersion()
+			if (!harnessV.installed) failures.push(`${harness.kind} CLI not found on PATH (required for trowel start with agent.harness=${harness.kind})`)
 			const ghR = await tryExec('gh', ['auth', 'status'])
 			if (!ghR.ok) failures.push('gh not authenticated or not on PATH (run `gh auth login`)')
 			return failures

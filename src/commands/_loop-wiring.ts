@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
+import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import type { Config } from '../schema.ts'
 import { getStorage, type StorageKind } from '../storages/registry.ts'
 import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
@@ -27,11 +27,13 @@ type LoopWiring = {
 	runLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
 }
 
-export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<LoopWiring> {
+export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<LoopWiring> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) throw new Error('no project root found')
 
 	const storageKind = opts.storage ?? config.storage
+	const harnessKind = opts.harness ?? config.agent.harness
+	const harness = getHarness(harnessKind)
 
 	const log = (m: string) => process.stdout.write(`${m}\n`)
 	const git = createRepoGit(projectRoot)
@@ -62,30 +64,17 @@ export async function buildLoopWiring(opts: { storage?: StorageKind }): Promise<
 			const baseHeadR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])
 			const baseHead = baseHeadR.ok ? baseHeadR.stdout.trim() : ''
 
-			const child = spawn('claude', [
-				'--print',
-				'--model', config.agent.model,
-				'--dangerously-skip-permissions',
-				'--output-format', 'text',
-			], {
+			const { waitForExit } = await harness.spawnPrint({
+				model: config.agent.model,
+				prompt: rendered,
 				cwd: worktree.worktreePath,
-				env: process.env,
-				stdio: ['pipe', 'pipe', 'pipe'],
+				logStream,
 			})
-
-			child.stdout.pipe(logStream, { end: false })
-			child.stderr.pipe(logStream, { end: false })
-			child.stdin.write(rendered)
-			child.stdin.end()
-
-			const exitCode: number = await new Promise((resolve, reject) => {
-				child.on('error', reject)
-				child.on('exit', (code) => resolve(code ?? -1))
-			})
+			const exitCode = await waitForExit
 			logStream.end()
 
 			if (exitCode !== 0) {
-				log(`[work prd-${worktree.prdId} slice-${worktree.branch}] claude exited ${exitCode}; see ${logPath}`)
+				log(`[work prd-${worktree.prdId} slice-${worktree.branch}] ${harness.kind} exited ${exitCode}; see ${logPath}`)
 			}
 
 			const headAfterR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])

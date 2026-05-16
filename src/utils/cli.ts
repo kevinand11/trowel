@@ -1,18 +1,35 @@
 import { realShellRunner, type ShellRunner } from './shell.ts'
 
+export type VersionProbe = { installed: boolean; version?: string }
+
+function parseSemver(s: string): string | undefined {
+	const m = s.trim().match(/(\d+\.\d+\.\d+)/)
+	return m?.[1]
+}
+
 export async function ghIsAuthenticated(runner: ShellRunner = realShellRunner): Promise<boolean> {
 	const result = await runner('gh', ['auth', 'status'])
 	return result.ok
 }
 
-export async function ghInstalled(runner: ShellRunner = realShellRunner): Promise<boolean> {
+export async function ghVersion(runner: ShellRunner = realShellRunner): Promise<VersionProbe> {
 	const result = await runner('gh', ['--version'])
-	return result.ok
+	if (!result.ok) return { installed: false }
+	return { installed: true, version: parseSemver(`${result.stdout}\n${result.stderr}`) }
+}
+
+export async function gitVersion(runner: ShellRunner = realShellRunner): Promise<VersionProbe> {
+	const result = await runner('git', ['--version'])
+	if (!result.ok) return { installed: false }
+	return { installed: true, version: parseSemver(`${result.stdout}\n${result.stderr}`) }
+}
+
+export async function ghInstalled(runner: ShellRunner = realShellRunner): Promise<boolean> {
+	return (await ghVersion(runner)).installed
 }
 
 export async function gitInstalled(runner: ShellRunner = realShellRunner): Promise<boolean> {
-	const result = await runner('git', ['--version'])
-	return result.ok
+	return (await gitVersion(runner)).installed
 }
 
 export async function claudeInstalled(runner: ShellRunner = realShellRunner): Promise<boolean> {

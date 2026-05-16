@@ -1,5 +1,6 @@
 import { v, type DeepPartial, type PipeOutput } from 'valleyed'
 
+import { harnessFactories, type HarnessKind } from './harnesses/registry.ts'
 import { storageFactories, type StorageKind } from './storages/registry.ts'
 
 export const partialConfigPipe = () =>
@@ -16,6 +17,7 @@ export const partialConfigPipe = () =>
 		),
 		agent: v.optional(
 			v.object({
+				harness: v.optional(v.in(Object.keys(harnessFactories) as HarnessKind[])),
 				model: v.optional(v.string()),
 			}),
 		),
@@ -59,6 +61,7 @@ export type Config = {
 		prdsDir: string
 	}
 	agent: {
+		harness: HarnessKind
 		model: string
 	}
 	labels: {
@@ -98,7 +101,8 @@ export const defaultConfig: Config = {
 		prdsDir: 'docs/prds',
 	},
 	agent: {
-		model: 'claude-opus-4-6',
+		harness: 'claude',
+		model: harnessFactories.claude.defaultModel,
 	},
 	labels: {
 		readyForAgent: 'ready-for-agent',

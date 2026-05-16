@@ -22,7 +22,8 @@ export function run(): void {
 		.command('start')
 		.description('Start a new PRD: grill, create artifacts, branch, slice')
 		.option('--storage <kind>', 'Override project storage')
-		.action(async (opts: { storage?: string }) => {
+		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
+		.action(async (opts: { storage?: string; harness?: string }) => {
 			await start(opts)
 		})
 
@@ -31,6 +32,7 @@ export function run(): void {
 		.description('Run the AFK loop on a PRD\'s open slices')
 		.argument('<prd-id>')
 		.option('--storage <kind>', 'Override project storage')
+		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.action(async (prdId: string, opts) => {
 			await work(prdId, opts)
 		})
