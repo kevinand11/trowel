@@ -199,7 +199,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			needsRevision: store.needsRevision,
 			blockedBy: store.blockedBy ?? [],
 			prState: null,
-			branchAhead: false,
 		}
 	}
 
@@ -328,6 +327,7 @@ if (import.meta.vitest) {
 			stashPush: async (opts) => realGit.stashPush(opts),
 			stashPop: async () => realGit.stashPop(),
 			mergeAbort: async () => realGit.mergeAbort(),
+			commitsAhead: async (b, base) => realGit.commitsAhead(b, base),
 		}
 		const { gh } = recordingGhOps()
 		const deps: StorageDeps = {
@@ -373,7 +373,6 @@ if (import.meta.vitest) {
 				bucket: 'ready',
 				blockedBy: [],
 				prState: null,
-				branchAhead: false,
 				...overrides,
 			}
 		}
@@ -554,6 +553,7 @@ if (import.meta.vitest) {
 					stashPush: async () => {},
 					stashPop: async () => {},
 					mergeAbort: async () => {},
+					commitsAhead: async () => 0,
 				}
 				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 
@@ -621,6 +621,7 @@ if (import.meta.vitest) {
 					stashPush: async () => {},
 					stashPop: async () => {},
 					mergeAbort: async () => {},
+					commitsAhead: async () => 0,
 				}
 				const { gh, calls: ghCalls } = recordingGhOps()
 				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log!, mergeNoVerify: false }
@@ -921,13 +922,12 @@ if (import.meta.vitest) {
 			expect(await storage.findSlices(prdId)).toEqual([])
 		})
 
-		test('returned slices have prState=null and branchAhead=false (file storage has no PR concept)', async () => {
+		test('returned slices have prState=null (file storage has no PR concept)', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
 			await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
 			const [s] = classifySlices(await storage.findSlices(prdId))
 			expect(s!.prState).toBeNull()
-			expect(s!.branchAhead).toBe(false)
 		})
 
 		test('returns one Slice per slice directory with body from README.md and state from closedAt', async () => {

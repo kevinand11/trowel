@@ -52,7 +52,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 			const slice: Slice = {
 				id, title: spec.title, body: spec.body, state: 'OPEN',
 				readyForAgent: false, needsRevision: false,
-				blockedBy: [], prState: null, branchAhead: false,
+				blockedBy: [], prState: null,
 			}
 			return slice
 		},
@@ -84,7 +84,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		fetch: async () => {}, push: async () => {}, mergeNoFf: async () => {}, mergeAbort: async () => {},
 		deleteRemoteBranch: async () => {}, createRemoteBranch: async () => {},
 		createLocalBranch: async () => {}, pushSetUpstream: async () => {},
-		isMerged: async () => false, deleteBranch: async () => {},
+		isMerged: async () => false, deleteBranch: async () => {}, commitsAhead: async () => 0,
 		worktreeAdd: async () => {}, worktreeRemove: async () => {},
 		worktreeList: async () => [], restoreAll: async () => {}, cleanUntracked: async () => {},
 	}

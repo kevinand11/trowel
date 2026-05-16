@@ -60,8 +60,6 @@ export type Slice = {
 	blockedBy: string[]
 	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. Always null on the file storage. */
 	prState: SlicePrState
-	/** True when the slice's local branch is ahead of the integration branch with no PR open (a self-heal case). Always false on the file storage. */
-	branchAhead: boolean
 }
 
 /**
@@ -102,10 +100,6 @@ export type PreparedPhase = {
  * - `'implement'` — run the implementer sandbox next.
  * - `'review'` — run the reviewer sandbox next (issue storage only; only reachable with `usePrs && review`).
  * - `'address'` — run the addresser sandbox next (issue storage only; only reachable with `usePrs && review`).
- *
- * The `'create-pr-then-review'` recovery state from the prior loop design is gone — that path now lives
- * inside `reconcileSlices` (`src/work/reconcile.ts`), which heals branch-ahead-no-PR drift before each
- * iteration's `findSlices`.
  */
 export type ResumeState = 'done' | 'blocked' | 'implement' | 'review' | 'address'
 

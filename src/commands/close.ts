@@ -170,7 +170,6 @@ if (import.meta.vitest) {
 					...s,
 					blockedBy: [],
 					prState: null,
-					branchAhead: false,
 				}))
 			},
 			updateSlice: async (_pid, sliceId, patch) => {
@@ -222,6 +221,7 @@ if (import.meta.vitest) {
 			stashPush: async () => {},
 			stashPop: async () => {},
 			mergeAbort: async () => {},
+			commitsAhead: async () => 0,
 		}
 		return { git, calls }
 	}

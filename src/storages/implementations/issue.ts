@@ -21,7 +21,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	async function findSlices(prdId: string): Promise<Slice[]> {
 		const rawIssues = await deps.gh.listSubIssues(prdId)
-		// Storage emits raw slices: `prState: null` and `branchAhead: false` for everyone. The loop
+		// Storage emits raw slices with `prState: null` for everyone. The loop
 		// calls `enrichSlicePrStates` (and, eventually, branch-ahead detection) before classification.
 		// See ADR `storage-behavior-separation` step 4.
 		return Promise.all(
@@ -37,7 +37,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 					needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
 					blockedBy,
 					prState: null,
-					branchAhead: false,
 				}
 			}),
 		)
@@ -65,7 +64,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			needsRevision: false,
 			blockedBy: [...spec.blockedBy],
 			prState: null,
-			branchAhead: false,
 		}
 	}
 
@@ -189,6 +187,7 @@ if (import.meta.vitest) {
 				stashPush: async () => {},
 				stashPop: async () => {},
 				mergeAbort: async () => {},
+				commitsAhead: async () => 0,
 			},
 			log: (m) => { logCalls.push(m) },
 		}
@@ -207,7 +206,6 @@ if (import.meta.vitest) {
 				bucket: 'ready',
 				blockedBy: [],
 				prState: null,
-				branchAhead: false,
 				...overrides,
 			}
 		}
@@ -555,7 +553,6 @@ if (import.meta.vitest) {
 				needsRevision: false,
 				blockedBy: [],
 				prState: null,
-				branchAhead: false,
 			})
 			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: 'the slice spec' }])
 			expect(calls[1]).toEqual(['getIssueInternalId', '57'])
@@ -599,8 +596,8 @@ if (import.meta.vitest) {
 			const slices = classifySlices(await storage.findSlices('42'))
 			expect(calls[0]).toEqual(['listSubIssues', '42'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready', blockedBy: [], prState: null, branchAhead: false },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done', blockedBy: [], prState: null, branchAhead: false },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready', blockedBy: [], prState: null },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done', blockedBy: [], prState: null },
 			])
 		})
 

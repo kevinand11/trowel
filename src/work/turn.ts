@@ -77,7 +77,6 @@ if (import.meta.vitest) {
 			needsRevision: false,
 			blockedBy: [],
 			prState: null,
-			branchAhead: false,
 		}
 		return {
 			role: 'implement',

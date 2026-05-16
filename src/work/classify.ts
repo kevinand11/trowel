@@ -18,7 +18,7 @@ import type { ClassifiedSlice, ClassifySliceConfig, ResumeState } from '../stora
  *   blocked    bucket === 'blocked'
  *   address    needsRevision
  *   review     prState === 'draft'
- *   implement  (catch-all; `branchAhead && !prState` is healed before classification)
+ *   implement  (catch-all)
  */
 export function classify(slice: ClassifiedSlice, config: ClassifySliceConfig): ResumeState {
 	if (slice.state === 'CLOSED') return 'done'
@@ -45,7 +45,6 @@ if (import.meta.vitest) {
 			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
-			branchAhead: false,
 			...overrides,
 		}
 	}

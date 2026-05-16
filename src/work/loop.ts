@@ -2,7 +2,6 @@ import { classify } from './classify.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
 import { enrichSlicePrStates } from './pr-flow.ts'
 import type { Role } from './prompts.ts'
-import { reconcileSlices } from './reconcile.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
@@ -64,8 +63,6 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 
 	let iter = 0
 	while (true) {
-		const before = await fetchEnriched()
-		await reconcileSlices(deps.gh, before, ctxOf())
 		const slices = classifySlices(await fetchEnriched())
 		const actionable = slices.filter((s) => {
 			if (failed.has(s.id)) return false
@@ -213,6 +210,7 @@ if (import.meta.vitest) {
 			stashPush: async () => {},
 			stashPop: async () => {},
 			mergeAbort: async () => {},
+			commitsAhead: async () => 0,
 		}
 	}
 
@@ -227,7 +225,6 @@ if (import.meta.vitest) {
 			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
-			branchAhead: false,
 			...overrides,
 		}
 	}

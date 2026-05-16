@@ -72,10 +72,41 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  *   Works on every storage; at runtime requires a GitHub remote + `gh` auth (surfaced via
  *   `trowel doctor`, not preflight-gated).
  */
+async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<void> {
+	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	await deps.git.checkout(ctx.integrationBranch)
+	try {
+		await deps.git.mergeNoFf(branch, { noVerify: deps.mergeNoVerify })
+	} catch (e) {
+		// Leave the working tree clean for re-run. Common cause: the project's commit-msg
+		// hook rejects git's default "Merge branch 'X' into 'Y'" message; opt into
+		// `config.work.mergeNoVerify: true` to bypass that hook on host-owned merges.
+		await deps.git.mergeAbort()
+		throw e
+	}
+	await deps.git.push(ctx.integrationBranch)
+	await deps.git.deleteRemoteBranch(branch)
+	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+	deps.log(`${tag} closed slice`)
+}
+
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 	if (verdict.verdict === 'no-work-needed') {
+		// Recovery case: prior aborted run left the slice branch ahead of integration with the
+		// implementer's commits, and this Turn correctly reports no-work-needed because the work
+		// is already on the branch. Treat as ready and complete the merge so the slice can close.
+		if (ctx.config.perSliceBranches && !ctx.config.usePrs) {
+			const branch = sliceBranchFor(ctx.prdId, slice)
+			const ahead = await deps.git.commitsAhead(branch, ctx.integrationBranch)
+			if (ahead > 0) {
+				deps.log(`${tag} no-work-needed but slice branch has ${ahead} unmerged commit(s) from a prior Turn; treating as ready`)
+				await mergeSliceIntoIntegration(deps, slice, ctx, branch)
+				return 'done'
+			}
+		}
 		await deps.storage.updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
 		deps.log(`${tag} no-work-needed: cleared readyForAgent`)
 		return 'no-work'
@@ -101,21 +132,7 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Turn
 	}
 
 	// usePrs: false → host-side merge-and-close.
-	await deps.git.checkout(ctx.integrationBranch)
-	try {
-		await deps.git.mergeNoFf(branch, { noVerify: deps.mergeNoVerify })
-	} catch (e) {
-		// Leave the working tree clean for re-run. Common cause: the project's commit-msg
-		// hook rejects git's default "Merge branch 'X' into 'Y'" message; opt into
-		// `config.work.mergeNoVerify: true` to bypass that hook on host-owned merges.
-		await deps.git.mergeAbort()
-		throw e
-	}
-	await deps.git.push(ctx.integrationBranch)
-	await deps.git.deleteRemoteBranch(branch)
-	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
-	deps.log(`${tag} closed slice`)
+	await mergeSliceIntoIntegration(deps, slice, ctx, branch)
 	return 'done'
 }
 
@@ -234,6 +251,7 @@ if (import.meta.vitest) {
 		mergeNoFfThrows?: Error
 		mergeNoVerify?: boolean
 		branchExists?: (b: string) => boolean
+		commitsAhead?: number
 	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { state: 'OPEN' | 'CLOSED' }; logs: string[] } {
 		const calls: GitCall[] = []
 		const logs: string[] = []
@@ -256,6 +274,7 @@ if (import.meta.vitest) {
 			baseBranch: async () => 'main',
 			branchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
 			isMerged: async () => false,
+			commitsAhead: async () => overrides.commitsAhead ?? 0,
 			deleteBranch: recorded('deleteBranch'),
 			worktreeAdd: recorded('worktreeAdd'),
 			worktreeRemove: recorded('worktreeRemove'),
@@ -271,7 +290,7 @@ if (import.meta.vitest) {
 			findPrd: async () => null,
 			listPrds: async () => [],
 			closePrd: async () => {},
-			createSlice: async () => ({ id: 's', title: '', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null, branchAhead: false }),
+			createSlice: async () => ({ id: 's', title: '', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
 			findSlices: async () => [],
 			updateSlice: async (_p, _s, patch) => {
 				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
@@ -289,8 +308,7 @@ if (import.meta.vitest) {
 
 	const slice: Slice = {
 		id: '42', title: 'A slice', body: 'b', state: 'OPEN',
-		readyForAgent: true, needsRevision: false, blockedBy: [],
-		prState: null, branchAhead: false,
+		readyForAgent: true, needsRevision: false, blockedBy: [], prState: null,
 	}
 	const ctx: PhaseCtx = {
 		prdId: 'pid',
@@ -326,6 +344,36 @@ if (import.meta.vitest) {
 			expect(methods).not.toContain('createRemoteBranch')
 			expect(methods).not.toContain('fetch')
 			expect(prep.branch).toBe('integration')
+		})
+	})
+
+	describe('landImplement: no-work-needed handling with leftover commits on slice branch', () => {
+		test('no-work-needed + slice branch even with integration (commitsAhead: 0) → just clear readyForAgent (today behavior)', async () => {
+			const { deps, calls, storageState } = makePhaseDeps({ commitsAhead: 0 })
+			const outcome = await landImplement(deps, slice, { verdict: 'no-work-needed', notes: 'already done', commits: 0 }, ctx)
+			expect(outcome).toBe('no-work')
+			expect(storageState.state).toBe('OPEN')
+			const methods = calls.map((c) => c.method)
+			expect(methods).not.toContain('mergeNoFf')
+			expect(methods).not.toContain('deleteRemoteBranch')
+		})
+
+		test('no-work-needed + slice branch ahead of integration (commitsAhead > 0) → run merge sequence + close, log the recovery', async () => {
+			const { deps, calls, storageState, logs } = makePhaseDeps({ commitsAhead: 2 })
+			const outcome = await landImplement(deps, slice, { verdict: 'no-work-needed', notes: 'already done', commits: 0 }, ctx)
+			expect(outcome).toBe('done')
+			const methods = calls.map((c) => c.method)
+			expect(methods).toContain('mergeNoFf')
+			expect(methods).toContain('deleteRemoteBranch')
+			expect(storageState.state).toBe('CLOSED')
+			expect(logs.some((l) => /no-work-needed but slice branch has 2 unmerged commit/.test(l))).toBe(true)
+		})
+
+		test('no-work-needed + perSliceBranches:false → just clear readyForAgent regardless of commitsAhead (integration-direct mode has no slice branch to merge)', async () => {
+			const { deps, calls } = makePhaseDeps({ commitsAhead: 5 })
+			const outcome = await landImplement(deps, slice, { verdict: 'no-work-needed', notes: 'done', commits: 0 }, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
+			expect(outcome).toBe('no-work')
+			expect(calls.map((c) => c.method)).not.toContain('mergeNoFf')
 		})
 	})
 

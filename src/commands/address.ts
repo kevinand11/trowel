@@ -50,7 +50,6 @@ if (import.meta.vitest) {
 			bucket: 'needs-revision',
 			blockedBy: [],
 			prState: 'draft',
-			branchAhead: false,
 			...overrides,
 		}
 	}

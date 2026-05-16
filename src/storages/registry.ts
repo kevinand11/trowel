@@ -42,6 +42,7 @@ if (import.meta.vitest) {
 		stashPush: async () => {},
 		stashPop: async () => {},
 		mergeAbort: async () => {},
+		commitsAhead: async () => 0,
 	}
 	const testDeps: StorageDeps = {
 		gh: recordingGhOps().gh,

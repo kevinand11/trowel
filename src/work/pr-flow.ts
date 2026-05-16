@@ -104,7 +104,7 @@ if (import.meta.vitest) {
 		const makeSlice = (overrides: Partial<Slice> = {}): Slice => ({
 			id: '57', title: 'Implement Parser', body: 'b',
 			state: 'OPEN', readyForAgent: true, needsRevision: false,
-			blockedBy: [], prState: null, branchAhead: false,
+			blockedBy: [], prState: null,
 			...overrides,
 		})
 

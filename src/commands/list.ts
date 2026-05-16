@@ -110,7 +110,6 @@ if (import.meta.vitest) {
 			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
-			branchAhead: false,
 			...overrides,
 		}
 	}
