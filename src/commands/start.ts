@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process'
 import { readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
+import { confirm as inqConfirm } from '@inquirer/prompts'
+
 import { loadConfig } from '../config.ts'
 import { loadPrompt } from '../prompts/load.ts'
 import { getStorage, type StorageKind } from '../storages/registry.ts'
@@ -20,31 +22,62 @@ export type StartRuntime = {
 	readStartOut: () => Promise<string | null>
 	preflight: () => Promise<string[]>
 	stdout: (s: string) => void
+	confirm: (msg: string) => Promise<boolean>
 }
 
 export async function runStart(rt: StartRuntime): Promise<void> {
+	const startOutPath = path.join(rt.projectRoot, '.trowel', 'start-out.json')
+
+	// Resume detection: if a prior run left a start-out.json on disk, offer to
+	// continue from it or discard and start a fresh grill. Happens BEFORE
+	// preflight because the file is host-owned ephemeral state.
+	let resumedSpec: ReturnType<typeof parseStartOut> | null = null
+	const existingRaw = await rt.readStartOut()
+	if (existingRaw !== null) {
+		let parsed: ReturnType<typeof parseStartOut> | null = null
+		let parseError: Error | null = null
+		try {
+			parsed = parseStartOut(existingRaw)
+		} catch (e) {
+			parseError = e as Error
+		}
+		if (parsed) {
+			printResumePreview(rt, parsed)
+			const cont = await rt.confirm('Continue with the spec above? (no → discard and start a fresh grill)')
+			await unlinkSwallowEnoent(startOutPath)
+			if (cont) resumedSpec = parsed
+		} else {
+			rt.stdout(`\nExisting .trowel/start-out.json is invalid:\n${parseError!.message}\n\n`)
+			const wipe = await rt.confirm('Discard the invalid file and start a fresh grill? (no → abort)')
+			if (!wipe) throw parseError!
+			await unlinkSwallowEnoent(startOutPath)
+		}
+	}
+
 	const failures = await rt.preflight()
 	if (failures.length > 0) {
 		throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
 	}
-
-	const startOutPath = path.join(rt.projectRoot, '.trowel', 'start-out.json')
-	await unlinkSwallowEnoent(startOutPath)
 
 	const backTo = await rt.git.currentBranch()
 	let stashed = false
 	let materialised = false
 
 	try {
-		await rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot })
+		let spec: ReturnType<typeof parseStartOut>
+		if (resumedSpec) {
+			spec = resumedSpec
+		} else {
+			await rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot })
 
-		const raw = await rt.readStartOut()
-		if (raw === null) {
-			rt.stdout('PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n')
-			throw new Error('start-out.json missing — grill aborted')
+			const raw = await rt.readStartOut()
+			if (raw === null) {
+				rt.stdout('PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n')
+				throw new Error('start-out.json missing — grill aborted')
+			}
+
+			spec = parseStartOut(raw)
 		}
-
-		const spec = parseStartOut(raw)
 
 		if (!(await rt.git.isWorkingTreeClean())) {
 			await rt.git.stashPush({ includeUntracked: true })
@@ -90,6 +123,20 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 		}
 		throw e
 	}
+}
+
+function printResumePreview(rt: StartRuntime, spec: ReturnType<typeof parseStartOut>): void {
+	rt.stdout('\nFound existing .trowel/start-out.json from a prior run:\n')
+	rt.stdout(`\n# ${spec.prd.title}\n\n${spec.prd.body}\n`)
+	if (spec.slices.length > 0) {
+		rt.stdout('\nSlices:\n')
+		for (const [i, slice] of spec.slices.entries()) {
+			const ready = slice.readyForAgent ? 'AFK' : 'HITL'
+			const blocks = slice.blockedBy.length > 0 ? ` blocked by [${slice.blockedBy.join(', ')}]` : ''
+			rt.stdout(`  ${i}. ${slice.title}  (${ready}${blocks})\n`)
+		}
+	}
+	rt.stdout('\n')
 }
 
 async function unlinkSwallowEnoent(p: string): Promise<void> {
@@ -157,6 +204,7 @@ export async function start(opts: { storage?: string }): Promise<void> {
 			return failures
 		},
 		stdout: (s) => process.stdout.write(s),
+		confirm: (msg) => inqConfirm({ message: msg, default: false }),
 	}
 
 	try {
@@ -189,6 +237,186 @@ if (import.meta.vitest) {
 			return false
 		}
 	}
+
+	describe('runStart: existing start-out.json offers resume', () => {
+		test('valid existing spec + user picks skip → stale file wiped, claude runs fresh grill, new spec materialised', async () => {
+			const tmp = await setupTmp()
+			try {
+				const staleSpec = {
+					prd: { title: 'STALE', body: 'old' },
+					slices: [{ title: 'old-slice', body: 'x', blockedBy: [], readyForAgent: true }],
+				}
+				await writeFile(tmp.startOutPath, JSON.stringify(staleSpec))
+
+				const freshSpec = {
+					prd: { title: 'FRESH', body: 'new' },
+					slices: [{ title: 'new-slice', body: 'y', blockedBy: [], readyForAgent: true }],
+				}
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createSliceIds: ['s1'],
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				let stalePresentAtRunInteractive: boolean | null = null
+				rt.runInteractive = async () => {
+					stalePresentAtRunInteractive = await fileExists(tmp.startOutPath)
+					await writeFile(tmp.startOutPath, JSON.stringify(freshSpec))
+				}
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => false // skip
+
+				await runStart(rt)
+
+				expect(stalePresentAtRunInteractive).toBe(false)
+				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new' }])
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('invalid existing spec + user confirms wipe → file wiped, claude runs fresh grill', async () => {
+			const tmp = await setupTmp()
+			try {
+				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing prd
+
+				const freshSpec = {
+					prd: { title: 'FRESH', body: 'new' },
+					slices: [{ title: 'x', body: 'y', blockedBy: [], readyForAgent: true }],
+				}
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createSliceIds: ['s1'],
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				let interactiveCalled = false
+				rt.runInteractive = async () => {
+					interactiveCalled = true
+					await writeFile(tmp.startOutPath, JSON.stringify(freshSpec))
+				}
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => true // wipe and start fresh
+
+				await runStart(rt)
+
+				expect(interactiveCalled).toBe(true)
+				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new' }])
+				expect(calls.stdout.join('')).toMatch(/invalid/i)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('invalid existing spec + user declines wipe → runStart throws with validation error, file persists', async () => {
+			const tmp = await setupTmp()
+			try {
+				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing prd
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				let interactiveCalled = false
+				rt.runInteractive = async () => { interactiveCalled = true }
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => false // abort
+
+				await expect(runStart(rt)).rejects.toThrow(/Invalid start-out\.json/)
+				expect(interactiveCalled).toBe(false)
+				expect(calls.createPrd).toEqual([])
+				expect(await fileExists(tmp.startOutPath)).toBe(true)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('preview prints PRD title, PRD body, and a slice row per slice before the confirm prompt', async () => {
+			const tmp = await setupTmp()
+			try {
+				const spec = {
+					prd: { title: 'Resume Me', body: 'long body content goes here' },
+					slices: [
+						{ title: 'first slice', body: 'a', blockedBy: [], readyForAgent: true },
+						{ title: 'second slice', body: 'b', blockedBy: [0], readyForAgent: false },
+					],
+				}
+				await writeFile(tmp.startOutPath, JSON.stringify(spec))
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				let stdoutAtConfirm = ''
+				rt.confirm = async () => {
+					stdoutAtConfirm = calls.stdout.join('')
+					return false // skip — short-circuits the rest of the flow
+				}
+				// Don't actually run claude on the skip path
+				rt.runInteractive = async () => {}
+
+				await expect(runStart(rt)).rejects.toThrow() // claude wrote nothing → missing start-out
+
+				expect(stdoutAtConfirm).toContain('Resume Me')
+				expect(stdoutAtConfirm).toContain('long body content goes here')
+				expect(stdoutAtConfirm).toContain('first slice')
+				expect(stdoutAtConfirm).toContain('second slice')
+				expect(stdoutAtConfirm).toMatch(/AFK/)
+				expect(stdoutAtConfirm).toMatch(/HITL/)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('valid existing spec + user confirms continue → claude is skipped, materialisation runs from in-memory spec, file is gone after', async () => {
+			const tmp = await setupTmp()
+			try {
+				const spec = {
+					prd: { title: 'Resume Me', body: 'body from prior run' },
+					slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
+				}
+				await writeFile(tmp.startOutPath, JSON.stringify(spec))
+
+				const { rt, calls } = makeFakes({
+					startOut: null, // not used — readStartOut overridden below
+					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createSliceIds: ['s1'],
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				let interactiveCalls = 0
+				rt.runInteractive = async () => { interactiveCalls++ }
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => true // continue
+
+				await runStart(rt)
+
+				expect(interactiveCalls).toBe(0)
+				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run' }])
+				expect(calls.createSlice).toHaveLength(1)
+				expect(await fileExists(tmp.startOutPath)).toBe(false)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+	})
 
 	describe('runStart: start-out.json lifecycle (real filesystem)', () => {
 		test('pre-grill wipe — stale file from a prior run is gone before claude runs and is not re-read', async () => {

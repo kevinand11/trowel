@@ -98,6 +98,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		readStartOut: async () => opts.startOut,
 		preflight: async () => opts.preflightFailures ?? [],
 		stdout: (s) => calls.stdout.push(s),
+		confirm: async () => false,
 	}
 
 	return { rt, calls, gitState }
