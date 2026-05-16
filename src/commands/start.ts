@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
@@ -27,6 +27,9 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 	if (failures.length > 0) {
 		throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
 	}
+
+	const startOutPath = path.join(rt.projectRoot, '.trowel', 'start-out.json')
+	await unlinkSwallowEnoent(startOutPath)
 
 	const backTo = await rt.git.currentBranch()
 	let stashed = false
@@ -78,12 +81,22 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 		}
 		rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the PRD/slice artifacts). Commit at your discretion.\n')
 		rt.stdout(`\nNext: trowel work ${prdId}\n`)
+
+		await unlinkSwallowEnoent(startOutPath)
 	} catch (e) {
 		if (!materialised) {
 			if (backTo && (await rt.git.currentBranch()) !== backTo) await rt.git.checkout(backTo)
 			if (stashed) await rt.git.stashPop()
 		}
 		throw e
+	}
+}
+
+async function unlinkSwallowEnoent(p: string): Promise<void> {
+	try {
+		await unlink(p)
+	} catch (e) {
+		if ((e as { code?: string }).code !== 'ENOENT') throw e
 	}
 }
 
@@ -158,6 +171,104 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { runStart } = await import('./start.ts')
 	const { makeFakes } = await import('./start.test-utils.ts')
+	const { mkdtemp, mkdir, writeFile, readFile, rm, stat } = await import('node:fs/promises')
+	const { tmpdir } = await import('node:os')
+
+	async function setupTmp(): Promise<{ projectRoot: string; startOutPath: string; cleanup: () => Promise<void> }> {
+		const projectRoot = await mkdtemp(path.join(tmpdir(), 'trowel-start-cleanup-'))
+		await mkdir(path.join(projectRoot, '.trowel'), { recursive: true })
+		const startOutPath = path.join(projectRoot, '.trowel', 'start-out.json')
+		return { projectRoot, startOutPath, cleanup: () => rm(projectRoot, { recursive: true, force: true }) }
+	}
+
+	async function fileExists(p: string): Promise<boolean> {
+		try {
+			await stat(p)
+			return true
+		} catch {
+			return false
+		}
+	}
+
+	describe('runStart: start-out.json lifecycle (real filesystem)', () => {
+		test('pre-grill wipe — stale file from a prior run is gone before claude runs and is not re-read', async () => {
+			const tmp = await setupTmp()
+			try {
+				// Stale file left behind by a prior aborted run
+				await writeFile(tmp.startOutPath, JSON.stringify({
+					prd: { title: 'STALE', body: 'should-not-be-read' },
+					slices: [],
+				}))
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				let stalePresentAtRunInteractive: boolean | null = null
+				rt.runInteractive = async () => {
+					stalePresentAtRunInteractive = await fileExists(tmp.startOutPath)
+					// Claude aborts: doesn't write a new file
+				}
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+
+				await expect(runStart(rt)).rejects.toThrow(/start-out.json missing/i)
+				expect(stalePresentAtRunInteractive).toBe(false)
+				expect(calls.createPrd).toEqual([])
+				expect(await fileExists(tmp.startOutPath)).toBe(false)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('failure path (invalid spec) leaves start-out.json on disk for inspection', async () => {
+			const tmp = await setupTmp()
+			try {
+				const invalid = JSON.stringify({ slices: [] }) // missing prd
+				const { rt } = makeFakes({ startOut: invalid, currentBranch: 'main' })
+				rt.projectRoot = tmp.projectRoot
+				rt.runInteractive = async () => {
+					await writeFile(tmp.startOutPath, invalid)
+				}
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				await expect(runStart(rt)).rejects.toThrow(/Invalid start-out\.json/)
+				expect(await fileExists(tmp.startOutPath)).toBe(true)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('success path deletes start-out.json after the summary print', async () => {
+			const tmp = await setupTmp()
+			try {
+				const spec = {
+					prd: { title: 'T', body: 'B' },
+					slices: [{ title: 'S', body: 'B', blockedBy: [], readyForAgent: true }],
+				}
+				const { rt } = makeFakes({
+					startOut: JSON.stringify(spec),
+					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createSliceIds: ['s1'],
+					currentBranch: 'main',
+				})
+				rt.projectRoot = tmp.projectRoot
+				rt.runInteractive = async () => {
+					await writeFile(tmp.startOutPath, JSON.stringify(spec))
+				}
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				await runStart(rt)
+				expect(await fileExists(tmp.startOutPath)).toBe(false)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+	})
 
 	describe('runStart: missing start-out.json (claude aborted)', () => {
 		test('prints recovery message, restores BACK_TO, throws', async () => {

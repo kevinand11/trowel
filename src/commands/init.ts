@@ -12,6 +12,7 @@ import { storageFactories } from '../storages/registry.ts'
 
 type InitPrompts = {
 	storage: (current: string) => Promise<string>
+	prdsDir: (current: string) => Promise<string>
 	agentModel: (current: string) => Promise<string>
 	usePrs: (current: boolean) => Promise<boolean>
 	review: (current: boolean) => Promise<boolean>
@@ -69,6 +70,12 @@ async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 	const { $schema: _existingSchema, ...rest } = existing ?? {}
 	const merged: Record<string, unknown> = { $schema: './schema.json', ...rest, storage: storageAnswer }
 
+	if (storageAnswer === 'file') {
+		const currentPrdsDir = existing?.docs?.prdsDir ?? defaultConfig.docs.prdsDir
+		const prdsDirAnswer = await opts.prompts.prdsDir(currentPrdsDir)
+		merged.docs = { ...(existing?.docs ?? {}), prdsDir: prdsDirAnswer }
+	}
+
 	const currentModel = existing?.agent?.model ?? defaultConfig.agent.model
 	const modelAnswer = await opts.prompts.agentModel(currentModel)
 	merged.agent = { ...(existing?.agent ?? {}), model: modelAnswer }
@@ -112,6 +119,12 @@ export async function init(layerArg: string): Promise<void> {
 				choices: storageChoices,
 				default: current,
 			}),
+		prdsDir: (current) =>
+			input({
+				message: 'PRD docs directory (project-relative)',
+				default: current,
+				validate: validatePrdsDir,
+			}),
 		agentModel: (current) =>
 			input({
 				message: 'Agent model',
@@ -136,6 +149,12 @@ export async function init(layerArg: string): Promise<void> {
 		process.stderr.write(`trowel init: ${(error as Error).message}\n`)
 		process.exit(1)
 	}
+}
+
+export function validatePrdsDir(s: string): true | string {
+	if (s.trim() === '') return 'cannot be empty'
+	if (path.isAbsolute(s)) return 'must be project-relative (no leading /)'
+	return true
 }
 
 async function readExisting(filePath: string): Promise<PartialConfig | null> {
@@ -180,12 +199,32 @@ if (import.meta.vitest) {
 	function fixedPrompts(storage: string, confirm: boolean): InitPrompts {
 		return {
 			storage: async () => storage,
+			prdsDir: async (current) => current,
 			agentModel: async (current) => current,
 			usePrs: async (current) => current,
 			review: async (current) => current,
 			confirm: async () => confirm,
 		}
 	}
+
+	describe('validatePrdsDir', () => {
+		test('accepts a normal project-relative path', () => {
+			expect(validatePrdsDir('docs/prds')).toBe(true)
+			expect(validatePrdsDir('some/nested/dir')).toBe(true)
+		})
+
+		test('rejects empty string', () => {
+			expect(validatePrdsDir('')).toMatch(/empty/i)
+		})
+
+		test('rejects whitespace-only string', () => {
+			expect(validatePrdsDir('   ')).toMatch(/empty/i)
+		})
+
+		test('rejects an absolute path (leading slash)', () => {
+			expect(validatePrdsDir('/etc/prds')).toMatch(/project-relative/i)
+		})
+	})
 
 	describe('init: tracer (sparse write for fresh project)', () => {
 		let f: Fixture
@@ -210,6 +249,7 @@ if (import.meta.vitest) {
 			expect(JSON.parse(raw)).toEqual({
 				$schema: './schema.json',
 				storage: 'file',
+				docs: { prdsDir: 'docs/prds' },
 				agent: { model: 'claude-opus-4-6' },
 				work: { usePrs: false },
 			})
@@ -254,6 +294,142 @@ if (import.meta.vitest) {
 		})
 	})
 
+	describe('init: docs.prdsDir prompt (file storage)', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('on file storage, prompts for prdsDir and writes the answer to docs.prdsDir', async () => {
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async () => 'custom/prds-here',
+					agentModel: async (current) => current,
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
+			expect(written.docs).toEqual({ prdsDir: 'custom/prds-here' })
+		})
+	})
+
+	describe('init: docs.prdsDir on issue storage', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('on issue storage, prdsDir prompt is NOT called', async () => {
+			let prdsDirCalls = 0
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'issue',
+					prdsDir: async (current) => {
+						prdsDirCalls++
+						return current
+					},
+					agentModel: async (current) => current,
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(prdsDirCalls).toBe(0)
+		})
+
+		test('on issue storage, existing docs.prdsDir is preserved as-is in the merged output', async () => {
+			const configPath = path.join(f.project, '.trowel', 'config.json')
+			await mk(path.dirname(configPath), { recursive: true })
+			await write(configPath, JSON.stringify({ storage: 'file', docs: { prdsDir: 'keep/me' } }), 'utf8')
+
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: fixedPrompts('issue', true),
+				stdout: () => {},
+			})
+			const merged = JSON.parse(await read(configPath, 'utf8'))
+			expect(merged.storage).toBe('issue')
+			expect(merged.docs).toEqual({ prdsDir: 'keep/me' })
+		})
+	})
+
+	describe('init: docs.prdsDir default resolution', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('fresh project (no existing config) → default is the hard-coded fallback "docs/prds"', async () => {
+			let seenDefault: string | undefined
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async (current) => {
+						seenDefault = current
+						return current
+					},
+					agentModel: async (current) => current,
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(seenDefault).toBe('docs/prds')
+		})
+
+		test('existing config with custom docs.prdsDir → that value is the prompt default', async () => {
+			const configPath = path.join(f.project, '.trowel', 'config.json')
+			await mk(path.dirname(configPath), { recursive: true })
+			await write(configPath, JSON.stringify({ storage: 'file', docs: { prdsDir: 'a/b/c' } }), 'utf8')
+
+			let seenDefault: string | undefined
+			await runInit({
+				layer: 'project',
+				cwd: f.project,
+				home: f.home,
+				prompts: {
+					storage: async () => 'file',
+					prdsDir: async (current) => {
+						seenDefault = current
+						return current
+					},
+					agentModel: async (current) => current,
+					usePrs: async () => false,
+					review: async () => false,
+					confirm: async () => true,
+				},
+				stdout: () => {},
+			})
+			expect(seenDefault).toBe('a/b/c')
+		})
+	})
+
 	describe('init: agent.model prompt', () => {
 		let f: Fixture
 		beforeEach(async () => {
@@ -271,6 +447,7 @@ if (import.meta.vitest) {
 				home: f.home,
 				prompts: {
 					storage: async () => 'file',
+					prdsDir: async (current) => current,
 					agentModel: async (current) => {
 						modelDefault = current
 						return 'claude-sonnet-4-6'
@@ -303,6 +480,7 @@ if (import.meta.vitest) {
 				home: f.home,
 				prompts: {
 					storage: async () => 'file',
+					prdsDir: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => true,
 					review: async () => false,
@@ -322,6 +500,7 @@ if (import.meta.vitest) {
 				home: f.home,
 				prompts: {
 					storage: async () => 'file',
+					prdsDir: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => false,
 					review: async () => {
@@ -345,6 +524,7 @@ if (import.meta.vitest) {
 				home: f.home,
 				prompts: {
 					storage: async () => 'file',
+					prdsDir: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async () => true,
 					review: async () => {
@@ -429,6 +609,7 @@ if (import.meta.vitest) {
 						promptDefault = current
 						return 'issue'
 					},
+					prdsDir: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async (current) => current,
 					review: async (current) => current,
@@ -501,6 +682,7 @@ if (import.meta.vitest) {
 				home: f.home,
 				prompts: {
 					storage: async () => 'issue',
+					prdsDir: async (current) => current,
 					agentModel: async (current) => current,
 					usePrs: async (current) => current,
 					review: async (current) => current,
