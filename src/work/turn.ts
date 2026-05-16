@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import type { Role } from './prompts.ts'
@@ -40,6 +40,14 @@ export async function spawnTurn(args: SpawnTurnArgs, deps: SpawnTurnDeps): Promi
 
 	const trowelDir = path.join(worktree.worktreePath, '.trowel')
 	await mkdir(trowelDir, { recursive: true })
+	// Wipe any stale turn-out.json from a prior Turn on this same worktree.
+	// `resetWorktree` does `git clean -fd` which preserves gitignored files; if the user has
+	// `.trowel/` in their project's .gitignore (common), a stale verdict would be read here.
+	try {
+		await unlink(path.join(trowelDir, 'turn-out.json'))
+	} catch (e) {
+		if ((e as { code?: string }).code !== 'ENOENT') throw e
+	}
 	await writeFile(path.join(trowelDir, 'turn-in.json'), JSON.stringify(args.turnIn))
 
 	const agentResult = await deps.runAgent({ worktree, logPath, role: args.role, branch: args.branch })
@@ -116,6 +124,44 @@ if (import.meta.vitest) {
 			expect(observedTurnIn).toEqual(args.turnIn)
 			expect(out.verdict).toBe('ready')
 			expect(out.commits).toBe(2)
+		})
+
+		test('wipes a stale turn-out.json from a prior Turn even when .trowel/ is gitignored (so git clean -fd preserves it)', async () => {
+			// Simulate a user project where .trowel/ is gitignored — common, since trowel writes
+			// ephemeral state there. This means git clean -fd in resetWorktree does NOT remove
+			// stale turn-out.json between Turns; spawnTurn must explicitly unlink it.
+			await writeFile(path.join(projectRoot, '.gitignore'), '.trowel/\n')
+			const { exec } = await import('node:child_process')
+			await new Promise<void>((res, rej) => exec('git add .gitignore && git commit -m "ignore trowel"', { cwd: projectRoot }, (err) => err ? rej(err) : res()))
+			await new Promise<void>((res, rej) => exec('git checkout feature && git merge main --no-edit && git checkout main', { cwd: projectRoot }, (err) => err ? rej(err) : res()))
+
+			// First turn: agent writes a valid ready verdict
+			const firstDeps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async ({ worktree }) => {
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					return { commits: 1 }
+				},
+				randId: () => 'first',
+			}
+			const first = await spawnTurn(makeArgs(), firstDeps)
+			expect(first.verdict).toBe('ready')
+
+			// Second turn against the SAME worktree: agent doesn't write a turn-out.json this time
+			// (simulates a crash mid-Turn). Without the pre-Turn unlink, the stale 'ready' from
+			// the prior Turn would be read and accepted as the current verdict — silent bug.
+			const secondDeps: SpawnTurnDeps = {
+				prdId: '142',
+				projectRoot,
+				copyToWorktree: [],
+				git,
+				runAgent: async () => ({ commits: 0 }),
+				randId: () => 'second',
+			}
+			await expect(spawnTurn(makeArgs(), secondDeps)).rejects.toThrow(/verdict file missing/i)
 		})
 
 		test('lets parseVerdict throw bubble when turn-out.json is missing (no coercion to partial)', async () => {
