@@ -18,6 +18,7 @@ export type PhaseDeps = {
 	git: GitOps
 	gh: GhOps
 	log: (msg: string) => void
+	mergeNoVerify: boolean
 }
 
 function sliceBranchFor(prdId: string, slice: Slice): string {
@@ -40,7 +41,11 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 		}
 	}
 	const branch = sliceBranchFor(ctx.prdId, slice)
-	await deps.git.createRemoteBranch(branch, ctx.integrationBranch)
+	if (await deps.git.branchExists(branch)) {
+		deps.log(`[work prd-${ctx.prdId} slice-${slice.id}] reusing existing slice branch '${branch}' (contains prior implementer commits from an aborted run)`)
+	} else {
+		await deps.git.createRemoteBranch(branch, ctx.integrationBranch)
+	}
 	await deps.git.fetch(branch)
 	return {
 		branch,
@@ -97,7 +102,15 @@ export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: Turn
 
 	// usePrs: false → host-side merge-and-close.
 	await deps.git.checkout(ctx.integrationBranch)
-	await deps.git.mergeNoFf(branch)
+	try {
+		await deps.git.mergeNoFf(branch, { noVerify: deps.mergeNoVerify })
+	} catch (e) {
+		// Leave the working tree clean for re-run. Common cause: the project's commit-msg
+		// hook rejects git's default "Merge branch 'X' into 'Y'" message; opt into
+		// `config.work.mergeNoVerify: true` to bypass that hook on host-owned merges.
+		await deps.git.mergeAbort()
+		throw e
+	}
 	await deps.git.push(ctx.integrationBranch)
 	await deps.git.deleteRemoteBranch(branch)
 	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
@@ -210,4 +223,148 @@ export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOu
 		return 'no-work'
 	}
 	return 'partial'
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest
+
+	type GitCall = { method: string; args: unknown[] }
+
+	function makePhaseDeps(overrides: {
+		mergeNoFfThrows?: Error
+		mergeNoVerify?: boolean
+		branchExists?: (b: string) => boolean
+	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { state: 'OPEN' | 'CLOSED' }; logs: string[] } {
+		const calls: GitCall[] = []
+		const logs: string[] = []
+		const storageState = { state: 'OPEN' as 'OPEN' | 'CLOSED' }
+		const recorded = (method: string) => (...args: unknown[]) => { calls.push({ method, args }); return Promise.resolve() }
+		const git: GitOps = {
+			fetch: recorded('fetch'),
+			push: recorded('push'),
+			checkout: recorded('checkout'),
+			mergeNoFf: async (b, opts) => {
+				calls.push({ method: 'mergeNoFf', args: [b, opts] })
+				if (overrides.mergeNoFfThrows) throw overrides.mergeNoFfThrows
+			},
+			mergeAbort: recorded('mergeAbort'),
+			deleteRemoteBranch: recorded('deleteRemoteBranch'),
+			createRemoteBranch: recorded('createRemoteBranch'),
+			createLocalBranch: recorded('createLocalBranch'),
+			pushSetUpstream: recorded('pushSetUpstream'),
+			currentBranch: async () => 'integration',
+			baseBranch: async () => 'main',
+			branchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
+			isMerged: async () => false,
+			deleteBranch: recorded('deleteBranch'),
+			worktreeAdd: recorded('worktreeAdd'),
+			worktreeRemove: recorded('worktreeRemove'),
+			worktreeList: async () => [],
+			restoreAll: recorded('restoreAll'),
+			cleanUntracked: recorded('cleanUntracked'),
+			isWorkingTreeClean: async () => true,
+			stashPush: recorded('stashPush'),
+			stashPop: recorded('stashPop'),
+		}
+		const storage: Storage = {
+			createPrd: async () => ({ id: 'p', branch: 'b' }),
+			findPrd: async () => null,
+			listPrds: async () => [],
+			closePrd: async () => {},
+			createSlice: async () => ({ id: 's', title: '', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null, branchAhead: false }),
+			findSlices: async () => [],
+			updateSlice: async (_p, _s, patch) => {
+				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
+			},
+		}
+		const deps: PhaseDeps = {
+			storage,
+			git,
+			gh: {} as GhOps,
+			log: (m) => { logs.push(m) },
+			mergeNoVerify: overrides.mergeNoVerify ?? false,
+		}
+		return { deps, calls, storageState, logs }
+	}
+
+	const slice: Slice = {
+		id: '42', title: 'A slice', body: 'b', state: 'OPEN',
+		readyForAgent: true, needsRevision: false, blockedBy: [],
+		prState: null, branchAhead: false,
+	}
+	const ctx: PhaseCtx = {
+		prdId: 'pid',
+		integrationBranch: 'integration',
+		config: { usePrs: false, review: false, perSliceBranches: true },
+	}
+
+	describe('prepareImplement: slice branch reuse on re-runs', () => {
+		test('slice branch does NOT exist → createRemoteBranch then fetch', async () => {
+			const { deps, calls } = makePhaseDeps({ branchExists: () => false })
+			const prep = await prepareImplement(deps, slice, ctx)
+			const methods = calls.map((c) => c.method)
+			expect(methods).toContain('createRemoteBranch')
+			expect(methods).toContain('fetch')
+			expect(prep.branch).toBe('prd-pid/slice-42-a-slice')
+		})
+
+		test('slice branch ALREADY exists → skip createRemoteBranch, still fetch, log a "reusing" warning', async () => {
+			const sliceBranch = 'prd-pid/slice-42-a-slice'
+			const { deps, calls, logs } = makePhaseDeps({ branchExists: (b) => b === sliceBranch })
+			const prep = await prepareImplement(deps, slice, ctx)
+			const methods = calls.map((c) => c.method)
+			expect(methods).not.toContain('createRemoteBranch')
+			expect(methods).toContain('fetch')
+			expect(prep.branch).toBe(sliceBranch)
+			expect(logs.some((l) => /reusing existing slice branch/i.test(l))).toBe(true)
+		})
+
+		test('perSliceBranches: false → no branch creation, no fetch, returns integration branch', async () => {
+			const { deps, calls } = makePhaseDeps()
+			const prep = await prepareImplement(deps, slice, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
+			const methods = calls.map((c) => c.method)
+			expect(methods).not.toContain('createRemoteBranch')
+			expect(methods).not.toContain('fetch')
+			expect(prep.branch).toBe('integration')
+		})
+	})
+
+	describe('landImplement: host-merge failure recovery', () => {
+		test('happy path: mergeNoFf succeeds → no mergeAbort call', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			const outcome = await landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)
+			expect(outcome).toBe('done')
+			expect(calls.find((c) => c.method === 'mergeAbort')).toBeUndefined()
+			expect(storageState.state).toBe('CLOSED')
+		})
+
+		test('mergeNoFf throws → mergeAbort runs, error re-thrown, push and deleteRemoteBranch NOT reached', async () => {
+			const boom = new Error('commit-msg hook rejected the merge')
+			const { deps, calls } = makePhaseDeps({ mergeNoFfThrows: boom })
+			await expect(landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(boom)
+			const methods = calls.map((c) => c.method)
+			expect(methods).toContain('mergeAbort')
+			expect(methods.indexOf('mergeAbort')).toBeGreaterThan(methods.indexOf('mergeNoFf'))
+			expect(methods).not.toContain('deleteRemoteBranch')
+			// `push` IS called once (the slice-branch push earlier in landImplement), but NOT
+			// the integration-branch push that comes after the merge.
+			expect(methods.filter((m) => m === 'push')).toHaveLength(1)
+		})
+	})
+
+	describe('landImplement: passes mergeNoVerify through to mergeNoFf opts', () => {
+		test('mergeNoVerify: false → mergeNoFf called with { noVerify: false }', async () => {
+			const { deps, calls } = makePhaseDeps({ mergeNoVerify: false })
+			await landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)
+			const merge = calls.find((c) => c.method === 'mergeNoFf')!
+			expect(merge.args[1]).toEqual({ noVerify: false })
+		})
+
+		test('mergeNoVerify: true → mergeNoFf called with { noVerify: true }', async () => {
+			const { deps, calls } = makePhaseDeps({ mergeNoVerify: true })
+			await landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)
+			const merge = calls.find((c) => c.method === 'mergeNoFf')!
+			expect(merge.args[1]).toEqual({ noVerify: true })
+		})
+	})
 }

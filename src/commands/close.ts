@@ -221,6 +221,7 @@ if (import.meta.vitest) {
 			isWorkingTreeClean: async () => true,
 			stashPush: async () => {},
 			stashPop: async () => {},
+			mergeAbort: async () => {},
 		}
 		return { git, calls }
 	}

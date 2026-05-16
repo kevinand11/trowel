@@ -45,6 +45,7 @@ export const partialConfigPipe = () =>
 				review: v.optional(v.boolean()),
 				perSliceBranches: v.optional(v.boolean()),
 				worktreeCleanupAge: v.optional(v.string()),
+				mergeNoVerify: v.optional(v.boolean()),
 			}),
 		),
 	})
@@ -79,6 +80,7 @@ export type Config = {
 		review: boolean
 		perSliceBranches: boolean
 		worktreeCleanupAge: string
+		mergeNoVerify: boolean
 	}
 }
 
@@ -122,6 +124,12 @@ export const defaultConfig: Config = {
 		// integration-direct behavior (one branch per PRD, implementers serialize).
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
+		// Host merges slice branches into the integration branch via `git merge --no-ff`.
+		// If the project's commit-msg hook enforces a strict format (e.g. Conventional
+		// Commits) it'll reject git's default "Merge branch 'X' into 'Y'" message and
+		// leave the tree half-merged. Set this to true to pass --no-verify on those
+		// host-owned merges, bypassing pre-merge-commit and commit-msg hooks.
+		mergeNoVerify: false,
 	},
 }
 

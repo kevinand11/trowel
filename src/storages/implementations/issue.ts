@@ -188,6 +188,7 @@ if (import.meta.vitest) {
 				isWorkingTreeClean: async () => true,
 				stashPush: async () => {},
 				stashPop: async () => {},
+				mergeAbort: async () => {},
 			},
 			log: (m) => { logCalls.push(m) },
 		}
@@ -212,7 +213,7 @@ if (import.meta.vitest) {
 		}
 
 		function phaseDeps(deps: StorageDeps, storage: Storage): PhaseDeps {
-			return { storage, git: deps.git!, gh: deps.gh, log: deps.log! }
+			return { storage, git: deps.git!, gh: deps.gh, log: deps.log!, mergeNoVerify: false }
 		}
 
 		test('prepareImplement: creates slice branch via git, returns {branch, turnIn}', async () => {

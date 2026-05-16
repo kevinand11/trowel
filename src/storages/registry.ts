@@ -41,6 +41,7 @@ if (import.meta.vitest) {
 		isWorkingTreeClean: async () => true,
 		stashPush: async () => {},
 		stashPop: async () => {},
+		mergeAbort: async () => {},
 	}
 	const testDeps: StorageDeps = {
 		gh: recordingGhOps().gh,

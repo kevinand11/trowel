@@ -9,7 +9,8 @@ export type GitOps = {
 	fetch(branch: string): Promise<void>
 	push(branch: string): Promise<void>
 	checkout(branch: string): Promise<void>
-	mergeNoFf(branch: string): Promise<void>
+	mergeNoFf(branch: string, opts?: { noVerify?: boolean }): Promise<void>
+	mergeAbort(): Promise<void>
 	deleteRemoteBranch(branch: string): Promise<void>
 	createRemoteBranch(newBranch: string, baseBranch: string): Promise<void>
 	// file storage's createPrd uses these for integration-branch creation
@@ -50,8 +51,14 @@ export function createRepoGit(projectRoot: string): GitOps {
 		checkout: async (b) => {
 			await gitOrThrow(['checkout', '-q', b])
 		},
-		mergeNoFf: async (b) => {
-			await gitOrThrow(['merge', '--no-ff', '-q', b])
+		mergeNoFf: async (b, opts) => {
+			const args = ['merge', '--no-ff', '-q']
+			if (opts?.noVerify) args.push('--no-verify')
+			args.push(b)
+			await gitOrThrow(args)
+		},
+		mergeAbort: async () => {
+			await gitOrThrow(['merge', '--abort'])
 		},
 		deleteRemoteBranch: async (b) => {
 			await gitOrThrow(['push', '-q', 'origin', `:${b}`])

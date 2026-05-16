@@ -81,7 +81,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 			if (opts.stashPopThrows) throw opts.stashPopThrows
 			gitState.stashStack -= 1
 		},
-		fetch: async () => {}, push: async () => {}, mergeNoFf: async () => {},
+		fetch: async () => {}, push: async () => {}, mergeNoFf: async () => {}, mergeAbort: async () => {},
 		deleteRemoteBranch: async () => {}, createRemoteBranch: async () => {},
 		createLocalBranch: async () => {}, pushSetUpstream: async () => {},
 		isMerged: async () => false, deleteBranch: async () => {},

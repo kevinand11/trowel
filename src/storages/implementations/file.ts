@@ -327,6 +327,7 @@ if (import.meta.vitest) {
 			isWorkingTreeClean: async () => realGit.isWorkingTreeClean(),
 			stashPush: async (opts) => realGit.stashPush(opts),
 			stashPop: async () => realGit.stashPop(),
+			mergeAbort: async () => realGit.mergeAbort(),
 		}
 		const { gh } = recordingGhOps()
 		const deps: StorageDeps = {
@@ -378,7 +379,7 @@ if (import.meta.vitest) {
 		}
 
 		function makePhaseDeps(f: Fixture, storage: Storage): PhaseDeps {
-			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log! }
+			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 		}
 
 		test('prepareImplement: branch is the integration branch; turnIn carries the slice', async () => {
@@ -552,8 +553,9 @@ if (import.meta.vitest) {
 					isWorkingTreeClean: async () => true,
 					stashPush: async () => {},
 					stashPop: async () => {},
+					mergeAbort: async () => {},
 				}
-				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log! }
+				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 
 				const outcome = await landImplement(
 					deps,
@@ -618,9 +620,10 @@ if (import.meta.vitest) {
 					isWorkingTreeClean: async () => true,
 					stashPush: async () => {},
 					stashPop: async () => {},
+					mergeAbort: async () => {},
 				}
 				const { gh, calls: ghCalls } = recordingGhOps()
-				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log! }
+				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log!, mergeNoVerify: false }
 
 				const outcome = await landImplement(
 					deps,
@@ -655,7 +658,7 @@ if (import.meta.vitest) {
 						throw new Error(`no PR found for head '${head}'`)
 					},
 				})
-				const deps: PhaseDeps = { storage, git: f.deps.git!, gh, log: f.deps.log! }
+				const deps: PhaseDeps = { storage, git: f.deps.git!, gh, log: f.deps.log!, mergeNoVerify: false }
 				// No PR exists, so findPrNumberByHead throws "no PR found".
 				// The point: that's now the failure mode, not "requires capability 'prFlow'".
 				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/no PR found/)

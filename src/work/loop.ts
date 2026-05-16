@@ -15,6 +15,7 @@ export type LoopConfig = {
 	perSliceBranches: boolean
 	sliceStepCap: number
 	maxConcurrent: number | null
+	mergeNoVerify: boolean
 }
 
 export type LoopDeps = {
@@ -127,7 +128,7 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 		const role = state as Role
 		deps.log(`${tag} state=${role}: "${slice.title}"`)
 
-		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log }
+		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: config.mergeNoVerify }
 		const prep = await callPrepare(phaseDeps, role, slice, ctx)
 		deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
 		const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
@@ -211,6 +212,7 @@ if (import.meta.vitest) {
 			isWorkingTreeClean: async () => true,
 			stashPush: async () => {},
 			stashPop: async () => {},
+			mergeAbort: async () => {},
 		}
 	}
 
@@ -241,7 +243,7 @@ if (import.meta.vitest) {
 			integrationBranch: 'integration',
 			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
-			config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 5, maxConcurrent: null },
+			config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 5, maxConcurrent: null, mergeNoVerify: false },
 			...overrides,
 		}
 	}
@@ -267,7 +269,7 @@ if (import.meta.vitest) {
 			await runLoop('p1', makeDeps(storage, {
 				gh,
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
-				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null },
+				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null, mergeNoVerify: false },
 			}))
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeDefined()
 		})
@@ -300,7 +302,7 @@ if (import.meta.vitest) {
 					return { verdict: 'ready', commits: 1 }
 				},
 				log: (m) => { logs.push(m) },
-				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null, mergeNoVerify: false },
 			}))
 			expect(spawnCalls).toBeGreaterThanOrEqual(2) // both slices were attempted
 			expect(logs.some((m) => /verdict file missing/.test(m))).toBe(true)
@@ -318,7 +320,7 @@ if (import.meta.vitest) {
 				log: (m) => {
 					if (/^\[work prd-p1\] iter \d+:/.test(m)) outerIters++
 				},
-				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null, mergeNoVerify: false },
 			}))
 			// One outer iteration: slice tried once, returned partial, added to skip set.
 			// Next iteration sees no actionable slices and exits.
@@ -337,7 +339,7 @@ if (import.meta.vitest) {
 					calls.push(s.id)
 					return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
 				},
-				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: null, mergeNoVerify: false },
 			}))
 			expect(calls).toContain('fine')
 			const after = await storage.findSlices('p1')
@@ -351,6 +353,8 @@ if (import.meta.vitest) {
 			// an injection seam for per-slice failure.
 			const storage = makeStorage({ slices: [a, b] })
 			const git = noopGit()
+			// Branch does not exist yet → prepareImplement attempts createRemoteBranch.
+			git.branchExists = async () => false
 			git.createRemoteBranch = async (newBranch) => {
 				if (newBranch.includes('slice-a')) throw new Error('docker unreachable')
 			}
@@ -363,7 +367,7 @@ if (import.meta.vitest) {
 					return { verdict: 'partial', commits: 0 }
 				},
 				log: (m) => logs.push(m),
-				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: null },
+				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: null, mergeNoVerify: false },
 			}))
 			// a fails in prepareImplement (no sandbox spawn); b spawns each iter, never reaches done because step-cap=1+partial
 			expect(calls.filter((id) => id === 'a')).toHaveLength(0)
@@ -384,7 +388,7 @@ if (import.meta.vitest) {
 					live--
 					return { verdict: 'partial', commits: 0 }
 				},
-				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: 3 },
+				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: 3, mergeNoVerify: false },
 			}))
 			expect(peak).toBe(1)
 		})
@@ -402,7 +406,7 @@ if (import.meta.vitest) {
 					live--
 					return { verdict: 'partial', commits: 0 }
 				},
-				config: { usePrs: false, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: 2 },
+				config: { usePrs: false, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: 2, mergeNoVerify: false },
 			}))
 			expect(peak).toBeLessThanOrEqual(2)
 			expect(peak).toBeGreaterThan(1)
@@ -428,7 +432,7 @@ if (import.meta.vitest) {
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 				gh,
-				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null },
+				config: { usePrs: true, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null, mergeNoVerify: false },
 			}))
 			expect(outcome).toBe('done')
 			expect(prCreateCount).toBe(1)
