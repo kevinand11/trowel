@@ -164,6 +164,7 @@ export async function start(opts: { storage?: string; harness?: string }): Promi
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
 		git,

@@ -43,6 +43,7 @@ export function recordingGhOps(overrides: Partial<GhOps> = {}): { gh: GhOps; cal
 		markPrReady: wrap('markPrReady', async () => undefined),
 		findPrNumberByHead: wrap('findPrNumberByHead', async () => 0),
 		listOpenPrs: wrap('listOpenPrs', async () => []),
+		findAnyPrByHead: wrap('findAnyPrByHead', async () => null),
 		fetchPrLineComments: wrap('fetchPrLineComments', async () => []),
 		fetchPrReviews: wrap('fetchPrReviews', async () => []),
 		fetchPrThread: wrap('fetchPrThread', async () => []),

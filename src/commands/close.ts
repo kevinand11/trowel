@@ -162,6 +162,7 @@ export async function closePrd(prdId: string, opts: { storage?: StorageKind }): 
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
 		confirm: promptConfirm,
@@ -195,6 +196,84 @@ export async function closePrd(prdId: string, opts: { storage?: StorageKind }): 
 	}
 }
 
+async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
+	const back = await rt.git.currentBranch()
+	const baseBranch = await rt.git.baseBranch()
+
+	const fix = await rt.storage.findFix(fixId)
+	if (!fix) throw new Error(`Fix '${fixId}' not found`)
+
+	if (fix.state === 'OPEN') {
+		await rt.storage.closeFix(fixId)
+	} else {
+		rt.stdout(`Fix '${fixId}' already closed in store.\n`)
+	}
+
+	if (await rt.git.branchExists(fix.branch)) {
+		await maybeDeleteBranch(fix.branch, baseBranch, rt)
+	}
+
+	const current = await rt.git.currentBranch()
+	if (current !== back) {
+		if (await rt.git.branchExists(back)) {
+			await rt.git.checkout(back)
+		} else {
+			rt.stdout(`Switched to '${baseBranch}' (was on deleted branch '${back}')\n`)
+		}
+	}
+}
+
+export async function closeFix(fixId: string, opts: { storage?: StorageKind }): Promise<void> {
+	const { config, projectRoot } = await loadConfig()
+	if (!projectRoot) {
+		process.stderr.write('trowel close: no project root found\n')
+		process.exit(1)
+	}
+
+	const storageKind = opts.storage ?? config.storage
+	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
+
+	const git = createRepoGit(projectRoot)
+	const gh = createGh()
+	const storageDeps: StorageDeps = {
+		gh,
+		repoRoot: projectRoot,
+		projectRoot,
+		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
+		labels: config.labels,
+		closeOptions: config.close,
+		confirm: promptConfirm,
+		git,
+	}
+	const storage = getStorage(storageKind, storageDeps)
+
+	const listOpenPrs = async (b: string): Promise<OpenPr[]> => {
+		try {
+			const prs = await gh.listOpenPrs({ base: b })
+			return prs.map((p) => ({ number: p.number, url: p.url ?? '' }))
+		} catch {
+			return []
+		}
+	}
+
+	try {
+		await withMutationLock(projectRoot, () =>
+			runCloseFix(fixId, {
+				storage,
+				deleteBranchPolicy: config.close.deleteBranch,
+				confirm: promptConfirm,
+				stdout: (s) => process.stdout.write(s),
+				git,
+				listOpenPrs,
+			}),
+		)
+	} catch (error) {
+		process.stderr.write(`trowel close: ${(error as Error).message}\n`)
+		process.exit(1)
+	}
+}
+
 export async function closeSlice(sliceId: string, opts: { storage?: StorageKind }): Promise<void> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
@@ -212,6 +291,7 @@ export async function closeSlice(sliceId: string, opts: { storage?: StorageKind 
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
 		confirm: promptConfirm,
@@ -289,6 +369,11 @@ if (import.meta.vitest) {
 				if (s && patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
 				if (s && patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
 			},
+			createFix: async () => ({ id: 'x', branch: 'x' }),
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
 		}
 		return { storage, calls }
 	}
@@ -780,6 +865,11 @@ if (import.meta.vitest) {
 					const s = byId.get(sliceId)
 					if (s && patch.state === 'CLOSED') s.state = 'CLOSED'
 				},
+				createFix: async () => ({ id: 'x', branch: 'x' }),
+				findFix: async () => null,
+				listFixes: async () => [],
+				updateFix: async () => {},
+				closeFix: async () => {},
 			}
 			return { storage, calls }
 		}

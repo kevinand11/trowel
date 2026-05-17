@@ -16,6 +16,10 @@ import {
 } from '../../work/phases.ts'
 import type {
 	ClassifiedSlice,
+	FixPatch,
+	FixRecord,
+	FixSpec,
+	FixSummary,
 	PrdRecord,
 	PrdSpec,
 	PrdSummary,
@@ -29,6 +33,7 @@ import type {
 
 type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
+type FixStore = SliceStore & { body: string }
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function findPrdDir(id: string): Promise<string> {
@@ -69,7 +74,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
 		return withMutationLock(deps.projectRoot, async () => {
 			const slug = slugify(spec.title)
-			const id = await allocateNextId(deps.prdsDir)
+			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
 			const dir = path.join(deps.prdsDir, `${id}-${slug}`)
 			const branch = `${id}-${slug}`
 
@@ -133,7 +138,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
 		return withMutationLock(deps.projectRoot, async () => {
 			const slug = slugify(spec.title)
-			const id = await allocateNextId(deps.prdsDir)
+			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
 			const slicesPath = await slicesDir(prdId)
 			const dir = path.join(slicesPath, `${id}-${slug}`)
 
@@ -257,6 +262,132 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 	}
 
+	async function findFixDir(id: string): Promise<string> {
+		let entries: string[]
+		try {
+			entries = await readdir(deps.fixesDir)
+		} catch {
+			throw new Error(`no fix directory found for id '${id}' (fixesDir does not exist)`)
+		}
+		const match = entries.find((e) => e.startsWith(`${id}-`))
+		if (!match) throw new Error(`no fix directory found for id '${id}'`)
+		return path.join(deps.fixesDir, match)
+	}
+
+	async function readFixStore(id: string): Promise<FixStore> {
+		const dir = await findFixDir(id)
+		return JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
+	}
+
+	function fixBranchFor(id: string, slug: string): string {
+		return `fix/${id}-${slug}`
+	}
+
+	function fixFromStore(store: FixStore): FixRecord {
+		return {
+			id: store.id,
+			branch: fixBranchFor(store.id, store.slug),
+			title: store.title,
+			body: store.body,
+			state: store.closedAt === null ? 'OPEN' : 'CLOSED',
+			readyForAgent: store.readyForAgent,
+			needsRevision: store.needsRevision,
+			blockedBy: store.blockedBy ?? [],
+			prState: null,
+		}
+	}
+
+	async function createFix(spec: FixSpec): Promise<{ id: string; branch: string }> {
+		return withMutationLock(deps.projectRoot, async () => {
+			const slug = slugify(spec.title)
+			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
+			const dir = path.join(deps.fixesDir, `${id}-${slug}`)
+			const branch = fixBranchFor(id, slug)
+
+			await mkdir(dir, { recursive: true })
+			const store: FixStore = {
+				id,
+				slug,
+				title: spec.title,
+				body: spec.body,
+				createdAt: new Date().toISOString(),
+				closedAt: null,
+				readyForAgent: true,
+				needsRevision: false,
+				blockedBy: [],
+			}
+			await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
+
+			await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
+			await deps.git.pushSetUpstream(branch)
+
+			return { id, branch }
+		})
+	}
+
+	async function findFix(id: string): Promise<FixRecord | null> {
+		try {
+			return fixFromStore(await readFixStore(id))
+		} catch {
+			return null
+		}
+	}
+
+	async function listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]> {
+		let entries: string[]
+		try {
+			entries = await readdir(deps.fixesDir)
+		} catch {
+			return []
+		}
+		const summaries: FixSummary[] = []
+		for (const entry of entries) {
+			const storePath = path.join(deps.fixesDir, entry, 'store.json')
+			try {
+				const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
+				const isClosed = store.closedAt !== null
+				if (opts.state === 'open' && isClosed) continue
+				if (opts.state === 'closed' && !isClosed) continue
+				summaries.push({
+					id: store.id,
+					title: store.title,
+					branch: fixBranchFor(store.id, store.slug),
+					createdAt: store.createdAt,
+				})
+			} catch {
+				continue
+			}
+		}
+		return summaries
+	}
+
+	async function updateFix(id: string, patch: FixPatch): Promise<void> {
+		return withMutationLock(deps.projectRoot, async () => {
+			const dir = await findFixDir(id)
+			const storePath = path.join(dir, 'store.json')
+			const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
+
+			if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
+			if (patch.needsRevision !== undefined) store.needsRevision = patch.needsRevision
+			if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
+			if (patch.state === 'CLOSED' && store.closedAt === null) store.closedAt = new Date().toISOString()
+			if (patch.state === 'OPEN') store.closedAt = null
+
+			await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
+		})
+	}
+
+	async function closeFix(id: string): Promise<void> {
+		return withMutationLock(deps.projectRoot, async () => {
+			const dir = await findFixDir(id)
+			const storePath = path.join(dir, 'store.json')
+			const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
+			if (store.closedAt !== null) return
+			store.closedAt = new Date().toISOString()
+			await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
+		})
+	}
+
 	return {
 		createPrd,
 		findPrd,
@@ -266,6 +397,11 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		findSlices,
 		findSlice,
 		updateSlice,
+		createFix,
+		findFix,
+		listFixes,
+		updateFix,
+		closeFix,
 	}
 }
 
@@ -378,7 +514,8 @@ if (import.meta.vitest) {
 			repoRoot: work,
 			projectRoot: work,
 			prdsDir,
-			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+			fixesDir: path.join(work, 'docs', 'fixes'),
+			labels: { prd: 'prd', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git,

@@ -6,7 +6,7 @@ export type Role = 'implement' | 'review' | 'address'
 
 const PROMPTS_DIR = path.dirname(fileURLToPath(import.meta.url))
 
-export async function loadPrompt(name: Role | 'start'): Promise<string> {
+export async function loadPrompt(name: Role | 'start' | 'fix'): Promise<string> {
 	const filePath = path.join(PROMPTS_DIR, `${name}.md`)
 	try {
 		return await readFile(filePath, 'utf8')

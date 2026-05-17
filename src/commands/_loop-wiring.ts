@@ -11,7 +11,7 @@ import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 import { tryExec } from '../utils/shell.ts'
-import { runLoop } from '../work/loop.ts'
+import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
 import { spawnTurn } from '../work/turn.ts'
 import type { TurnIn, TurnOut } from '../work/verdict.ts'
@@ -23,7 +23,7 @@ type LoopWiring = {
 	storage: Storage
 	integrationBranch: (prdId: string) => Promise<string>
 	runOnePhase: (prdId: string, slice: Slice, role: Role) => Promise<void>
-	runLoopFor: (prdId: string, integrationBranch: string) => Promise<void>
+	runEntityLoopFor: (entity: LoopEntity) => Promise<void>
 }
 
 export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<LoopWiring> {
@@ -43,6 +43,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
 		git,
@@ -89,9 +90,9 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			return { commits }
 		}
 
-	const makeSpawnTurnFor = (prdId: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
+	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
 		spawnTurn(args, {
-			prdId,
+			prdId: scopeId,
 			projectRoot,
 			copyToWorktree: config.turn.copyToWorktree,
 			git,
@@ -120,23 +121,22 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		else await landAddress(phaseDeps, slice, verdict, ctx)
 	}
 
-	const runLoopFor = async (prdId: string, branch: string): Promise<void> => {
+	const runEntityLoopFor = async (entity: LoopEntity): Promise<void> => {
 		await sweepOrphanWorktrees({
 			projectRoot,
 			git,
 			cleanupAge: config.work.worktreeCleanupAge,
 			orphanCheck: async (sweptPrdId, sweptBranch) => {
-				if (sweptPrdId !== prdId) return false
+				if (sweptPrdId !== entity.id) return false
 				return !(await git.branchExists(sweptBranch))
 			},
 		}).catch((e: Error) => log(`sweepOrphanWorktrees failed: ${e.message}`))
 
-		await runLoop(prdId, {
+		await runEntityLoop(entity, {
 			storage,
 			git,
 			gh,
-			integrationBranch: branch,
-			spawnTurn: makeSpawnTurnFor(prdId),
+			spawnTurn: makeSpawnTurnFor(entity.id),
 			log,
 			config: {
 				usePrs: config.work.usePrs,
@@ -150,5 +150,5 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		})
 	}
 
-	return { config, projectRoot, storage, integrationBranch, runOnePhase, runLoopFor }
+	return { config, projectRoot, storage, integrationBranch, runOnePhase, runEntityLoopFor }
 }

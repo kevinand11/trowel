@@ -2,7 +2,7 @@ import { classifySlices } from '../../utils/bucket.ts'
 import { parseGhIssueNumber } from '../../utils/gh-ops.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, FixPatch, FixRecord, FixSpec, FixSummary, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
@@ -107,6 +107,67 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return null
 	}
 
+	function fixBranchFor(id: string, title: string): string {
+		return `fix/${id}-${slugify(title)}`
+	}
+
+	async function createFix(spec: FixSpec): Promise<{ id: string; branch: string }> {
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body, labels: [deps.labels.fix] })
+		const id = parseGhIssueNumber(createOut)
+		const branch = fixBranchFor(id, spec.title)
+		await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
+		await deps.git.pushSetUpstream(branch)
+		return { id, branch }
+	}
+
+	async function findFix(id: string): Promise<FixRecord | null> {
+		const issue = await deps.gh.viewIssue(id)
+		if (!issue) return null
+		return {
+			id: String(issue.number),
+			branch: fixBranchFor(String(issue.number), issue.title),
+			title: issue.title,
+			// `viewIssue` doesn't return body; trowel surfaces the title in CLI output and the body
+			// lives on the GitHub issue itself. Empty here keeps the type happy without a second round-trip.
+			body: '',
+			state: issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
+			readyForAgent: false,
+			needsRevision: false,
+			blockedBy: [],
+			prState: null,
+		}
+	}
+
+	async function listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]> {
+		const issues = await deps.gh.listIssues({ label: deps.labels.fix, state: opts.state })
+		return issues.map((issue) => ({
+			id: String(issue.number),
+			title: issue.title,
+			branch: fixBranchFor(String(issue.number), issue.title),
+			createdAt: issue.createdAt,
+		}))
+	}
+
+	async function updateFix(id: string, patch: FixPatch): Promise<void> {
+		if (patch.readyForAgent !== undefined) {
+			const opts = patch.readyForAgent ? { add: [deps.labels.readyForAgent] } : { remove: [deps.labels.readyForAgent] }
+			await deps.gh.editIssueLabels(id, opts)
+		}
+		if (patch.needsRevision !== undefined) {
+			const opts = patch.needsRevision ? { add: [deps.labels.needsRevision] } : { remove: [deps.labels.needsRevision] }
+			await deps.gh.editIssueLabels(id, opts)
+		}
+		if (patch.state === 'CLOSED') await deps.gh.closeIssue(id)
+		else if (patch.state === 'OPEN') await deps.gh.reopenIssue(id)
+	}
+
+	async function closeFix(id: string): Promise<void> {
+		const state = await deps.gh.getIssueState(id)
+		if (state !== null && state.toUpperCase() === 'CLOSED') return
+		const opts = deps.closeOptions.comment !== null ? { comment: deps.closeOptions.comment } : undefined
+		await deps.gh.closeIssue(id, opts)
+	}
+
 	return {
 		createPrd,
 		findPrd,
@@ -116,6 +177,11 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		findSlices,
 		findSlice,
 		updateSlice,
+		createFix,
+		findFix,
+		listFixes,
+		updateFix,
+		closeFix,
 	}
 
 	async function updateSlice(_prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -173,7 +239,8 @@ if (import.meta.vitest) {
 			repoRoot: '/tmp/x',
 			projectRoot: '/tmp/x',
 			prdsDir: '/tmp/x/docs/prds',
-			labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+			fixesDir: '/tmp/x/docs/fixes',
+			labels: { prd: 'prd', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git: {

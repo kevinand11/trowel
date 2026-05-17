@@ -13,6 +13,7 @@ export const partialConfigPipe = () =>
 		docs: v.optional(
 			v.object({
 				prdsDir: v.optional(v.string()),
+				fixesDir: v.optional(v.string()),
 			}),
 		),
 		agent: v.optional(
@@ -26,6 +27,7 @@ export const partialConfigPipe = () =>
 				readyForAgent: v.optional(v.string()),
 				needsRevision: v.optional(v.string()),
 				prd: v.optional(v.string()),
+				fix: v.optional(v.string()),
 			}),
 		),
 		close: v.optional(
@@ -59,6 +61,7 @@ export type Config = {
 	storage: StorageKind
 	docs: {
 		prdsDir: string
+		fixesDir: string
 	}
 	agent: {
 		harness: HarnessKind
@@ -68,6 +71,7 @@ export type Config = {
 		readyForAgent: string
 		needsRevision: string
 		prd: string
+		fix: string
 	}
 	close: {
 		comment: string | null
@@ -99,6 +103,7 @@ export const defaultConfig: Config = {
 	storage: 'file',
 	docs: {
 		prdsDir: 'docs/prds',
+		fixesDir: 'docs/fixes',
 	},
 	agent: {
 		harness: 'claude',
@@ -108,6 +113,7 @@ export const defaultConfig: Config = {
 		readyForAgent: 'ready-for-agent',
 		needsRevision: 'needs-revision',
 		prd: 'prd',
+		fix: 'fix',
 	},
 	close: {
 		comment: 'Closed via trowel',

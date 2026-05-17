@@ -2,28 +2,34 @@ import { buildLoopWiring } from './_loop-wiring.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 import type { StorageKind } from '../storages/registry.ts'
 import type { Storage } from '../storages/types.ts'
+import type { LoopEntity } from '../work/entity-loop.ts'
+
+export type WorkScope = 'prd' | 'fix'
 
 type WorkRuntime = {
 	storage: Storage
-	runLoop: (prdId: string, integrationBranch: string) => Promise<void>
+	runEntity: (entity: LoopEntity) => Promise<void>
 	stdout: (s: string) => void
 }
 
-async function runWork (prdId: string, rt: WorkRuntime): Promise<void> {
-	const prd = await rt.storage.findPrd(prdId)
-	if (!prd) throw new Error(`PRD '${prdId}' not found`)
-	await rt.runLoop(prdId, prd.branch)
+async function runWork(scope: WorkScope, id: string, rt: WorkRuntime): Promise<void> {
+	if (scope === 'prd') {
+		const prd = await rt.storage.findPrd(id)
+		if (!prd) throw new Error(`PRD '${id}' not found`)
+		await rt.runEntity({ kind: 'prd', id, integrationBranch: prd.branch, title: prd.title })
+		return
+	}
+	const fix = await rt.storage.findFix(id)
+	if (!fix) throw new Error(`Fix '${id}' not found`)
+	await rt.runEntity({ kind: 'fix', id, branch: fix.branch, title: fix.title })
 }
 
-/**
- * Production entry. Wires real gh/git/turn callbacks (via _loop-wiring) and calls runWork.
- */
-export async function work(prdId: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
+export async function work(scope: WorkScope, id: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
-		await runWork(prdId, {
+		await runWork(scope, id, {
 			storage: wiring.storage,
-			runLoop: wiring.runLoopFor,
+			runEntity: wiring.runEntityLoopFor,
 			stdout: (s) => process.stdout.write(s),
 		})
 	} catch (e) {
@@ -35,57 +41,47 @@ export async function work(prdId: string, opts: { storage?: StorageKind; harness
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function makeStorage(prd: { branch: string; title: string } | null): Storage {
+	function makeStorage(state: { prd?: { id: string; branch: string; title: string }; fix?: { id: string; branch: string; title: string } }): Storage {
 		return {
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async (id) => (prd ? { id, branch: prd.branch, title: prd.title, state: 'OPEN' } : null),
+			findPrd: async (id) => (state.prd && state.prd.id === id ? { id, branch: state.prd.branch, title: state.prd.title, state: 'OPEN' } : null),
 			listPrds: async () => [],
 			closePrd: async () => {},
-			createSlice: async () => {
-				throw new Error('not used')
-			},
+			createSlice: async () => { throw new Error('not used') },
 			findSlices: async () => [],
 			findSlice: async () => null,
 			updateSlice: async () => {},
+			createFix: async () => ({ id: 'x', branch: 'x' }),
+			findFix: async (id) => (state.fix && state.fix.id === id ? { id, branch: state.fix.branch, title: state.fix.title, body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null } : null),
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
 		}
 	}
 
 	describe('runWork', () => {
-		test('calls runLoop with prdId and the PRD\'s integration branch (no per-storage dispatch)', async () => {
-			const storage = makeStorage({ branch: 'prd/abc123-feature', title: 'Feature' })
-			const calls: Array<{ prdId: string; branch: string }> = []
-			await runWork('abc123', {
-				storage,
-				runLoop: async (prdId, branch) => {
-					calls.push({ prdId, branch })
-				},
-				stdout: () => {},
-			})
-			expect(calls).toEqual([{ prdId: 'abc123', branch: 'prd/abc123-feature' }])
+		test('prd scope dispatches with the PRD\'s integration branch', async () => {
+			const storage = makeStorage({ prd: { id: 'abc123', branch: 'prd/abc123-feature', title: 'Feature' } })
+			const calls: LoopEntity[] = []
+			await runWork('prd', 'abc123', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
+			expect(calls).toEqual([{ kind: 'prd', id: 'abc123', integrationBranch: 'prd/abc123-feature', title: 'Feature' }])
 		})
 
-		test('also calls runLoop on the issue storage (no per-storage dispatch)', async () => {
-			const storage = makeStorage({ branch: 'prds-issue-142', title: 'SSO' })
-			const calls: Array<{ prdId: string; branch: string }> = []
-			await runWork('142', {
-				storage,
-				runLoop: async (prdId, branch) => {
-					calls.push({ prdId, branch })
-				},
-				stdout: () => {},
-			})
-			expect(calls).toEqual([{ prdId: '142', branch: 'prds-issue-142' }])
+		test('fix scope dispatches with the Fix branch', async () => {
+			const storage = makeStorage({ fix: { id: '5', branch: 'fix/5-x', title: 'X' } })
+			const calls: LoopEntity[] = []
+			await runWork('fix', '5', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
+			expect(calls).toEqual([{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' }])
 		})
 
 		test('throws when PRD is not found', async () => {
-			const storage = makeStorage(null)
-			await expect(
-				runWork('zzz', {
-					storage,
-					runLoop: async () => {},
-					stdout: () => {},
-				}),
-			).rejects.toThrow(/not found/)
+			const storage = makeStorage({})
+			await expect(runWork('prd', 'zzz', { storage, runEntity: async () => {}, stdout: () => {} })).rejects.toThrow(/PRD 'zzz' not found/)
+		})
+
+		test('throws when Fix is not found', async () => {
+			const storage = makeStorage({})
+			await expect(runWork('fix', 'zzz', { storage, runEntity: async () => {}, stdout: () => {} })).rejects.toThrow(/Fix 'zzz' not found/)
 		})
 	})
 }

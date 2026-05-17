@@ -61,6 +61,11 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		updateSlice: async (prdId, sliceId, patch) => {
 			calls.updateSlice.push({ prdId, sliceId, patch })
 		},
+		createFix: async () => ({ id: 'x', branch: 'x' }),
+		findFix: async () => null,
+		listFixes: async () => [],
+		updateFix: async () => {},
+		closeFix: async () => {},
 	}
 
 	const git: GitOps = {

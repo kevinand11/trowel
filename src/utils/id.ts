@@ -3,15 +3,16 @@ import path from 'node:path'
 
 /**
  * Allocate the next id from the file-storage shared pool. Scans every PRD directory under
- * `prdsDir` and every slice directory under each PRD's `slices/`, finds the maximum positive
- * integer prefix (the `42` in `42-some-slug/`), and returns `max + 1`. Returns `1` when no
- * existing entities are found.
+ * `prdsDir`, every slice directory under each PRD's `slices/`, and every Fix directory under
+ * `fixesDir`. Finds the maximum positive integer prefix (the `42` in `42-some-slug/`) and
+ * returns `max + 1`. Returns `1` when no existing entities are found.
  *
  * Compute-on-demand; no persisted counter. Callers must hold the **Mutation lock** so that the
  * scan + mkdir of the new entity directory happen atomically. See ADR
- * `2026-05-17-file-storage-deterministic-shared-ids.md`.
+ * `2026-05-17-file-storage-deterministic-shared-ids.md` and
+ * `2026-05-17-fix-entity-unified-close-out.md`.
  */
-export async function allocateNextId(prdsDir: string): Promise<string> {
+export async function allocateNextId(prdsDir: string, fixesDir?: string): Promise<string> {
 	const seen: number[] = []
 	const prdEntries = await readdirSafe(prdsDir)
 	for (const prdEntry of prdEntries) {
@@ -21,6 +22,13 @@ export async function allocateNextId(prdsDir: string): Promise<string> {
 		for (const sliceEntry of sliceEntries) {
 			const m = parseIntPrefix(sliceEntry)
 			if (m !== null) seen.push(m)
+		}
+	}
+	if (fixesDir) {
+		const fixEntries = await readdirSafe(fixesDir)
+		for (const fixEntry of fixEntries) {
+			const n = parseIntPrefix(fixEntry)
+			if (n !== null) seen.push(n)
 		}
 	}
 	const next = seen.length === 0 ? 1 : Math.max(...seen) + 1

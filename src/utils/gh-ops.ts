@@ -93,6 +93,11 @@ export type GhOps = {
 	markPrReady(prNumber: number): Promise<void>
 	findPrNumberByHead(head: string): Promise<number>
 	listOpenPrs(opts?: { base?: string }): Promise<PrSummary[]>
+	/**
+	 * Look up the most recent PR for `head` regardless of state. Returns null when no PR exists.
+	 * Used by **Reconciliation** to detect that a Close-out PR has been merged on GitHub.
+	 */
+	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>
 
 	// PR feedback
 	fetchPrLineComments(prNumber: number): Promise<LineCommentRaw[]>
@@ -198,6 +203,16 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			const trimmed = out.trim()
 			if (!trimmed) throw new Error(`no PR found for head '${head}'`)
 			return Number.parseInt(trimmed, 10)
+		},
+		async findAnyPrByHead(head) {
+			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state', '--jq', '.[0]'])
+			if (!r.ok) return null
+			const trimmed = r.stdout.trim()
+			if (!trimmed || trimmed === 'null') return null
+			const parsed = JSON.parse(trimmed) as { number: number; state: string }
+			const st = parsed.state.toUpperCase()
+			const state: 'OPEN' | 'CLOSED' | 'MERGED' = st === 'MERGED' ? 'MERGED' : st === 'CLOSED' ? 'CLOSED' : 'OPEN'
+			return { number: parsed.number, state }
 		},
 		async listOpenPrs(opts) {
 			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,url']

@@ -2,10 +2,12 @@ import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
+import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
-import { createGh } from '../utils/gh-ops.ts'
+import { createGh, type GhOps } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
+import { withMutationLock } from '../utils/mutation-lock.ts'
+import { reconcileEntity } from '../work/reconcile.ts'
 
 // Bucket render order. Mirrors the predicate evaluation order in
 // `src/utils/bucket.ts` so the user reads buckets in the same flow as
@@ -87,31 +89,37 @@ async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
 	if (!renderStatus(prd, slices).endsWith('\n')) rt.stdout('\n')
 }
 
-async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string }> {
+async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps }> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel status: no project root found\n')
 		process.exit(1)
 	}
 	const storageKind = opts.storage ?? config.storage
+	const gh = createGh()
 	const storageDeps: StorageDeps = {
-		gh: createGh(),
+		gh,
 		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
 	}
-	return { storage: getStorage(storageKind, storageDeps), projectRoot }
+	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh }
 }
 
 export async function statusPrd(prdId: string, opts: { storage?: string }): Promise<void> {
-	const { storage } = await buildStatusStorage(opts)
+	const { storage, projectRoot, gh } = await buildStatusStorage(opts)
 	try {
-		await runStatus(prdId, {
-			storage,
-			stdout: (s) => process.stdout.write(s),
+		await withMutationLock(projectRoot, async () => {
+			const found = await storage.findPrd(prdId)
+			if (found) await reconcileEntity({ kind: 'prd', id: prdId, branch: found.branch }, { storage, gh })
+			await runStatus(prdId, {
+				storage,
+				stdout: (s) => process.stdout.write(s),
+			})
 		})
 	} catch (error) {
 		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
@@ -120,11 +128,51 @@ export async function statusPrd(prdId: string, opts: { storage?: string }): Prom
 }
 
 export async function statusSlice(sliceId: string, opts: { storage?: string }): Promise<void> {
-	const { storage } = await buildStatusStorage(opts)
+	const { storage, projectRoot } = await buildStatusStorage(opts)
 	try {
-		await runStatusSlice(sliceId, {
-			storage,
-			stdout: (s) => process.stdout.write(s),
+		await withMutationLock(projectRoot, async () =>
+			runStatusSlice(sliceId, {
+				storage,
+				stdout: (s) => process.stdout.write(s),
+			}),
+		)
+	} catch (error) {
+		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
+		process.exit(1)
+	}
+}
+
+function renderStatusFix(fix: FixRecord): string {
+	const lines: string[] = []
+	lines.push(`Fix ${fix.id}  ${fix.title}`)
+	lines.push(`Branch:  ${fix.branch}`)
+	lines.push(`State:   ${fix.state}`)
+	lines.push(`ready-for-agent: ${fix.readyForAgent}`)
+	lines.push(`needs-revision:  ${fix.needsRevision}`)
+	if (fix.body.trim().length > 0) {
+		lines.push('')
+		lines.push(fix.body.trim())
+	}
+	return lines.join('\n')
+}
+
+async function runStatusFix(fixId: string, rt: StatusRuntime): Promise<void> {
+	const fix = await rt.storage.findFix(fixId)
+	if (!fix) throw new Error(`Fix '${fixId}' not found`)
+	rt.stdout(renderStatusFix(fix))
+	if (!renderStatusFix(fix).endsWith('\n')) rt.stdout('\n')
+}
+
+export async function statusFix(fixId: string, opts: { storage?: string }): Promise<void> {
+	const { storage, projectRoot, gh } = await buildStatusStorage(opts)
+	try {
+		await withMutationLock(projectRoot, async () => {
+			const found = await storage.findFix(fixId)
+			if (found) await reconcileEntity({ kind: 'fix', id: fixId, branch: found.branch }, { storage, gh })
+			await runStatusFix(fixId, {
+				storage,
+				stdout: (s) => process.stdout.write(s),
+			})
 		})
 	} catch (error) {
 		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
@@ -196,6 +244,11 @@ if (import.meta.vitest) {
 			findSlices: async () => state.rawSlices,
 			findSlice: async () => null,
 			updateSlice: async () => {},
+			createFix: async () => ({ id: 'x', branch: 'x' }),
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
 		}
 	}
 
@@ -315,6 +368,11 @@ if (import.meta.vitest) {
 					return s ? { prdId: prd.id, slice: s } : null
 				},
 				updateSlice: async () => {},
+				createFix: async () => ({ id: 'x', branch: 'x' }),
+				findFix: async () => null,
+				listFixes: async () => [],
+				updateFix: async () => {},
+				closeFix: async () => {},
 			}
 		}
 

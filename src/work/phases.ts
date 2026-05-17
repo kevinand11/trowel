@@ -315,6 +315,11 @@ if (import.meta.vitest) {
 			updateSlice: async (_p, _s, patch) => {
 				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
 			},
+			createFix: async () => ({ id: 'x', branch: 'x' }),
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
 		}
 		const deps: PhaseDeps = {
 			storage,

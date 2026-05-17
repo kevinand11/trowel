@@ -51,7 +51,8 @@ if (import.meta.vitest) {
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
 		prdsDir: '/tmp/x/docs/prds',
-		labels: { prd: 'prd', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+		fixesDir: '/tmp/x/docs/fixes',
+		labels: { prd: 'prd', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },
 	}
 

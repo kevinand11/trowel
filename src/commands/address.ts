@@ -73,6 +73,11 @@ if (import.meta.vitest) {
 				return s ? { prdId: 'p1', slice: s } : null
 			},
 			updateSlice: async () => {},
+			createFix: async () => ({ id: 'x', branch: 'x' }),
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
 		}
 	}
 

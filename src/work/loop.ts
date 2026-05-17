@@ -189,6 +189,11 @@ if (import.meta.vitest) {
 				if (patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
 				if (patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
 			},
+			createFix: async () => ({ id: 'x', branch: 'x' }),
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
 			...overrides,
 		}
 	}

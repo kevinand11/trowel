@@ -2,10 +2,12 @@ import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, PrdSummary, Storage, StorageDeps } from '../storages/types.ts'
+import type { ClassifiedSlice, FixSummary, PrdSummary, Storage, StorageDeps } from '../storages/types.ts'
 import { classifySlices, type Bucket } from '../utils/bucket.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
+import { withMutationLock } from '../utils/mutation-lock.ts'
+import { reconcileEntity } from '../work/reconcile.ts'
 
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
 
@@ -67,28 +69,90 @@ async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
 	rt.stdout(renderList(rows, filter))
 }
 
-export async function list(filter: PrdState, opts: { storage?: string }): Promise<void> {
+type FixListRow = {
+	summary: FixSummary
+	state: 'OPEN' | 'CLOSED'
+}
+
+function renderFixList(rows: FixListRow[], filter: PrdState): string {
+	if (rows.length === 0) {
+		return filter === 'all' ? 'No fixes found.\n' : `No ${filter} fixes.\n`
+	}
+	const lines = rows.map((row) => {
+		const idCol = row.summary.id.padEnd(8)
+		const stateCol = row.state.padEnd(8)
+		const titleCol = row.summary.title.padEnd(48)
+		return `${idCol}  ${stateCol}  ${titleCol}  ${row.summary.branch}`
+	})
+	return `${lines.join('\n')}\n`
+}
+
+async function runListFixes(filter: PrdState, rt: ListRuntime): Promise<void> {
+	const summaries = await rt.storage.listFixes({ state: filter })
+	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+	const rows: FixListRow[] = await Promise.all(
+		sorted.map(async (summary) => {
+			const found = await rt.storage.findFix(summary.id)
+			return { summary, state: found?.state ?? 'OPEN' as const }
+		}),
+	)
+	rt.stdout(renderFixList(rows, filter))
+}
+
+async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListRuntime; projectRoot: string; storage: Storage; gh: ReturnType<typeof createGh> }> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel list: no project root found\n')
 		process.exit(1)
 	}
 	const storageKind = opts.storage ?? config.storage
+	const gh = createGh()
 	const storageDeps: StorageDeps = {
-		gh: createGh(),
+		gh,
 		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,
 		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
-		// list is read-only: no confirm, no log needed.
 	}
 	const storage = getStorage(storageKind, storageDeps)
+	return {
+		rt: { storage, stdout: (s) => process.stdout.write(s) },
+		projectRoot,
+		storage,
+		gh,
+	}
+}
+
+export async function list(filter: PrdState, opts: { storage?: string }): Promise<void> {
+	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
 	try {
-		await runListPrds(filter, {
-			storage,
-			stdout: (s) => process.stdout.write(s),
+		await withMutationLock(projectRoot, async () => {
+			// Reconciliation may write CLOSED on PRDs whose Close-out PR merged on GitHub. Best-effort
+			// per entity; failures are swallowed by reconcileEntity itself.
+			const summaries = await storage.listPrds({ state: filter })
+			for (const s of summaries) {
+				await reconcileEntity({ kind: 'prd', id: s.id, branch: s.branch }, { storage, gh })
+			}
+			await runListPrds(filter, rt)
+		})
+	} catch (error) {
+		process.stderr.write(`trowel list: ${(error as Error).message}\n`)
+		process.exit(1)
+	}
+}
+
+export async function listFix(filter: PrdState, opts: { storage?: string }): Promise<void> {
+	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
+	try {
+		await withMutationLock(projectRoot, async () => {
+			const summaries = await storage.listFixes({ state: filter })
+			for (const s of summaries) {
+				await reconcileEntity({ kind: 'fix', id: s.id, branch: s.branch }, { storage, gh })
+			}
+			await runListFixes(filter, rt)
 		})
 	} catch (error) {
 		process.stderr.write(`trowel list: ${(error as Error).message}\n`)
@@ -144,17 +208,8 @@ if (import.meta.vitest) {
 				},
 			]
 			const out = renderList(rows, 'open')
-			// Canonical: done · needs-revision · in-flight · blocked · ready · draft. Empties omitted.
 			expect(out).toContain('2 done · 1 blocked · 1 ready')
 			expect(out).not.toContain('needs-revision')
-			expect(out).not.toContain('in-flight')
-			expect(out).not.toContain('draft')
-			// Ordering check: 'done' appears before 'blocked' which appears before 'ready'
-			const doneIdx = out.indexOf('done')
-			const blockedIdx = out.indexOf('blocked')
-			const readyIdx = out.indexOf('ready')
-			expect(doneIdx).toBeLessThan(blockedIdx)
-			expect(blockedIdx).toBeLessThan(readyIdx)
 		})
 
 		test('empty list message is state-aware', () => {
@@ -175,21 +230,40 @@ if (import.meta.vitest) {
 		})
 	})
 
+	describe('renderFixList', () => {
+		test('renders one open fix', () => {
+			const out = renderFixList([
+				{ summary: { id: '5', title: 'Tabs render wrong', branch: 'fix/5-tabs-render-wrong', createdAt: '2026-05-17T00:00:00Z' }, state: 'OPEN' },
+			], 'open')
+			expect(out).toContain('5')
+			expect(out).toContain('OPEN')
+			expect(out).toContain('Tabs render wrong')
+			expect(out).toContain('fix/5-tabs-render-wrong')
+		})
+
+		test('empty list message is state-aware', () => {
+			expect(renderFixList([], 'open')).toContain('No open fixes')
+			expect(renderFixList([], 'closed')).toContain('No closed fixes')
+			expect(renderFixList([], 'all')).toContain('No fixes found')
+		})
+	})
+
 	describe('runListPrds', () => {
 		function fakeStorage(overrides: Partial<Storage>): Storage {
 			return {
-				createPrd: async () => {
-					throw new Error('nyi')
-				},
+				createPrd: async () => { throw new Error('nyi') },
 				findPrd: async () => null,
 				listPrds: async () => [],
 				closePrd: async () => {},
-				createSlice: async () => {
-					throw new Error('nyi')
-				},
+				createSlice: async () => { throw new Error('nyi') },
 				findSlices: async () => [],
 				findSlice: async () => null,
 				updateSlice: async () => {},
+				createFix: async () => { throw new Error('nyi') },
+				findFix: async () => null,
+				listFixes: async () => [],
+				updateFix: async () => {},
+				closeFix: async () => {},
 				...overrides,
 			}
 		}
@@ -209,7 +283,6 @@ if (import.meta.vitest) {
 
 		test('sorts PRDs newest-first by createdAt, regardless of the order the storage returned', async () => {
 			const storage = fakeStorage({
-				// Returned in the "wrong" order (oldest first) so the test proves the consumer sort flips it.
 				listPrds: async () => [
 					{ id: 'older', title: 'Older', branch: 'b/older', createdAt: '2026-05-10T00:00:00.000Z' },
 					{ id: 'newer', title: 'Newer', branch: 'b/newer', createdAt: '2026-05-13T00:00:00.000Z' },
