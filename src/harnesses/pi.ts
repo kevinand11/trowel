@@ -15,7 +15,8 @@ export const piHarness: HarnessAdapter = {
 	defaultModel: 'anthropic/claude-sonnet-4-5',
 
 	async spawnPrint(args: HarnessSpawnPrintArgs): Promise<HarnessSpawnHandle> {
-		const child = spawn('pi', ['-p', '--model', args.model, '--no-session', args.prompt], {
+		// `--mode json` emits NDJSON events per agent step instead of the final response text.
+		const child = spawn('pi', ['-p', '--mode', 'json', '--model', args.model, '--no-session', args.prompt], {
 			cwd: args.cwd,
 			env: process.env,
 			stdio: ['pipe', 'pipe', 'pipe'],

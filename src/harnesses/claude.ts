@@ -14,9 +14,12 @@ export const claudeHarness: HarnessAdapter = {
 	defaultModel: 'claude-opus-4-6',
 
 	async spawnPrint(args: HarnessSpawnPrintArgs): Promise<HarnessSpawnHandle> {
+		// `stream-json` emits one NDJSON event per agent step (message_start, content_block_*,
+		// tool_use, tool_result, message_stop, …); `--verbose` is required for the stream to
+		// include those events rather than just the final assistant text.
 		const child = spawn(
 			'claude',
-			['--print', '--model', args.model, '--dangerously-skip-permissions', '--output-format', 'text'],
+			['--print', '--model', args.model, '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'],
 			{ cwd: args.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] },
 		)
 		child.stdout?.pipe(args.logStream, { end: false })

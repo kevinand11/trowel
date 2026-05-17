@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -61,6 +60,9 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			await mkdir(path.dirname(logPath), { recursive: true })
 			const logStream = createWriteStream(logPath, { flags: 'a' })
 
+			const startedAt = new Date().toISOString()
+			logStream.write(`\n=== ${startedAt} · prd-${worktree.prdId} · ${role} · harness=${harness.kind} ===\n`)
+
 			const baseHeadR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])
 			const baseHead = baseHeadR.ok ? baseHeadR.stdout.trim() : ''
 
@@ -71,6 +73,8 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 				logStream,
 			})
 			const exitCode = await waitForExit
+			const endedAt = new Date().toISOString()
+			logStream.write(`\n=== ${endedAt} · exit=${exitCode} ===\n`)
 			logStream.end()
 
 			if (exitCode !== 0) {
@@ -92,7 +96,6 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			copyToWorktree: config.turn.copyToWorktree,
 			git,
 			runAgent,
-			randId: () => randomBytes(3).toString('hex'),
 			log,
 		})
 

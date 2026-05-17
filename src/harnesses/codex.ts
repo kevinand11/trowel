@@ -17,9 +17,12 @@ export const codexHarness: HarnessAdapter = {
 	defaultModel: 'gpt-5.1-codex',
 
 	async spawnPrint(args: HarnessSpawnPrintArgs): Promise<HarnessSpawnHandle> {
+		// `--json` streams NDJSON events per agent step (tool calls, results, deltas) rather than
+		// only the final response. Flag name has shifted between codex CLI versions; verify
+		// against `codex exec --help` if upgrading.
 		const child = spawn(
 			'codex',
-			['exec', '--model', args.model, '--dangerously-bypass-approvals-and-sandbox', '--cd', args.cwd, '-'],
+			['exec', '--json', '--model', args.model, '--dangerously-bypass-approvals-and-sandbox', '--cd', args.cwd, '-'],
 			{ cwd: args.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] },
 		)
 		child.stdout?.pipe(args.logStream, { end: false })

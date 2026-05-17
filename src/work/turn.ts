@@ -20,13 +20,15 @@ export type SpawnTurnDeps = {
 	copyToWorktree: string[]
 	git: GitOps
 	runAgent: (args: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }) => Promise<{ commits: number }>
-	randId: () => string
 	log?: (m: string) => void
 }
 
 export async function spawnTurn(args: SpawnTurnArgs, deps: SpawnTurnDeps): Promise<TurnOut> {
-	const runId = deps.randId()
-	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.prdId, `${args.slice.id}-${args.role}-${runId}.log`)
+	// One log file per (prd, slice, role); each Turn appends a section header at start.
+	// See ADR `2026-05-12-sandcastle-integration.md` — pre-pivot the path included a runId
+	// suffix because worktrees were also per-Turn; post-pivot worktrees are per-branch and
+	// logs follow the same one-per-(slice,role) shape.
+	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.prdId, `${args.slice.id}-${args.role}.log`)
 
 	const worktree = await ensureWorktree({
 		prdId: deps.prdId,
@@ -116,7 +118,6 @@ if (import.meta.vitest) {
 					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
 					return { commits: 2 }
 				},
-				randId: () => 'r1',
 			}
 
 			const out = await spawnTurn(args, deps)
@@ -144,7 +145,6 @@ if (import.meta.vitest) {
 					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
 					return { commits: 1 }
 				},
-				randId: () => 'first',
 			}
 			const first = await spawnTurn(makeArgs(), firstDeps)
 			expect(first.verdict).toBe('ready')
@@ -158,7 +158,6 @@ if (import.meta.vitest) {
 				copyToWorktree: [],
 				git,
 				runAgent: async () => ({ commits: 0 }),
-				randId: () => 'second',
 			}
 			await expect(spawnTurn(makeArgs(), secondDeps)).rejects.toThrow(/verdict file missing/i)
 		})
@@ -170,12 +169,11 @@ if (import.meta.vitest) {
 				copyToWorktree: [],
 				git,
 				runAgent: async () => ({ commits: 0 }),
-				randId: () => 'r1',
 			}
 			await expect(spawnTurn(makeArgs(), deps)).rejects.toThrow(/verdict file missing/i)
 		})
 
-		test('logPath is under <projectRoot>/.trowel/logs/<prdId>/ containing slice id, role and runId', async () => {
+		test('logPath is <projectRoot>/.trowel/logs/<prdId>/<sliceId>-<role>.log (one file per slice+role; appended across Turns)', async () => {
 			let observedLogPath: string | null = null
 			const deps: SpawnTurnDeps = {
 				prdId: '142',
@@ -187,10 +185,23 @@ if (import.meta.vitest) {
 					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
 					return { commits: 0 }
 				},
-				randId: () => 'abc',
 			}
 			await spawnTurn(makeArgs({ role: 'review' }), deps)
-			expect(observedLogPath).toBe(path.join(projectRoot, '.trowel', 'logs', '142', '145-review-abc.log'))
+			expect(observedLogPath).toBe(path.join(projectRoot, '.trowel', 'logs', '142', '145-review.log'))
+
+			// A second Turn against the same (prd, slice, role) resolves to the same path; the
+			// runtime opens in append mode and writes a section header per Turn.
+			let secondPath: string | null = null
+			const deps2: SpawnTurnDeps = {
+				...deps,
+				runAgent: async ({ logPath, worktree }) => {
+					secondPath = logPath
+					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					return { commits: 0 }
+				},
+			}
+			await spawnTurn(makeArgs({ role: 'review' }), deps2)
+			expect(secondPath).toBe(observedLogPath)
 		})
 
 		test('passes runAgent a TurnWorktree handle pointing at the persistent worktree path', async () => {
@@ -205,7 +216,6 @@ if (import.meta.vitest) {
 					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
 					return { commits: 0 }
 				},
-				randId: () => 'r1',
 			}
 			await spawnTurn(makeArgs(), deps)
 			expect(observedWorktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', '142', 'feature'))
@@ -224,7 +234,6 @@ if (import.meta.vitest) {
 					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
 					return { commits: 1 }
 				},
-				randId: () => 'r1',
 			}
 			await spawnTurn(makeArgs(), deps)
 
@@ -252,7 +261,6 @@ if (import.meta.vitest) {
 					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
 					return { commits: 1 }
 				},
-				randId: () => 'r1',
 			}
 			await spawnTurn(makeArgs(), deps)
 			await spawnTurn(makeArgs(), deps)
