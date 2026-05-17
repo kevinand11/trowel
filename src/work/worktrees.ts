@@ -28,7 +28,7 @@ export async function ensureTrowelDir(projectRoot: string): Promise<void> {
 
 export type TurnWorktree = { worktreePath: string; branch: string; prdId: string }
 
-export function worktreePathFor(projectRoot: string, prdId: string, branch: string): string {
+function worktreePathFor(projectRoot: string, prdId: string, branch: string): string {
 	return path.join(projectRoot, '.trowel', 'worktrees', prdId, slug(branch))
 }
 
@@ -73,7 +73,7 @@ export async function resetWorktree(wt: TurnWorktree, git: GitOps): Promise<void
 	await git.cleanUntracked(wt.worktreePath)
 }
 
-export async function destroyWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
+async function destroyWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
 	try {
 		await git.worktreeRemove(wt.worktreePath, { force: true })
 	} catch {
@@ -117,7 +117,7 @@ async function pathExists(p: string): Promise<boolean> {
 	}
 }
 
-export function parseDurationMs(input: string): number {
+function parseDurationMs(input: string): number {
 	const m = /^(\d+)\s*(ms|s|m|h|d)$/i.exec(input.trim())
 	if (!m) throw new Error(`invalid duration: ${input}`)
 	const n = parseInt(m[1], 10)

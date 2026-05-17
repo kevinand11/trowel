@@ -134,6 +134,20 @@ _Avoid_: Feature branch (reserved for `fix/<slug>`), task branch.
 - "Sandbox" is the retired name for **Turn**. It overspecified Docker isolation; the **Turn** vocabulary covers both `kind: 'host'` (no container) and `kind: 'docker'` (future). Code-level identifiers (`spawnSandbox`, `SpawnSandboxArgs`, `sandbox-in.json`, `sandbox-out.json`, `config.sandbox.*`) are scheduled to rename in the same pass that retires sandcastle. The pre-pivot ADR `2026-05-12-sandcastle-integration.md` describes the old shape.
 - "Session" is informally used in some places (and in the `2026-05-12-sandcastle-integration.md` ADR body) to mean *Claude Code's per-conversation JSONL state* in `~/.claude/projects/`. It is **not** a trowel-level glossary term; the trowel-level concept is **Turn**. One Turn may resume or create one or more of Claude Code's sessions.
 
+## Repo conventions
+
+Settled decisions that cross every part of the codebase. Don't reopen without a concrete forcing function.
+
+- **Distribution.** Personal CLI, single user, single machine, never shared. Lives at `~/Desktop/code/trowel/`, symlinked from `~/.local/bin/trowel`.
+- **Language & runtime.** Node + `tsx`. TypeScript everywhere. `pnpm` for install/scripts/exec — never `npm`.
+- **Validation.** All config + external input goes through a `valleyed` pipe. Prefer `v.validate(pipe, input)` (success/error shape) over `v.assert(pipe, input)` (throws, slower).
+- **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
+- **Doc-change branch.** Edits to `CONTEXT.md` and `docs/adr/` land on the **Integration branch**, not on `main`.
+- **Failure recovery.** `trowel work <id>` is idempotent — re-run after any abort. `trowel start` is one-shot; aborted runs leave an orphan PRD closeable via `trowel close <id>`. No atomic rollback.
+- **Working-tree precondition.** Strict clean tree at command start; `try/finally` restores the captured **BACK_TO branch** on exit.
+- **Style.** Tabs, single quotes, kebab-case filenames, `@k11/configs` for tsconfig/eslint/prettier. Mirrors equipped's conventions.
+- **No eager exports.** Never add `export` to a symbol (function, type, const) unless there is already a consumer outside its defining file. If the only callers are inside the same module — including `import.meta.vitest` blocks — keep it `function`/`type`/`const`, not `export function`/`export type`/`export const`. The rule applies symmetrically to deletion: when the last external caller goes away, the `export` keyword goes away with it. Visibility is a property of the call graph, not a default.
+
 ## Out of scope
 
 - Multi-user, multi-machine sharing. Trowel is personal-only.

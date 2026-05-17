@@ -2,66 +2,46 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const PROMPTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)))
+export type Role = 'implement' | 'review' | 'address'
 
-/**
- * Load a prompt template and substitute {{PLACEHOLDER}} tokens.
- * Matches the substitution pattern used by equipped's .sandcastle prompts.
- *
- * `dir` defaults to this module's own directory; tests pass a fixture dir.
- */
-export async function loadPrompt(name: string, args: Record<string, string>, dir: string = PROMPTS_DIR): Promise<string> {
-	const filePath = path.join(dir, `${name}.md`)
-	let template: string
+const PROMPTS_DIR = path.dirname(fileURLToPath(import.meta.url))
+
+export async function loadPrompt(name: Role | 'start'): Promise<string> {
+	const filePath = path.join(PROMPTS_DIR, `${name}.md`)
 	try {
-		template = await readFile(filePath, 'utf8')
+		return await readFile(filePath, 'utf8')
 	} catch (error) {
 		throw new Error(`Prompt template not found: ${filePath}: ${(error as Error).message}`)
 	}
-	let out = template
-	for (const [key, value] of Object.entries(args)) {
-		out = out.replaceAll(`{{${key}}}`, value)
-	}
-	return out
 }
 
 if (import.meta.vitest) {
-	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
-	const { mkdtemp, rm, writeFile } = await import('node:fs/promises')
-	const { tmpdir } = await import('node:os')
+	const { describe, test, expect } = import.meta.vitest
 
 	describe('loadPrompt', () => {
-		let dir: string
-
-		beforeEach(async () => {
-			dir = await mkdtemp(path.join(tmpdir(), 'trowel-prompt-'))
-		})
-		afterEach(async () => {
-			await rm(dir, { recursive: true, force: true })
+		test('returns the implement prompt verbatim', async () => {
+			const out = await loadPrompt('implement')
+			expect(out).toContain('You are running inside a trowel sandbox as the **Implementer**')
+			expect(out).not.toMatch(/\{\{.+?\}\}/)
 		})
 
-		test('returns the template verbatim when there are no placeholders', async () => {
-			await writeFile(path.join(dir, 'hi.md'), 'hello world', 'utf8')
-			expect(await loadPrompt('hi', {}, dir)).toBe('hello world')
+		test('review and address prompts load verbatim', async () => {
+			const review = await loadPrompt('review')
+			expect(review.length).toBeGreaterThan(0)
+			expect(review).not.toMatch(/\{\{.+?\}\}/)
+
+			const address = await loadPrompt('address')
+			expect(address.length).toBeGreaterThan(0)
+			expect(address).not.toMatch(/\{\{.+?\}\}/)
 		})
 
-		test('substitutes a {{TOKEN}} with its value', async () => {
-			await writeFile(path.join(dir, 'tpl.md'), 'branch={{BRANCH}}', 'utf8')
-			expect(await loadPrompt('tpl', { BRANCH: 'prd/foo' }, dir)).toBe('branch=prd/foo')
-		})
-
-		test('substitutes every occurrence of the same token', async () => {
-			await writeFile(path.join(dir, 'tpl.md'), '{{X}} and {{X}}', 'utf8')
-			expect(await loadPrompt('tpl', { X: 'Y' }, dir)).toBe('Y and Y')
-		})
-
-		test('leaves unknown tokens untouched', async () => {
-			await writeFile(path.join(dir, 'tpl.md'), '{{KNOWN}} {{UNKNOWN}}', 'utf8')
-			expect(await loadPrompt('tpl', { KNOWN: 'k' }, dir)).toBe('k {{UNKNOWN}}')
+		test('start prompt loads', async () => {
+			const start = await loadPrompt('start')
+			expect(start.length).toBeGreaterThan(0)
 		})
 
 		test('throws with a useful message when the template is missing', async () => {
-			await expect(loadPrompt('missing', {}, dir)).rejects.toThrow(/Prompt template not found/)
+			await expect(loadPrompt('missing' as Role)).rejects.toThrow(/Prompt template not found/)
 		})
 	})
 }

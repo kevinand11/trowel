@@ -1,9 +1,9 @@
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import type { Role } from './prompts.ts'
 import { parseVerdict, type TurnIn, type TurnOut } from './verdict.ts'
 import { ensureWorktree, resetWorktree, type TurnWorktree } from './worktrees.ts'
+import type { Role } from '../prompts/load.ts'
 import type { Slice } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 

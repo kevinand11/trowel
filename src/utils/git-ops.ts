@@ -1,10 +1,14 @@
-import { exec, tryExec } from './shell.ts'
+import { exec, parseSemver, tryExec } from './shell.ts'
+
+type VersionInfo = { installed: boolean; version?: string }
 
 /**
  * Single canonical surface for every git operation trowel performs against
  * a project's repo. See ADR `2026-05-13-unified-gitops-via-module-factory`.
  */
 export type GitOps = {
+	// Environment
+	detectVersion(): Promise<VersionInfo>
 	// phase-method ops (consumed by Storage implementations)
 	fetch(branch: string): Promise<void>
 	push(branch: string): Promise<void>
@@ -43,6 +47,11 @@ export function createRepoGit(projectRoot: string): GitOps {
 	}
 
 	return {
+		detectVersion: async () => {
+			const r = await tryExec('git', ['--version'])
+			if (!r.ok) return { installed: false }
+			return { installed: true, version: parseSemver(`${r.stdout}\n${r.stderr}`) }
+		},
 		fetch: async (b) => {
 			await gitOrThrow(['fetch', '-q', 'origin', b])
 		},
@@ -164,6 +173,15 @@ if (import.meta.vitest) {
 	const path = await import('node:path')
 	const { writeFile, readFile, stat, mkdir } = await import('node:fs/promises')
 	const { setupTestRepo } = await import('../test-utils/git-repo.ts')
+
+	describe('GitOps environment probe', () => {
+		test('detectVersion reports installed:true and parses the semver from real `git --version`', async () => {
+			const git = createRepoGit(process.cwd())
+			const v = await git.detectVersion()
+			expect(v.installed).toBe(true)
+			expect(v.version).toMatch(/^\d+\.\d+\.\d+$/)
+		})
+	})
 
 	describe('GitOps worktree primitives (real git on tmp repos)', () => {
 		let repo: string

@@ -1,4 +1,4 @@
-import { tryExec, type ShellResult } from './shell.ts'
+import { parseSemver, tryExec, type ShellResult } from './shell.ts'
 
 /**
  * Single canonical surface for every `gh` operation trowel performs. Parallel
@@ -7,6 +7,8 @@ import { tryExec, type ShellResult } from './shell.ts'
  */
 
 type GhRunner = (args: string[]) => Promise<ShellResult>
+
+type VersionInfo = { installed: boolean; version?: string }
 
 export type IssueState = 'OPEN' | 'CLOSED'
 
@@ -65,6 +67,10 @@ export type ThreadCommentRaw = {
 }
 
 export type GhOps = {
+	// Environment
+	detectVersion(): Promise<VersionInfo>
+	isAuthenticated(): Promise<boolean>
+
 	// Issues
 	createIssue(opts: { title: string; body: string; labels?: string[] }): Promise<string>
 	viewIssue(id: string): Promise<IssueRecord | null>
@@ -108,6 +114,16 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 	}
 
 	return {
+		async detectVersion() {
+			const r = await runner(['--version'])
+			if (!r.ok) return { installed: false }
+			return { installed: true, version: parseSemver(`${r.stdout}\n${r.stderr}`) }
+		},
+		async isAuthenticated() {
+			const r = await runner(['auth', 'status'])
+			return r.ok
+		},
+
 		async createIssue({ title, body, labels = [] }) {
 			const args = ['issue', 'create', '--title', title, '--body', body]
 			for (const label of labels) args.push('--label', label)
@@ -158,7 +174,14 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return JSON.parse(out) as BlockerEntry[]
 		},
 		async addBlockedBy(issueId, internalId) {
-			await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by`, '-F', `issue_id=${internalId}`])
+			await ghOrThrow([
+				'api',
+				'-X',
+				'POST',
+				`repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by`,
+				'-F',
+				`issue_id=${internalId}`,
+			])
 		},
 		async removeBlockedBy(issueId, internalId) {
 			await ghOrThrow(['api', '-X', 'DELETE', `repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by/${internalId}`])
@@ -228,6 +251,35 @@ if (import.meta.vitest) {
 
 	const ok = (stdout = ''): ShellResult => ({ ok: true, stdout, stderr: '' })
 
+	describe('createGh: environment probes', () => {
+		test('detectVersion parses the semver out of `gh --version` stdout', async () => {
+			const { runner, calls } = makeRunner([{ match: (a) => a[0] === '--version', respond: ok('gh version 2.50.0 (2026-04-01)\n') }])
+			const v = await createGh(runner).detectVersion()
+			expect(v).toEqual({ installed: true, version: '2.50.0' })
+			expect(calls[0]).toEqual(['--version'])
+		})
+
+		test('detectVersion reports installed:false when gh is not on PATH', async () => {
+			const { runner } = makeRunner([{ match: (a) => a[0] === '--version', respond: { ok: false, error: new Error('ENOENT') } }])
+			expect(await createGh(runner).detectVersion()).toEqual({ installed: false })
+		})
+
+		test('isAuthenticated returns true when `gh auth status` succeeds', async () => {
+			const { runner, calls } = makeRunner([
+				{ match: (a) => a[0] === 'auth' && a[1] === 'status', respond: ok('Logged in to github.com as user') },
+			])
+			expect(await createGh(runner).isAuthenticated()).toBe(true)
+			expect(calls[0]).toEqual(['auth', 'status'])
+		})
+
+		test('isAuthenticated returns false when `gh auth status` fails', async () => {
+			const { runner } = makeRunner([
+				{ match: (a) => a[0] === 'auth' && a[1] === 'status', respond: { ok: false, error: new Error('not logged in') } },
+			])
+			expect(await createGh(runner).isAuthenticated()).toBe(false)
+		})
+	})
+
 	describe('parseGhIssueNumber', () => {
 		test('extracts the trailing number from a typical gh-create URL', () => {
 			expect(parseGhIssueNumber('https://github.com/o/r/issues/42\n')).toBe('42')
@@ -257,16 +309,12 @@ if (import.meta.vitest) {
 		})
 
 		test('viewIssue returns null when gh fails (issue not found)', async () => {
-			const { runner } = makeRunner([
-				{ match: () => true, respond: { ok: false, error: new Error('not found') } },
-			])
+			const { runner } = makeRunner([{ match: () => true, respond: { ok: false, error: new Error('not found') } }])
 			expect(await createGh(runner).viewIssue('42')).toBeNull()
 		})
 
 		test('viewIssue parses {number,title,state}', async () => {
-			const { runner } = makeRunner([
-				{ match: () => true, respond: ok(JSON.stringify({ number: 42, title: 'X', state: 'OPEN' })) },
-			])
+			const { runner } = makeRunner([{ match: () => true, respond: ok(JSON.stringify({ number: 42, title: 'X', state: 'OPEN' })) }])
 			expect(await createGh(runner).viewIssue('42')).toEqual({ number: 42, title: 'X', state: 'OPEN' })
 		})
 
@@ -361,9 +409,7 @@ if (import.meta.vitest) {
 		})
 
 		test('listOpenPrs without base lists all open PRs', async () => {
-			const { runner, calls } = makeRunner([
-				{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a' }])) },
-			])
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a' }])) }])
 			const out = await createGh(runner).listOpenPrs()
 			expect(out).toEqual([{ number: 1, headRefName: 'a' }])
 			expect(calls[0]).toEqual(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,url'])
@@ -385,7 +431,10 @@ if (import.meta.vitest) {
 
 		test('fetchPrReviews unwraps the {reviews:[]} payload', async () => {
 			const { runner } = makeRunner([
-				{ match: () => true, respond: ok(JSON.stringify({ reviews: [{ author: { login: 'r' }, submittedAt: 't', body: 'b', state: 'COMMENTED' }] })) },
+				{
+					match: () => true,
+					respond: ok(JSON.stringify({ reviews: [{ author: { login: 'r' }, submittedAt: 't', body: 'b', state: 'COMMENTED' }] })),
+				},
 			])
 			const out = await createGh(runner).fetchPrReviews(168)
 			expect(out).toEqual([{ author: { login: 'r' }, submittedAt: 't', body: 'b', state: 'COMMENTED' }])

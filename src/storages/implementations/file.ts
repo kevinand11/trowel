@@ -370,6 +370,7 @@ if (import.meta.vitest) {
 			stashPop: async () => realGit.stashPop(),
 			mergeAbort: async () => realGit.mergeAbort(),
 			commitsAhead: async (b, base) => realGit.commitsAhead(b, base),
+			detectVersion: async () => realGit.detectVersion(),
 		}
 		const { gh } = recordingGhOps()
 		const deps: StorageDeps = {
@@ -596,6 +597,7 @@ if (import.meta.vitest) {
 					stashPop: async () => {},
 					mergeAbort: async () => {},
 					commitsAhead: async () => 0,
+					detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 				}
 				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 
@@ -664,6 +666,7 @@ if (import.meta.vitest) {
 					stashPop: async () => {},
 					mergeAbort: async () => {},
 					commitsAhead: async () => 0,
+					detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 				}
 				const { gh, calls: ghCalls } = recordingGhOps()
 				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log!, mergeNoVerify: false }

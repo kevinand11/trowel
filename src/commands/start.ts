@@ -175,7 +175,7 @@ export async function start(opts: { storage?: string; harness?: string }): Promi
 		projectRoot,
 		storage,
 		git,
-		startPromptText: await loadPrompt('start', {}),
+		startPromptText: await loadPrompt('start'),
 		runInteractive: async ({ promptText, cwd }) => {
 			const { waitForExit } = await harness.spawnInteractive({
 				model: config.agent.model,

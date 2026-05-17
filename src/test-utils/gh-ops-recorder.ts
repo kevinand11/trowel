@@ -24,6 +24,8 @@ export function recordingGhOps(overrides: Partial<GhOps> = {}): { gh: GhOps; cal
 	}
 
 	const gh: GhOps = {
+		detectVersion: wrap('detectVersion', async () => ({ installed: true, version: '0.0.0' })),
+		isAuthenticated: wrap('isAuthenticated', async () => true),
 		createIssue: wrap('createIssue', async () => 'https://github.com/o/r/issues/0\n'),
 		viewIssue: wrap('viewIssue', async () => null),
 		getIssueState: wrap('getIssueState', async () => null),

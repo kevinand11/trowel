@@ -1,6 +1,7 @@
 import { loadConfig } from '../config.ts'
 import { harnessFactories } from '../harnesses/registry.ts'
-import { ghIsAuthenticated, ghVersion, gitVersion } from '../utils/cli.ts'
+import { createGh } from '../utils/gh-ops.ts'
+import { createRepoGit } from '../utils/git-ops.ts'
 
 type Tag = 'ok' | 'X' | 'i'
 type Check = { tag: Tag; label: string; detail: string; failsDoctor: boolean }
@@ -12,8 +13,10 @@ function fmtVersion(v: { installed: boolean; version?: string }, notFoundHint: s
 
 export async function doctor(): Promise<void> {
 	const checks: Check[] = []
+	const git = createRepoGit(process.cwd())
+	const gh = createGh()
 
-	const gitV = await gitVersion()
+	const gitV = await git.detectVersion()
 	const gitFmt = fmtVersion(gitV, 'install git (every storage uses git for branches/worktrees)')
 	checks.push({ tag: gitFmt.tag, label: 'git', detail: gitFmt.detail, failsDoctor: gitFmt.tag === 'X' })
 
@@ -51,7 +54,7 @@ export async function doctor(): Promise<void> {
 		}
 	}
 
-	const ghV = await ghVersion()
+	const ghV = await gh.detectVersion()
 	if (!ghV.installed) {
 		checks.push({
 			tag: 'X',
@@ -60,7 +63,7 @@ export async function doctor(): Promise<void> {
 			failsDoctor: true,
 		})
 	} else {
-		const ghAuthed = await ghIsAuthenticated()
+		const ghAuthed = await gh.isAuthenticated()
 		const versionStr = ghV.version ? `v${ghV.version}` : 'found'
 		checks.push({
 			tag: ghAuthed ? 'ok' : 'X',

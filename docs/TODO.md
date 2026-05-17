@@ -2,32 +2,7 @@
 
 Pending work, organised as discrete grilling sessions. Each item is meant to be picked up cold by a future Claude session — the assumptions, locked decisions, and open design questions are restated inline so no prior conversation is needed.
 
-Pre-work for every session: read `docs/CONTEXT.md` for vocabulary, `README.md` for v0 status, `src/schema.ts` for the config shape, and `src/storages/types.ts` for the Storage interface. Both storages (`file`, `issue`) are implemented in `src/storages/implementations/{file,issue}.ts`; the AFK loop and command wiring built on top are already in place.
-
----
-
-## Locked, repo-wide (do not re-grill)
-
-These decisions cross every pending session. Don't reopen unless you have a concrete forcing function.
-
-- **Distribution.** Personal CLI, single user, single machine, never shared. Lives at `~/Desktop/code/trowel/`, symlinked from `~/.local/bin/trowel`.
-- **Language & runtime.** Node + `tsx`. TypeScript everywhere. `pnpm` for install/scripts/exec — never `npm`.
-- **Validation.** All config + external input goes through a `valleyed` pipe. Prefer `v.validate(pipe, input)` (success/error shape) over `v.assert(pipe, input)` (throws, slower).
-- **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
-- **PRD-host model.** A **PRD** is configurable per project across two **Storages**: `file`, `issue`. Slices are storage-managed: the `file` storage stores them locally alongside the PRD; the `issue` storage uses GitHub sub-issues (see ADR `slices-local-for-file-backend`). Doc changes (CONTEXT.md, ADRs) live on the **integration branch**, not on `main`.
-- **Every PRD has a unique id (see ADR `prd-unique-id-and-file-backend-layout`).** Cross-storage: issue number (`issue`) or 6-char base-36 random (`file`). The id is the argument trowel commands take.
-- **Per-layer path anchoring.** Path values in any config layer resolve relative to that layer's anchor (project layer → project root; private layer → `~/.trowel/projects/<mirror>/`; global layer → `~/.trowel/`; default → project root). Resolution happens at load time before deep-merge.
-- **Config discovery (named layers, β precedence — `project` wins outright).** Enum: `ConfigLayer = 'default' | 'global' | 'private' | 'project'`. `InitableLayer` excludes `'default'`.
-  - `default` — hard-coded defaults (`src/schema.ts:defaultConfig`)
-  - `global` — `~/.trowel/config.json`
-  - `private` — `~/.trowel/projects/<full-path-mirrored>/config.json` (user per-project, this machine only)
-  - `project` — `<project root>/.trowel/config.json` (**wins**)
-- **Project root resolution.** Walk up from cwd to the nearest `.trowel/` (preferred) or `.git/` (fallback).
-- **Failure recovery model.** `trowel work <id>` is idempotent — re-run after any abort. `trowel start` is one-shot; aborted runs leave an orphan PRD closeable via `trowel close <id>`. No atomic rollback.
-- **Working-tree precondition.** Strict clean tree at command start; `try/finally` restores the captured **BACK_TO branch** on exit.
-- **Style.** Tabs, single quotes, kebab-case filenames, `@k11/configs` for tsconfig/eslint/prettier. Mirrors equipped's conventions.
-
-Each pending session expands on one slice of the design; assume everything above is true.
+Pre-work for every session: read `docs/CONTEXT.md` for vocabulary and repo conventions, `README.md` for v0 status, `src/schema.ts` for the config shape, and `src/storages/types.ts` for the Storage interface. Both storages (`file`, `issue`) are implemented in `src/storages/implementations/{file,issue}.ts`; the AFK loop and command wiring built on top are already in place.
 
 ---
 

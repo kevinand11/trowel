@@ -1,8 +1,8 @@
 import { classify } from './classify.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
 import { enrichSlicePrStates } from './pr-flow.ts'
-import type { Role } from './prompts.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
+import type { Role } from '../prompts/load.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
@@ -33,7 +33,7 @@ export type LoopDeps = {
 	projectRoot?: string
 }
 
-export type ProcessOutcome = 'done' | 'partial' | 'no-work'
+type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
 const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'review', 'address'])
 
@@ -105,7 +105,7 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 	}
 }
 
-export async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
+async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
 	const { storage, config } = deps
 	const ctx: { prdId: string; integrationBranch: string; config: ClassifySliceConfig } = {
 		prdId,
@@ -218,6 +218,7 @@ if (import.meta.vitest) {
 			stashPop: async () => {},
 			mergeAbort: async () => {},
 			commitsAhead: async () => 0,
+			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 		}
 	}
 

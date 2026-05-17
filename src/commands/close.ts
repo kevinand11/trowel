@@ -332,6 +332,7 @@ if (import.meta.vitest) {
 			stashPop: async () => {},
 			mergeAbort: async () => {},
 			commitsAhead: async () => 0,
+			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 		}
 		return { git, calls }
 	}

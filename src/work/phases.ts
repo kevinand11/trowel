@@ -302,6 +302,7 @@ if (import.meta.vitest) {
 			isWorkingTreeClean: async () => true,
 			stashPush: recorded('stashPush'),
 			stashPop: recorded('stashPop'),
+			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 		}
 		const storage: Storage = {
 			createPrd: async () => ({ id: 'p', branch: 'b' }),

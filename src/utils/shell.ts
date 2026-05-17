@@ -7,7 +7,7 @@ export type ShellResult = { ok: true; stdout: string; stderr: string } | { ok: f
 
 export type ShellRunner = (cmd: string, args: string[]) => Promise<ShellResult>
 
-export const realShellRunner: ShellRunner = async (cmd, args) => {
+export const tryExec: ShellRunner = async (cmd, args) => {
 	try {
 		const { stdout, stderr } = await exec(cmd, args)
 		return { ok: true, stdout, stderr }
@@ -16,7 +16,11 @@ export const realShellRunner: ShellRunner = async (cmd, args) => {
 	}
 }
 
-export const tryExec: ShellRunner = realShellRunner
+export function parseSemver(s: string): string | undefined {
+	const m = s.trim().match(/(\d+\.\d+\.\d+)/)
+	return m?.[1]
+}
+
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest

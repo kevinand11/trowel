@@ -15,7 +15,7 @@ import { slug as slugify } from '../utils/slug.ts'
  * Canonical per-slice branch name (storage-agnostic). The implementer creates this
  * branch; subsequent `gh.findPrNumberByHead` / `getPrStates` calls look up PRs against it.
  */
-export function sliceBranchFor(prdId: string, slice: Slice): string {
+function sliceBranchFor(prdId: string, slice: Slice): string {
 	return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
 }
 
@@ -45,7 +45,7 @@ export async function enrichSlicePrStates(gh: GhOps, prdId: string, slices: Slic
  * historically). `'ready'` and `'merged'` will need their own queries; we'll add them when the
  * loop needs to distinguish them. For branches with no open PR, the map value is `null`.
  */
-export async function getPrStates(gh: GhOps, branches: string[]): Promise<Map<string, SlicePrState>> {
+async function getPrStates(gh: GhOps, branches: string[]): Promise<Map<string, SlicePrState>> {
 	const result = new Map<string, SlicePrState>()
 	for (const b of branches) result.set(b, null)
 	if (branches.length === 0) return result

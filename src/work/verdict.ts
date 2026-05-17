@@ -1,8 +1,8 @@
 import { v } from 'valleyed'
 
-import type { Role } from './prompts.ts'
+import type { Role } from '../prompts/load.ts'
 
-export type VerdictKind = 'ready' | 'needs-revision' | 'no-work-needed' | 'partial'
+type VerdictKind = 'ready' | 'needs-revision' | 'no-work-needed' | 'partial'
 
 export type TurnOut = {
 	verdict: VerdictKind

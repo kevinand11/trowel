@@ -22,7 +22,7 @@ export type TestRepoWithBare = {
 	cleanup(): Promise<void>
 }
 
-export type SetupTestRepoOptions = {
+type SetupTestRepoOptions = {
 	/** Extra local branches to create off the initial commit. Default: []. */
 	branches?: string[]
 	/** Directory prefix passed to `mkdtemp`. Default: 'trowel-test-'. */
@@ -72,7 +72,7 @@ export async function setupTestRepo(options: SetupTestRepoOptions = {}): Promise
 	}
 }
 
-export type SetupTestRepoWithBareOptions = {
+type SetupTestRepoWithBareOptions = {
 	prefix?: string
 }
 

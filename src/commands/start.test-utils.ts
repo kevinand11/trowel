@@ -88,6 +88,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		isMerged: async () => false, deleteBranch: async () => {}, commitsAhead: async () => 0,
 		worktreeAdd: async () => {}, worktreeRemove: async () => {},
 		worktreeList: async () => [], restoreAll: async () => {}, cleanUntracked: async () => {},
+		detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 	}
 
 	const rt: StartRuntime = {
