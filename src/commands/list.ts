@@ -188,6 +188,7 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => [],
+				findSlice: async () => null,
 				updateSlice: async () => {},
 				...overrides,
 			}

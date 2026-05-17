@@ -1,13 +1,15 @@
 import { buildLoopWiring } from './_loop-wiring.ts'
+import type { HarnessKind } from '../harnesses/registry.ts'
+import type { StorageKind } from '../storages/registry.ts'
 import type { ClassifiedSlice, Slice, Storage } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
 
-export async function review(prdId: string, sliceId: string): Promise<void> {
+export async function review(sliceId: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
 	try {
-		const wiring = await buildLoopWiring({})
-		await runReview(prdId, sliceId, {
+		const wiring = await buildLoopWiring({ storage: opts.storage, harness: opts.harness })
+		await runReview(sliceId, {
 			storage: wiring.storage,
-			runOnePhase: (slice) => wiring.runOnePhase(prdId, slice, 'review'),
+			runOnePhase: (prdId, slice) => wiring.runOnePhase(prdId, slice, 'review'),
 			stderr: (s) => process.stderr.write(s),
 		})
 	} catch (e) {
@@ -18,22 +20,23 @@ export async function review(prdId: string, sliceId: string): Promise<void> {
 
 type ReviewRuntime = {
 	storage: Storage
-	runOnePhase: (slice: Slice) => Promise<void>
+	runOnePhase: (prdId: string, slice: Slice) => Promise<void>
 	stderr: (s: string) => void
 }
 
-async function runReview(prdId: string, sliceId: string, rt: ReviewRuntime): Promise<void> {
-	const prd = await rt.storage.findPrd(prdId)
-	if (!prd) throw new Error(`PRD '${prdId}' not found`)
+async function runReview(sliceId: string, rt: ReviewRuntime): Promise<void> {
+	const hit = await rt.storage.findSlice(sliceId)
+	if (!hit) throw new Error(`slice '${sliceId}' not found`)
+	const { prdId } = hit
 	const slice = classifySlices(await rt.storage.findSlices(prdId)).find((s) => s.id === sliceId)
-	if (!slice) throw new Error(`slice '${sliceId}' not found in PRD '${prdId}'`)
+	if (!slice) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
 	if (slice.bucket !== 'in-flight') {
 		throw new Error(
 			`slice '${sliceId}' is in bucket '${slice.bucket}', not 'in-flight'. ` +
 				`Reviewer only runs against slices with an open draft PR.`,
 		)
 	}
-	await rt.runOnePhase(slice)
+	await rt.runOnePhase(prdId, slice)
 }
 
 if (import.meta.vitest) {
@@ -55,6 +58,7 @@ if (import.meta.vitest) {
 	}
 
 	function makeStorage(slices: Slice[]): Storage {
+		const sliceById = new Map(slices.map((s) => [s.id, s]))
 		return {
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
 			findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
@@ -64,6 +68,10 @@ if (import.meta.vitest) {
 				throw new Error('not used')
 			},
 			findSlices: async () => slices,
+			findSlice: async (sliceId) => {
+				const s = sliceById.get(sliceId)
+				return s ? { prdId: 'p1', slice: s } : null
+			},
 			updateSlice: async () => {},
 		}
 	}
@@ -73,9 +81,9 @@ if (import.meta.vitest) {
 			const slice = makeSlice({ id: 's1', bucket: 'in-flight' })
 			const storage = makeStorage([slice])
 			const calls: Slice[] = []
-			await runReview('p1', 's1', {
+			await runReview('s1', {
 				storage,
-				runOnePhase: async (s) => {
+				runOnePhase: async (_prdId, s) => {
 					calls.push(s)
 				},
 				stderr: () => {},
@@ -86,7 +94,7 @@ if (import.meta.vitest) {
 		test('refuses when slice bucket is not "in-flight"', async () => {
 			const slice = makeSlice({ id: 's1', prState: null }) // no PR → bucket 'ready'
 			const storage = makeStorage([slice])
-			await expect(runReview('p1', 's1', { storage, runOnePhase: async () => {}, stderr: () => {} })).rejects.toThrow(
+			await expect(runReview('s1', { storage, runOnePhase: async () => {}, stderr: () => {} })).rejects.toThrow(
 				/bucket 'ready'/,
 			)
 		})

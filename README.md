@@ -1,4 +1,4 @@
-# trowel
+# Trowel
 
 Personal CLI for orchestrating PRD-driven feature work — start, slice, finish — across any git project.
 
@@ -33,52 +33,24 @@ See `docs/CONTEXT.md` for full vocabulary.
 
 ## v0 commands
 
-| Command | Status |
-|---|---|
-| `trowel doctor` | ✓ implemented |
-| `trowel config` | ✓ implemented |
-| `trowel start [--prd <id>] [--backend <kind>]` | stub |
-| `trowel work <prd-id> [--backend <kind>]` | stub |
-| `trowel close <prd-id>` | stub |
-| `trowel status <prd-id>` | stub |
-| `trowel init [layer]` (default `project`) | stub |
-| `trowel diagnose <description>` | stub |
-| `trowel fix <description>` | stub |
-| `trowel implement <prd-id> <slice-id>` | stub |
-| `trowel address <prd-id> <slice-id>` | stub |
-| `trowel review <prd-id> <slice-id>` | stub |
+Scoped commands (`list`, `status`, `close`) take a scope token (`prd` or `slice`) before the id. Phase commands (`implement`, `address`, `review`) take just `<slice-id>` — slice ids are globally unique within a project (GitHub issue numbers on `issue`; an integer from a project-wide shared pool on `file`).
 
-## Deferred (separate grilling sessions)
+| Command |
+| --- |
+| `trowel init [layer]` (default `project`) |
+| `trowel doctor` |
+| `trowel config` |
+| `trowel start [--storage <kind>] [--harness <kind>]` |
+| `trowel work <prd-id> [--storage <kind>] [--harness <kind>]` |
+| `trowel implement <slice-id> [--storage <kind>] [--harness <kind>]` |
+| `trowel address <slice-id> [--storage <kind>] [--harness <kind>]` |
+| `trowel review <slice-id> [--storage <kind>] [--harness <kind>]` |
+| `trowel list prd [--state open\|closed\|all] [--storage <kind>]` |
+| `trowel status prd <prd-id> [--storage <kind>]` |
+| `trowel status slice <slice-id> [--storage <kind>]` |
+| `trowel close prd <prd-id> [--storage <kind>]` |
+| `trowel close slice <slice-id> [--storage <kind>]` |
+| `trowel diagnose <description>` |
+| `trowel fix <description>` |
 
-- **Backends** — `markdown`, `draft-pr`, `issue` strategies for PRD storage and slice linkage.
-- **AFK loop** — port of equipped's `.sandcastle/` into `src/work/` + the `work` / `implement` / `address` / `review` command bodies.
-- **Prompts** — `start.md`, `resume.md`, `implement.md`, `review.md`, `respond-to-feedback.md`.
-- **`init` wizard** — when no layer flag is given, prompts interactively for which layer to write.
-
-## Layout
-
-```
-.
-├── bin/trowel                  ← shim using tsx
-├── src/
-│   ├── cli.ts                  ← commander wiring
-│   ├── schema.ts               ← Config + valleyed pipe + defaults + merge
-│   ├── config.ts               ← four-layer loader
-│   ├── project.ts              ← walk-up project-root resolver
-│   ├── preflight.ts            ← clean-tree / fetch / collision helpers
-│   ├── backends/
-│   │   ├── types.ts            ← Backend interface
-│   │   └── registry.ts         ← not-implemented shim per kind
-│   ├── commands/
-│   │   ├── doctor.ts           ← implemented
-│   │   ├── config.ts           ← implemented
-│   │   └── stubs.ts            ← every other command
-│   ├── prompts/
-│   │   ├── load.ts             ← {{PLACEHOLDER}} template loader
-│   │   └── README.md
-│   └── utils/{shell,git,gh}.ts
-├── docs/CONTEXT.md
-├── package.json
-├── tsconfig.json
-└── README.md
-```
+Flag rule: `--storage` is offered by any command that reads or writes a PRD or Slice; `--harness` is offered by any command that spawns an agent. `doctor` / `config` / `init` take neither.

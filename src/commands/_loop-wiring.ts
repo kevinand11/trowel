@@ -105,7 +105,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 	const runOnePhase = async (prdId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await integrationBranch(prdId)
 		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
-		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify }
+		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
 		const prep = role === 'implement'
 			? await prepareImplement(phaseDeps, slice, ctx)
 			: role === 'review'
@@ -143,6 +143,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 				maxConcurrent: config.turn.maxConcurrent,
 				mergeNoVerify: config.work.mergeNoVerify,
 			},
+			projectRoot,
 		})
 	}
 

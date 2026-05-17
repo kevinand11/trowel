@@ -13,7 +13,7 @@ A long-form spec describing a single feature or change, identified by a unique *
 _Avoid_: Spec, design doc, ticket, story.
 
 **PRD id**:
-The canonical unique identifier for a **PRD**. Form depends on **Storage**: GitHub issue number (`issue`) or 6-character base-36 random string (`file`). The id is what trowel commands take as arguments (`trowel close <id>`, `trowel work <id>`).
+The canonical unique identifier for a **PRD**. Form depends on **Storage**: GitHub issue number (`issue`) or a positive integer drawn from a project-wide pool shared with **Slice** ids (`file`). On the `file` storage the id is allocated compute-on-demand at creation time — the storage scans every existing PRD and slice dir for the highest integer prefix and uses `max + 1` — under the **Mutation lock**. The id is what trowel commands take as arguments (`trowel status prd <id>`, `trowel work <id>`).
 _Avoid_: Slug (slug is human-legible, not unique on its own), name.
 
 **Storage**:
@@ -28,7 +28,7 @@ A user-configurable behavior toggle in `config.work.*`. Flags drive AFK-loop beh
 _Avoid_: Option, setting.
 
 **Slice**:
-One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is storage-defined: the `file` storage stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` storage stores them as GitHub sub-issues. Each `Slice` returned by the storage carries `{ id, title, body, state: 'OPEN' | 'CLOSED', readyForAgent, needsRevision, blockedBy: string[] }`. The two AFK-loop signals — `readyForAgent` (eligible for the implementer to pick up) and `needsRevision` (the reviewer flagged the slice's PR for changes) — are stored natively per storage: the `file` storage uses boolean fields in the slice's `store.json`; the `issue` storage uses the presence of GitHub labels whose names come from `StorageDeps.labels.{readyForAgent,needsRevision}` (configurable per project). The slice's **Bucket** and PR-state are **not** storage fields — they are loop-computed projections (see below).
+One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is storage-defined: the `file` storage stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` storage stores them as GitHub sub-issues. Slice ids are globally unique within a project: on `file` they come from the same shared integer pool as **PRD ids** (see **PRD id**); on `issue` they are GitHub issue numbers (sub-issues share the repo's issue-number sequence). Global uniqueness is what lets `trowel status slice <id>` and `trowel close slice <id>` address a slice without naming its parent PRD. Each `Slice` returned by the storage carries `{ id, title, body, state: 'OPEN' | 'CLOSED', readyForAgent, needsRevision, blockedBy: string[] }`. The two AFK-loop signals — `readyForAgent` (eligible for the implementer to pick up) and `needsRevision` (the reviewer flagged the slice's PR for changes) — are stored natively per storage: the `file` storage uses boolean fields in the slice's `store.json`; the `issue` storage uses the presence of GitHub labels whose names come from `StorageDeps.labels.{readyForAgent,needsRevision}` (configurable per project). The slice's **Bucket** and PR-state are **not** storage fields — they are loop-computed projections (see below).
 _Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature; sub-issues are only one storage mechanism), task, ticket.
 
 **Bucket**:
@@ -66,6 +66,10 @@ The TS type for this enum is `ConfigLayer = 'default' | 'global' | 'private' | '
 **BACK_TO branch**:
 The branch the user was on when they invoked a trowel command that switches branches. Captured at command start; restored via `try/finally` on exit (clean exit, error, or abort).
 _Avoid_: Original branch, prior branch.
+
+**Mutation lock**:
+A project-wide advisory lock at `<projectRoot>/.trowel/lock` that any command acquires before mutating trowel state (PRD/slice CRUD, branch ops, `closePrd`). Read-only commands (`status`, `list`, `config`, `doctor`) do **not** acquire it. Acquisition is via `proper-lockfile` (mtime-refreshed, with stale-lock detection); on contention the caller retries with backoff for up to ~5 seconds and then fails with `trowel busy: another command holds the lock`. The lock makes the **PRD id** compute-on-demand allocation race-free: scanning existing ids and writing the new entity dir happen inside one critical section. Reentrant per async context (via `AsyncLocalStorage`) so command-layer wrappers and storage-method wrappers compose without deadlocking. Acquired at three layers: short-running mutation commands (`close prd`, `close slice`) wrap their entry; the AFK-loop's per-Turn `landX` step in `src/work/phases.ts` wraps the post-Turn mutation window (Turn itself runs unlocked); and `file` storage write methods wrap individually for the storage-direct-call case. `start` deliberately skips command-entry wrapping — its interactive grilling can run for minutes, and the final write phase is covered by the storage-method layer. Modelled after git's `.git/index.lock`.
+_Avoid_: Mutex (overloaded with in-process locks), semaphore.
 
 ### AFK loop
 

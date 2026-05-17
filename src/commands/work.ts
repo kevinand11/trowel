@@ -45,6 +45,7 @@ if (import.meta.vitest) {
 				throw new Error('not used')
 			},
 			findSlices: async () => [],
+			findSlice: async () => null,
 			updateSlice: async () => {},
 		}
 	}

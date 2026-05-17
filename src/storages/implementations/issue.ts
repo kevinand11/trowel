@@ -96,6 +96,17 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		}))
 	}
 
+	async function findSlice(sliceId: string): Promise<{ prdId: string; slice: Slice } | null> {
+		const prds = await deps.gh.listIssues({ label: deps.labels.prd, state: 'all' })
+		for (const prd of prds) {
+			const prdId = String(prd.number)
+			const slices = await findSlices(prdId)
+			const match = slices.find((s) => s.id === sliceId)
+			if (match) return { prdId, slice: match }
+		}
+		return null
+	}
+
 	return {
 		createPrd,
 		findPrd,
@@ -103,6 +114,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		closePrd,
 		createSlice,
 		findSlices,
+		findSlice,
 		updateSlice,
 	}
 

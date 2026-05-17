@@ -87,13 +87,12 @@ async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
 	if (!renderStatus(prd, slices).endsWith('\n')) rt.stdout('\n')
 }
 
-export async function status(prdId: string, opts: { storage?: string }): Promise<void> {
+async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string }> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel status: no project root found\n')
 		process.exit(1)
 	}
-
 	const storageKind = opts.storage ?? config.storage
 	const storageDeps: StorageDeps = {
 		gh: createGh(),
@@ -104,8 +103,11 @@ export async function status(prdId: string, opts: { storage?: string }): Promise
 		labels: config.labels,
 		closeOptions: config.close,
 	}
-	const storage = getStorage(storageKind, storageDeps)
+	return { storage: getStorage(storageKind, storageDeps), projectRoot }
+}
 
+export async function statusPrd(prdId: string, opts: { storage?: string }): Promise<void> {
+	const { storage } = await buildStatusStorage(opts)
 	try {
 		await runStatus(prdId, {
 			storage,
@@ -115,6 +117,58 @@ export async function status(prdId: string, opts: { storage?: string }): Promise
 		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
 		process.exit(1)
 	}
+}
+
+export async function statusSlice(sliceId: string, opts: { storage?: string }): Promise<void> {
+	const { storage } = await buildStatusStorage(opts)
+	try {
+		await runStatusSlice(sliceId, {
+			storage,
+			stdout: (s) => process.stdout.write(s),
+		})
+	} catch (error) {
+		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
+		process.exit(1)
+	}
+}
+
+type StatusSliceRuntime = {
+	storage: Storage
+	stdout: (s: string) => void
+}
+
+async function runStatusSlice(sliceId: string, rt: StatusSliceRuntime): Promise<void> {
+	const hit = await rt.storage.findSlice(sliceId)
+	if (!hit) throw new Error(`slice '${sliceId}' not found`)
+	const prd = await rt.storage.findPrd(hit.prdId)
+	if (!prd) throw new Error(`slice '${sliceId}' references missing PRD '${hit.prdId}'`)
+	const siblings = classifySlices(await rt.storage.findSlices(hit.prdId))
+	const target = siblings.find((s) => s.id === sliceId)
+	if (!target) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
+	rt.stdout(renderStatusSlice(prd, target, siblings))
+	if (!renderStatusSlice(prd, target, siblings).endsWith('\n')) rt.stdout('\n')
+}
+
+function renderStatusSlice(prd: PrdRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
+	const lines: string[] = []
+	lines.push(`Slice ${slice.id}  ${slice.title}`)
+	lines.push(`PRD:     ${prd.id}  ${prd.title}`)
+	lines.push(`State:   ${slice.state}   bucket: ${slice.bucket}`)
+	lines.push(`ready-for-agent: ${slice.readyForAgent}`)
+	lines.push(`needs-revision:  ${slice.needsRevision}`)
+	if (slice.blockedBy.length > 0) {
+		lines.push('blockedBy:')
+		const byId = new Map(siblings.map((s) => [s.id, s]))
+		for (const id of slice.blockedBy) {
+			const dep = byId.get(id)
+			if (dep) {
+				lines.push(`  ${id.padEnd(6)}  ${dep.bucket.padEnd(14)}  ${dep.title}`)
+			} else {
+				lines.push(`  ${id.padEnd(6)}  (not found)`)
+			}
+		}
+	}
+	return lines.join('\n')
 }
 
 if (import.meta.vitest) {
@@ -140,6 +194,7 @@ if (import.meta.vitest) {
 				throw new Error('nyi')
 			},
 			findSlices: async () => state.rawSlices,
+			findSlice: async () => null,
 			updateSlice: async () => {},
 		}
 	}
@@ -242,6 +297,64 @@ if (import.meta.vitest) {
 			])
 			// Order: done, in-flight, ready
 			expect(out).toMatch(/1 done · 1 in-flight · 1 ready/)
+		})
+	})
+
+	describe('runStatusSlice', () => {
+		function sliceStorage(prd: PrdRecord, rawSlices: Slice[]): Storage {
+			const byId = new Map(rawSlices.map((s) => [s.id, s]))
+			return {
+				createPrd: async () => ({ id: 'x', branch: 'x' }),
+				findPrd: async (id) => (id === prd.id ? prd : null),
+				listPrds: async () => [],
+				closePrd: async () => {},
+				createSlice: async () => { throw new Error('nyi') },
+				findSlices: async () => rawSlices,
+				findSlice: async (sliceId) => {
+					const s = byId.get(sliceId)
+					return s ? { prdId: prd.id, slice: s } : null
+				},
+				updateSlice: async () => {},
+			}
+		}
+
+		const rawSlice = (overrides: Partial<Slice>): Slice => ({
+			id: '42',
+			title: 'Implement tab parser',
+			body: '',
+			state: 'OPEN',
+			readyForAgent: true,
+			needsRevision: false,
+			blockedBy: [],
+			prState: null,
+			...overrides,
+		})
+
+		test('renders slice header + parent PRD ref + bucket', async () => {
+			const storage = sliceStorage(prd, [rawSlice({ id: '42' })])
+			let buf = ''
+			await runStatusSlice('42', { storage, stdout: (s) => (buf += s) })
+			expect(buf).toContain('Slice 42  Implement tab parser')
+			expect(buf).toContain(`PRD:     ${prd.id}  ${prd.title}`)
+			expect(buf).toContain('bucket: ready')
+		})
+
+		test('renders blockedBy with each blocker\'s bucket', async () => {
+			const storage = sliceStorage(prd, [
+				rawSlice({ id: '40', title: 'Migration', state: 'CLOSED' }),
+				rawSlice({ id: '41', title: 'Constants', readyForAgent: true }),
+				rawSlice({ id: '42', title: 'Tab parser', blockedBy: ['40', '41'] }),
+			])
+			let buf = ''
+			await runStatusSlice('42', { storage, stdout: (s) => (buf += s) })
+			expect(buf).toContain('blockedBy:')
+			expect(buf).toMatch(/40.*done.*Migration/)
+			expect(buf).toMatch(/41.*ready.*Constants/)
+		})
+
+		test('errors when slice id not found', async () => {
+			const storage = sliceStorage(prd, [])
+			await expect(runStatusSlice('999', { storage, stdout: () => {} })).rejects.toThrow(/slice '999' not found/)
 		})
 	})
 }

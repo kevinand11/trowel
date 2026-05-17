@@ -57,6 +57,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 			return slice
 		},
 		findSlices: async () => [],
+		findSlice: async () => null,
 		updateSlice: async (prdId, sliceId, patch) => {
 			calls.updateSlice.push({ prdId, sliceId, patch })
 		},

@@ -144,5 +144,11 @@ export interface Storage {
 	// Slice lifecycle
 	createSlice(prdId: string, spec: SliceSpec): Promise<Slice>
 	findSlices(prdId: string): Promise<Slice[]>
+	/**
+	 * Look up a slice by its global id without knowing the parent PRD. Returns the slice plus its
+	 * parent PRD id, or null if no slice with that id exists. Powers `trowel status slice <id>`,
+	 * `trowel close slice <id>`, and the single-arg phase commands (`implement`/`address`/`review`).
+	 */
+	findSlice(sliceId: string): Promise<{ prdId: string; slice: Slice } | null>
 	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
 }

@@ -3,6 +3,7 @@ import type { TurnIn, TurnOut } from './verdict.ts'
 import type { PhaseCtx, PhaseOutcome, PreparedPhase, Slice, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
+import { withMutationLock } from '../utils/mutation-lock.ts'
 import { slug as slugify } from '../utils/slug.ts'
 
 /**
@@ -19,6 +20,17 @@ export type PhaseDeps = {
 	gh: GhOps
 	log: (msg: string) => void
 	mergeNoVerify: boolean
+	/**
+	 * Project root used by `landX` to acquire the project-wide **Mutation lock** around the
+	 * git+storage mutations that follow the agent's Turn. Optional only because some test
+	 * fixtures don't construct a real one; production wiring always supplies it.
+	 */
+	projectRoot?: string
+}
+
+function withPhaseLock<T>(deps: PhaseDeps, fn: () => Promise<T>): Promise<T> {
+	if (!deps.projectRoot) return fn()
+	return withMutationLock(deps.projectRoot, fn)
 }
 
 function sliceBranchFor(prdId: string, slice: Slice): string {
@@ -92,48 +104,50 @@ async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: Pha
 }
 
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-	if (verdict.verdict === 'partial') return 'partial'
-	if (verdict.verdict === 'no-work-needed') {
-		// Recovery case: prior aborted run left the slice branch ahead of integration with the
-		// implementer's commits, and this Turn correctly reports no-work-needed because the work
-		// is already on the branch. Treat as ready and complete the merge so the slice can close.
-		if (ctx.config.perSliceBranches && !ctx.config.usePrs) {
-			const branch = sliceBranchFor(ctx.prdId, slice)
-			const ahead = await deps.git.commitsAhead(branch, ctx.integrationBranch)
-			if (ahead > 0) {
-				deps.log(`${tag} no-work-needed but slice branch has ${ahead} unmerged commit(s) from a prior Turn; treating as ready`)
-				await mergeSliceIntoIntegration(deps, slice, ctx, branch)
-				return 'done'
+	return withPhaseLock(deps, async () => {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'partial') return 'partial'
+		if (verdict.verdict === 'no-work-needed') {
+			// Recovery case: prior aborted run left the slice branch ahead of integration with the
+			// implementer's commits, and this Turn correctly reports no-work-needed because the work
+			// is already on the branch. Treat as ready and complete the merge so the slice can close.
+			if (ctx.config.perSliceBranches && !ctx.config.usePrs) {
+				const branch = sliceBranchFor(ctx.prdId, slice)
+				const ahead = await deps.git.commitsAhead(branch, ctx.integrationBranch)
+				if (ahead > 0) {
+					deps.log(`${tag} no-work-needed but slice branch has ${ahead} unmerged commit(s) from a prior Turn; treating as ready`)
+					await mergeSliceIntoIntegration(deps, slice, ctx, branch)
+					return 'done'
+				}
 			}
+			await deps.storage.updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
+			deps.log(`${tag} no-work-needed: cleared readyForAgent`)
+			return 'no-work'
 		}
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
-		deps.log(`${tag} no-work-needed: cleared readyForAgent`)
-		return 'no-work'
-	}
-	if (verdict.verdict !== 'ready') return 'partial'
+		if (verdict.verdict !== 'ready') return 'partial'
 
-	if (!ctx.config.perSliceBranches) {
-		await deps.git.push(ctx.integrationBranch)
-		deps.log(`${tag} pushed ${ctx.integrationBranch}`)
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
-		deps.log(`${tag} closed slice`)
+		if (!ctx.config.perSliceBranches) {
+			await deps.git.push(ctx.integrationBranch)
+			deps.log(`${tag} pushed ${ctx.integrationBranch}`)
+			await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+			deps.log(`${tag} closed slice`)
+			return 'done'
+		}
+
+		const branch = sliceBranchFor(ctx.prdId, slice)
+		await deps.git.push(branch)
+		deps.log(`${tag} pushed ${branch}`)
+
+		if (ctx.config.usePrs) {
+			await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.integrationBranch, body: `Closes #${slice.id}` })
+			deps.log(`${tag} opened draft PR for ${branch}`)
+			return 'progress'
+		}
+
+		// usePrs: false → host-side merge-and-close.
+		await mergeSliceIntoIntegration(deps, slice, ctx, branch)
 		return 'done'
-	}
-
-	const branch = sliceBranchFor(ctx.prdId, slice)
-	await deps.git.push(branch)
-	deps.log(`${tag} pushed ${branch}`)
-
-	if (ctx.config.usePrs) {
-		await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.integrationBranch, body: `Closes #${slice.id}` })
-		deps.log(`${tag} opened draft PR for ${branch}`)
-		return 'progress'
-	}
-
-	// usePrs: false → host-side merge-and-close.
-	await mergeSliceIntoIntegration(deps, slice, ctx, branch)
-	return 'done'
+	})
 }
 
 /**
@@ -166,30 +180,32 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-	if (verdict.verdict === 'partial') return 'partial'
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	return withPhaseLock(deps, async () => {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'partial') return 'partial'
+		const branch = sliceBranchFor(ctx.prdId, slice)
 
-	if (verdict.verdict === 'ready') {
-		if (verdict.commits > 0) {
-			await deps.git.push(branch)
-			deps.log(`${tag} pushed ${branch}`)
+		if (verdict.verdict === 'ready') {
+			if (verdict.commits > 0) {
+				await deps.git.push(branch)
+				deps.log(`${tag} pushed ${branch}`)
+			}
+			const prNumber = await deps.gh.findPrNumberByHead(branch)
+			await deps.gh.markPrReady(prNumber)
+			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
+			return 'progress'
 		}
-		const prNumber = await deps.gh.findPrNumberByHead(branch)
-		await deps.gh.markPrReady(prNumber)
-		deps.log(`${tag} marked PR #${prNumber} ready for merge`)
-		return 'progress'
-	}
-	if (verdict.verdict === 'needs-revision') {
-		if (verdict.commits > 0) {
-			await deps.git.push(branch)
-			deps.log(`${tag} pushed ${branch}`)
+		if (verdict.verdict === 'needs-revision') {
+			if (verdict.commits > 0) {
+				await deps.git.push(branch)
+				deps.log(`${tag} pushed ${branch}`)
+			}
+			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
+			deps.log(`${tag} flagged needsRevision`)
+			return 'progress'
 		}
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
-		deps.log(`${tag} flagged needsRevision`)
-		return 'progress'
-	}
-	return 'partial'
+		return 'partial'
+	})
 }
 
 /**
@@ -221,25 +237,27 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCt
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-	if (verdict.verdict === 'partial') return 'partial'
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	return withPhaseLock(deps, async () => {
+		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+		if (verdict.verdict === 'partial') return 'partial'
+		const branch = sliceBranchFor(ctx.prdId, slice)
 
-	if (verdict.verdict === 'ready') {
-		if (verdict.commits > 0) {
-			await deps.git.push(branch)
-			deps.log(`${tag} pushed ${branch}`)
+		if (verdict.verdict === 'ready') {
+			if (verdict.commits > 0) {
+				await deps.git.push(branch)
+				deps.log(`${tag} pushed ${branch}`)
+			}
+			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+			deps.log(`${tag} cleared needsRevision`)
+			return 'progress'
 		}
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-		deps.log(`${tag} cleared needsRevision`)
-		return 'progress'
-	}
-	if (verdict.verdict === 'no-work-needed') {
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-		deps.log(`${tag} no-work-needed: cleared needsRevision`)
-		return 'no-work'
-	}
-	return 'partial'
+		if (verdict.verdict === 'no-work-needed') {
+			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+			deps.log(`${tag} no-work-needed: cleared needsRevision`)
+			return 'no-work'
+		}
+		return 'partial'
+	})
 }
 
 if (import.meta.vitest) {
@@ -292,6 +310,7 @@ if (import.meta.vitest) {
 			closePrd: async () => {},
 			createSlice: async () => ({ id: 's', title: '', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
 			findSlices: async () => [],
+			findSlice: async () => null,
 			updateSlice: async (_p, _s, patch) => {
 				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
 			},

@@ -25,6 +25,12 @@ export type LoopDeps = {
 	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
+	/**
+	 * Project root used by the phase primitives' land step to acquire the **Mutation lock** around
+	 * their git+storage mutations. Optional only so existing test fixtures don't have to thread it
+	 * through; production wiring always supplies it.
+	 */
+	projectRoot?: string
 }
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
@@ -125,7 +131,7 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 		const role = state as Role
 		deps.log(`${tag} state=${role}: "${slice.title}"`)
 
-		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: config.mergeNoVerify }
+		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: config.mergeNoVerify, projectRoot: deps.projectRoot }
 		const prep = await callPrepare(phaseDeps, role, slice, ctx)
 		deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
 		const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
@@ -175,6 +181,7 @@ if (import.meta.vitest) {
 				throw new Error('unused')
 			},
 			findSlices: async () => state.slices.map((s) => ({ ...s })),
+			findSlice: async () => null,
 			updateSlice: async (_p, sliceId, patch) => {
 				const s = state.slices.find((x) => x.id === sliceId)
 				if (!s) return
