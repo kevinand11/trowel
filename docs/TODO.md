@@ -6,118 +6,7 @@ Pre-work for every session: read `docs/CONTEXT.md` for vocabulary and repo conve
 
 ---
 
-## 1. `trowel start` flow + `start.md` prompt
-
-**Status.** Design fully grilled and locked. Ready to implement. Pick this up cold — every decision is recorded inline below.
-
-**Goal.** Single-shot orchestration: host launches interactive Claude, user grills out a PRD spec + slices, Claude writes the structured result to `.trowel/start-out.json` and exits, host materialises the PRD + slices via the existing Storage interface and leaves the user on the integration branch.
-
-**Files to write or edit.**
-
-- **`src/commands/start.ts`** — new file; replaces the stub in `src/commands/stubs.ts:start`.
-- **`src/prompts/start.md`** — new file; single self-contained prompt with **no template variables**.
-- **`src/work/verdict.ts`** — tighten validation to fail loudly on malformed `turn-out.json` instead of coercing to `partial`. Same strict valleyed pipe shape is reused for parsing `start-out.json`.
-- **`src/prompts/implement.md` / `review.md` / `address.md`** — drop `{{INTEGRATION_BRANCH}}` and `{{STORAGE}}`; delete the `{{#issue}}` / `{{#file}}` conditional blocks in `implement.md` (the loader in `src/prompts/load.ts:22` doesn't support mustache conditionals anyway, so they're already emitted verbatim today).
-- **`src/commands/_loop-wiring.ts:57`** — `loadPrompt(role, { integrationBranch, storage })` becomes `loadPrompt(role, {})`.
-- **`src/cli.ts`** — point `start` at the real command; remove the `--prd <id>` option line.
-- **`src/commands/stubs.ts`** — delete the `start` export.
-
-**CLI surface.**
-
-```
-trowel start [--storage <kind>]
-```
-
-No `--prd` flag. No resume mode.
-
-**Host flow.**
-
-1. **Preflight (fail-fast).** Project root resolvable; clean working tree (`git status --porcelain` empty); `claude` on PATH; `gh` on PATH + `gh auth status` succeeds. Applied unconditionally regardless of storage.
-2. **Capture BACK_TO** via the existing `GitOps.currentBranch()`.
-3. **Render prompt.** `loadPrompt('start', {})` — no variable substitution.
-4. **Launch interactive Claude.** Spawn `claude --append-system-prompt @<path-to-rendered>` (verify exact flag against current Claude Code CLI at implementation time; fall back to a project-level slash-command pattern if the flag has dropped). `stdio: 'inherit'`, `cwd: projectRoot`. **No log capture** — the user *is* the output.
-5. **On Claude exit, read `.trowel/start-out.json`.**
-    - Missing → print "PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep." Restore BACK_TO via `finally`. Exit non-zero.
-    - Present → continue.
-6. **Validate schema.** Run through a valleyed pipe (shape below). Then host-side checks: every index in `slices[*].blockedBy` ∈ `[0, slices.length)`; no self-references; no cycles (DAG check). On any violation: print the offending slice + reason; restore BACK_TO; exit non-zero.
-7. **Stash any dirty tree.** `git stash --include-untracked`. If clean, skip the stash entirely (no `git stash` call).
-8. **`storage.createPrd({title: prd.title, body: prd.body})`** → `{id, branch}`. Storage handles slug derivation, integration-branch creation off `git.baseBranch()`, and any side artifacts.
-9. **`git switch <branch>`** onto the new integration branch.
-10. **`git stash pop`** (only if a stash was made). On conflict: leave the user on integration with conflict markers, print the stash hash, exit non-zero. Do **not** restore BACK_TO — the grill output is too expensive to discard.
-11. **Create slices in array order.** For each `spec.slices[i]`: `storage.createSlice(prdId, {title, body, blockedBy: []})`. Keep an array `realIds[i]` of returned slice ids.
-12. **Resolve and patch.** For each slice, map `blockedBy: number[]` to `realIds[...]` and call `storage.updateSlice(prdId, sliceId, {blockedBy: resolvedIds, readyForAgent: spec.slices[i].readyForAgent})`.
-13. **Print summary** — PRD id, integration branch, slice list with ids + titles, list of uncommitted paths from `git status --porcelain` as a reminder for the user to review and commit at their discretion, and a `Next: trowel work <id>` hint.
-14. **`finally` clause.**
-    - Success → **no branch restore** (user stays on integration).
-    - Failure before step 8 → restore BACK_TO. Tree state stays as Claude left it; user inspects and discards.
-    - Failure after step 8 → leave user where they are. The PRD exists and can be closed via `trowel close <id>`.
-
-**`start-out.json` schema.**
-
-```ts
-{
-  prd: { title: string, body: string },
-  slices: Array<{
-    title: string,
-    body: string,
-    blockedBy: number[],   // 0-based indexes into `slices`
-    readyForAgent: boolean
-  }>
-}
-```
-
-Validated by a valleyed pipe (same discipline as `src/schema.ts:partialConfigPipe`). Then DAG-checked host-side.
-
-**`start.md` outline (single self-contained file, no template variables).**
-
-1. **Role.** "You are inside a `trowel start` orchestration. Your output target is the file `.trowel/start-out.json` in the current working directory."
-2. **Pre-grill reading list.** `CONTEXT.md`, `CONTEXT-MAP.md` (if present), every file under `docs/adr/`, `README.md`, and the top-level `src/` directory listing.
-3. **Grilling discipline (inlined — do not depend on any user-installed skill).**
-    - One question at a time; wait for feedback before continuing.
-    - Provide a recommended default with every question.
-    - Cross-reference with code; surface contradictions immediately.
-    - Sharpen fuzzy language; challenge against the existing glossary.
-    - Discuss concrete scenarios to probe boundaries.
-    - Update CONTEXT.md inline as terms resolve.
-    - Offer ADRs **only** when all three hold: (a) hard-to-reverse, (b) surprising without context, (c) the result of a real trade-off.
-4. **CONTEXT.md format spec (inlined verbatim).** Title and one-paragraph description; `## Language` with bold-name definitions plus `_Avoid_:` alias lines; `## Relationships` (bold-name terms with cardinality); `## Example dialogue`; `## Flagged ambiguities`. Rules: be opinionated, flag conflicts explicitly, keep definitions tight (one sentence — define what it IS, not what it does), show relationships, only domain-specific terms (no general programming concepts), group under subheadings when natural clusters emerge, write an example dialogue.
-5. **ADR format spec (inlined verbatim).** Lives in `docs/adr/` with sequential `NNNN-slug.md` numbering. Body can be 1–3 sentences. Optional `Status` frontmatter, `Considered Options`, `Consequences` sections — only when they add value.
-6. **Doc-edit scope rule.** During the grill, Claude may edit **only** `CONTEXT.md`, `CONTEXT-MAP.md`, files under `docs/adr/`, and per-context `CONTEXT.md` files. No other working-tree writes.
-7. **Phase 1 — grill.** Run until the user signals "grill done." Vocabulary, scope, and design questions are all on the table.
-8. **Phase 2a — draft the PRD body in markdown.** Template (adapted from the `to-prd` skill; inline verbatim):
-    - `## Problem Statement` — user's-perspective description of the problem.
-    - `## Solution` — user's-perspective description of the solution.
-    - `## User Stories` — numbered list, `As a <actor>, I want <feature>, so that <benefit>`. Extensive.
-    - `## Implementation Decisions` — modules built/modified, interfaces, schema changes, API contracts, architectural decisions. **No** specific file paths or code snippets.
-    - `## Testing Decisions` — what makes a good test (external behavior, not implementation), modules to test, prior art.
-    - `## Out of Scope`.
-    - `## Further Notes`.
-    - Show the drafted markdown body in chat; user pushes back or locks before continuing.
-9. **Phase 2b — draft slices.** Present as a markdown table — columns: index, title, AFK/HITL, blocked-by-indexes, one-line summary. Inline vertical-slice rules (from the `to-issues` skill): each slice cuts end-to-end through every layer (schema → API → UI → tests); a completed slice is demoable on its own; prefer many thin slices over few thick ones. All blockers are treated as hard — there is no soft/hard distinction in trowel. User pushes back or locks.
-10. **Slice body template (markdown).** Two sections only:
-    - `## What to build` — end-to-end behavior of this vertical slice. Not layer-by-layer.
-    - `## Acceptance criteria` — checkbox list.
-    No `Blocked by` section in the body; the data lives only in the JSON's `blockedBy` array.
-11. **Final step.** Serialize the locked spec to JSON matching the schema, write to `.trowel/start-out.json`, then print "ready — exit when you're done" so the user can close the Claude session.
-
-**Verification path.**
-
-1. Scratch repo with `storage: file` and a clean tree.
-2. Run `trowel start` from `main`. Grill a tiny feature (e.g. "rename Foo to Bar"); draft a 2-slice PRD.
-3. Verify: integration branch checked out; `docs/prds/<id>-<slug>/{README.md, store.json}` written; two slice directories with bodies; `readyForAgent: true` in each slice's `store.json` per the spec; summary printed.
-4. Repeat on a scratch GitHub repo with `storage: issue`; verify the GH issue + sub-issues are created; integration branch from `gh issue develop` checked out; labels applied.
-5. Abort path: run `trowel start`, exit Claude without writing `start-out.json`. Verify host prints recovery message; user back on BACK_TO; working tree retains Claude's CONTEXT/ADR edits for manual handling.
-6. Validation path: hand-craft a `.trowel/start-out.json` with an out-of-range `blockedBy` index; verify host fails with the offending slice's index named and no `createPrd` call.
-
-**Non-goals for this session.**
-
-- Cross-PRD collision warning (dropped — see deleted §4 in git history).
-- Worktree usage for the grill (start runs in the user's main checkout, not a worktree).
-- Auto-committing CONTEXT/ADR edits on the integration branch (user commits at their discretion; host only stash-dances them across the branch switch).
-
----
-
-## 2. `trowel fix` flow
+## 1. `trowel fix` flow
 
 **Goal.** Bug-fix flow that bypasses PRD machinery. **Always creates a new GitHub issue, opens a PR, and links the PR to the issue.**
 
@@ -157,7 +46,7 @@ async function fix(description: string) {
 
 ---
 
-## 3. `trowel diagnose` flow
+## 2. `trowel diagnose` flow
 
 **Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel work <prd>`, `trowel fix <desc>`, or `trowel start <feature>`). Does **not** auto-invoke any of them.
 
@@ -191,7 +80,54 @@ async function diagnose(description: string) {
 
 ---
 
+## 3. Sandboxed Turn execution (Docker `kind`)
+
+**Goal.** Run **Turns** inside a Docker container instead of directly on the host, restoring sandcastle's containment story as an opt-in mode. Today every Turn runs `kind: 'host'` with worktree-only isolation: the agent shares the host filesystem outside the worktree, the host network, the host PATH, and `~/.claude/` auth. A Docker mode constrains all four: filesystem to the bind-mounted worktree, network to a gh-free policy, PATH to the image's preinstalled toolchain, and auth to the same bind-mount that's implicit today.
+
+**Reference.** ADR `2026-05-12-sandcastle-integration.md` describes the pre-pivot sandcastle shape (the system this re-introduces, post-pivot, as a configurable Turn kind). CONTEXT.md flags it in **Turn**, in "Out of scope", and in the "Flagged ambiguities" entry retiring the old "Sandbox" term.
+
+**Files to write or edit.**
+
+- `src/work/turn.ts` — dispatch on Turn `kind`. Today's body becomes the host path; a new docker path handles container mode. Shared pre-Turn (`turn-in.json` write, log path) and post-Turn (`turn-out.json` read, verdict parse) stay above the dispatch.
+- `src/harnesses/types.ts` + `src/harnesses/{claude,codex,pi}.ts` — each `HarnessAdapter` currently spawns its CLI directly. The Docker path needs each adapter to also describe how to invoke its CLI *inside* a container (binary + flags); the `docker run` orchestration itself is shared across harnesses, not per-harness.
+- `src/schema.ts` — extend `config.turn` with `kind: 'host' | 'docker'` (default `'host'`); optionally `image`, `network`, `extraMounts`.
+- `docker/` (new) — pinned image with `node` / `pnpm` / `git` / `gh` plus every supported harness (`claude`, `codex`, `pi`) baked in. See open question on per-harness vs unified.
+- `src/commands/doctor.ts` — when `kind: 'docker'`, surface image presence + version pin alongside the existing harness checks.
+- `docs/adr/<date>-docker-turn-kind.md` — record the decision to re-introduce containment as a Turn-level config dimension rather than the old global sandcastle.
+
+**Flow (Docker `kind`).**
+
+1. Host prepares the worktree and writes `.trowel/turn-in.json` (unchanged from host mode).
+2. Host spawns `docker run --rm --network <policy> -v <worktree>:/work -v ~/.claude:/root/.claude:ro -w /work <image> <harness-cli> ...`. Stdout/stderr stream to the log file the same way today's host harness adapter does.
+3. On container exit, host reads `<worktree>/.trowel/turn-out.json` from the bind-mount. Verdict parse is identical to host mode.
+
+**Locked (carried over from sandcastle).**
+
+- **gh-free network policy.** Containers cannot reach GitHub. All `gh` calls stay on the host, before or after the Turn (unchanged invariant). Egress for package managers (npm, pypi, etc.) is allowed — see open question on the exact policy.
+- **`~/.claude/` bind-mounted read-only** so the user's existing auth flows through; no token plumbing inside trowel.
+- **One container per Turn.** No pooling. Worktrees are still one-per-branch and outlive the container.
+- **Worktree bind-mount, not copy.** Commits made inside the container land in the host's worktree directly; no post-Turn rsync.
+
+**Open questions to grill.**
+
+- **Image strategy.** Pre-built image pinned by SHA (pulled from a registry)? Or `docker build` on first use, cached locally? Default pick: pinned pre-built image; `trowel doctor` verifies presence; rebuild is a separate explicit command.
+- **Per-harness image vs unified image.** One image with every harness baked in is convenient but large; per-harness images are smaller but multiply maintenance. Default pick: unified image — the user picked one harness, but having the others available makes `trowel doctor` and ad-hoc switches trivial.
+- **Network policy.** Fully isolated (no egress)? Or allowlisted egress (npm, pypi, github.com:443 read-only)? Or open egress minus `gh` auth? Default pick: open egress, just no GitHub auth — matches sandcastle's posture.
+- **Schema placement of `kind`.** `config.turn.kind`? `config.agent.kind`? Per-PRD override? Default pick: `config.turn.kind` — the Turn is the unit being containerized.
+- **Linux-only or also macOS?** Docker Desktop works on macOS but bind-mount perf is poor on large repos. Default pick: support both; document the perf caveat in `trowel doctor`.
+- **What about `copyToWorktree`?** Host mode copies these into the worktree once; Docker mode would see them via the same bind-mount. No change needed unless something needs to be inside the image instead.
+
+**Verification path.**
+
+1. Build/pull the image; `trowel doctor` reports it present and pinned.
+2. Scratch repo with `config.turn.kind: 'docker'`; run `trowel work <id>` against a tiny 1-slice PRD. Verify: container starts, agent commits land inside the worktree (visible from host via bind-mount), `turn-out.json` written, verdict parsed, slice transitions.
+3. Network policy test: agent attempts a `gh` call inside the container → fails. Agent runs `npm install` (or equivalent for the chosen egress policy) → succeeds.
+4. Crash recovery: kill the container mid-Turn; host sees missing `turn-out.json` and surfaces a clean error (no stuck state).
+5. Host fallback: flip the same project to `kind: 'host'` and re-run; verify the loop still works against the same worktree without container artifacts left behind.
+
+---
+
 ## Order of work (suggested)
 
-1. `trowel start` flow end-to-end against the `file` storage (the simpler of the two; no GitHub round-trip for the PRD itself).
-2. `fix` + `diagnose` flows.
+1. `fix` + `diagnose` flows.
+2. Docker Turn `kind`.
