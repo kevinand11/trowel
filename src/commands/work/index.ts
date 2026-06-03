@@ -1,8 +1,8 @@
-import { buildLoopWiring } from './_loop-wiring.ts'
-import type { HarnessKind } from '../harnesses/registry.ts'
-import type { StorageKind } from '../storages/registry.ts'
-import type { Storage } from '../storages/types.ts'
-import type { LoopEntity } from '../work/entity-loop.ts'
+import type { HarnessKind } from '../../harnesses/registry.ts'
+import type { StorageKind } from '../../storages/registry.ts'
+import type { Storage } from '../../storages/types.ts'
+import type { LoopEntity } from '../../work/entity-loop.ts'
+import { buildLoopWiring } from '../_loop-wiring.ts'
 
 export type WorkScope = 'prd' | 'fix'
 
@@ -51,7 +51,7 @@ export async function work(scope: WorkScope, id: string, opts: { storage?: Stora
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
+	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 
 	function makeStorage(state: { prd?: { id: string; branch: string; targetBranch?: string; title: string }; fix?: { id: string; branch: string; targetBranch?: string; title: string } }): Storage {
 		return fakeSliceStorage([], null, {

@@ -1,6 +1,6 @@
-import type { ClassifiedSlice, FixRecord, PrdRecord } from '../storages/types.ts'
-import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../utils/bucket-format.ts'
-import type { Bucket } from '../utils/bucket.ts'
+import type { ClassifiedSlice, FixRecord, PrdRecord } from '../../storages/types.ts'
+import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
+import type { Bucket } from '../../utils/bucket.ts'
 
 export function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
 	const counts = bucketCountsFor(slices)

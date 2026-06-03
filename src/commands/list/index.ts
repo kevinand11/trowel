@@ -1,12 +1,12 @@
-import { buildStorage, exitOnCommandError, loadCommandBase } from './runtime.ts'
-import type { StorageKind } from '../storages/registry.ts'
-import type { ClassifiedSlice, FixSummary, PrdSummary, Storage } from '../storages/types.ts'
-import { emptyBucketCounts, formatBucketCounts } from '../utils/bucket-format.ts'
-import type { Bucket } from '../utils/bucket.ts'
-import { createGh } from '../utils/gh-ops.ts'
-import { withMutationLock } from '../utils/mutation-lock.ts'
-import { reconcileEntity } from '../work/reconcile.ts'
-import { classifySlicesForPrd } from '../work/slice-buckets.ts'
+import type { StorageKind } from '../../storages/registry.ts'
+import type { ClassifiedSlice, FixSummary, PrdSummary, Storage } from '../../storages/types.ts'
+import { emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
+import type { Bucket } from '../../utils/bucket.ts'
+import { createGh } from '../../utils/gh-ops.ts'
+import { withMutationLock } from '../../utils/mutation-lock.ts'
+import { reconcileEntity } from '../../work/reconcile.ts'
+import { classifySlicesForPrd } from '../../work/slice-buckets.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase } from '../runtime.ts'
 
 export type ListState = 'open' | 'closed' | 'all'
 
@@ -136,7 +136,7 @@ export async function listFix(filter: ListState, opts: { storage?: string }): Pr
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 
 	function fakeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {

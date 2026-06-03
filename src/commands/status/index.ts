@@ -1,14 +1,14 @@
 import path from 'node:path'
 
-import { loadConfig } from '../config.ts'
-import { renderStatus, renderStatusFix, renderStatusSlice } from './status-render.ts'
-import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
-import { createGh, type GhOps } from '../utils/gh-ops.ts'
-import { createRepoGit } from '../utils/git-ops.ts'
-import { withMutationLock } from '../utils/mutation-lock.ts'
-import { reconcileEntity } from '../work/reconcile.ts'
-import { classifySlicesForPrd } from '../work/slice-buckets.ts'
+import { renderStatus, renderStatusFix, renderStatusSlice } from './render.ts'
+import { loadConfig } from '../../config.ts'
+import { getStorage } from '../../storages/registry.ts'
+import type { ClassifiedSlice, PrdRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
+import { createGh, type GhOps } from '../../utils/gh-ops.ts'
+import { createRepoGit } from '../../utils/git-ops.ts'
+import { withMutationLock } from '../../utils/mutation-lock.ts'
+import { reconcileEntity } from '../../work/reconcile.ts'
+import { classifySlicesForPrd } from '../../work/slice-buckets.ts'
 
 type StatusRuntime = {
 	storage: Storage
@@ -137,7 +137,7 @@ function writeStatusText(stdout: (s: string) => void, text: string): void {
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 
 	type FakeStorageState = {
 		prd: PrdRecord | null

@@ -7,12 +7,12 @@ import { doctor } from './commands/doctor.ts'
 import { fix } from './commands/fix.ts'
 import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
-import { list, listFix, type ListState } from './commands/list.ts'
+import { list, listFix, type ListState } from './commands/list/index.ts'
 import { review } from './commands/review.ts'
 import { start } from './commands/start.ts'
-import { statusFix, statusPrd, statusSlice } from './commands/status.ts'
+import { statusFix, statusPrd, statusSlice } from './commands/status/index.ts'
 import * as stubs from './commands/stubs.ts'
-import { work, type WorkScope } from './commands/work.ts'
+import { work, type WorkScope } from './commands/work/index.ts'
 
 function parseListState(commandName: string, raw: string): ListState {
 	const validStates: ListState[] = ['open', 'closed', 'all']
