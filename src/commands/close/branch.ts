@@ -1,5 +1,5 @@
-import type { DeleteBranchPolicy } from '../storages/types.ts'
-import type { GitOps } from '../utils/git-ops.ts'
+import type { DeleteBranchPolicy } from '../../storages/types.ts'
+import type { GitOps } from '../../utils/git-ops.ts'
 
 export type OpenPr = { number: number; url: string }
 

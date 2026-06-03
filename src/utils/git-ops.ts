@@ -20,7 +20,7 @@ export type GitOps = {
 	// file storage's createPrd uses these for integration-branch creation
 	createLocalBranch(name: string, baseBranch: string): Promise<void>
 	pushSetUpstream(branch: string): Promise<void>
-	// host-side close cleanup (consumed by `runClose` in `src/commands/close.ts`)
+	// host-side close cleanup (consumed by `src/commands/close/index.ts`)
 	currentBranch(): Promise<string>
 	baseBranch(): Promise<string>
 	branchExists(branch: string): Promise<boolean>

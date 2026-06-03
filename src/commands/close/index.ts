@@ -1,14 +1,14 @@
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
-import { deleteBranchIfPresent, restoreStartingBranch, type CloseBranchRuntime, type OpenPr } from './close-branch.ts'
-import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from './runtime.ts'
-import type { StorageKind } from '../storages/registry.ts'
-import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, SlicePatch, Storage } from '../storages/types.ts'
-import type { GhOps } from '../utils/gh-ops.ts'
-import type { GitOps } from '../utils/git-ops.ts'
-import { withMutationLock } from '../utils/mutation-lock.ts'
-import { slug as slugify } from '../utils/slug.ts'
-import { classifySlicesForPrd } from '../work/slice-buckets.ts'
+import { deleteBranchIfPresent, restoreStartingBranch, type CloseBranchRuntime, type OpenPr } from './branch.ts'
+import type { StorageKind } from '../../storages/registry.ts'
+import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, SlicePatch, Storage } from '../../storages/types.ts'
+import type { GhOps } from '../../utils/gh-ops.ts'
+import type { GitOps } from '../../utils/git-ops.ts'
+import { withMutationLock } from '../../utils/mutation-lock.ts'
+import { slug as slugify } from '../../utils/slug.ts'
+import { classifySlicesForPrd } from '../../work/slice-buckets.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
 type CloseRuntime = CloseBranchRuntime & {
 	storage: Storage
@@ -199,9 +199,9 @@ export async function closeSlice(sliceId: string, opts: { storage?: StorageKind 
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
-	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
-	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
+	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
+	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 
 	const noPrGh = () => recordingGhOps().gh
 

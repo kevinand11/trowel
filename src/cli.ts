@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { address } from './commands/address.ts'
-import { closeFix, closePrd, closeSlice } from './commands/close.ts'
+import { closeFix, closePrd, closeSlice } from './commands/close/index.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { fix } from './commands/fix.ts'
