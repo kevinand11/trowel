@@ -7,11 +7,11 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * Unified terminal step that ships a closeable PRD or Fix. See ADR
  * `2026-05-17-fix-entity-unified-close-out.md`. Branches on `config.work.usePrs`:
  *
- * - `usePrs: true` — opens a PR from the entity branch against `baseBranch` (if one doesn't
- *   already exist), then marks it ready. Entity stays OPEN; **Reconciliation** flips OPEN →
+ * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
+ *   doesn't already exist), then marks it ready. Entity stays OPEN; **Reconciliation** flips OPEN →
  *   CLOSED when GitHub reports the PR merged.
- * - `usePrs: false` — host-merges the entity branch into `baseBranch` via `git merge --no-ff`,
- *   then writes CLOSED on the storage record immediately.
+ * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch via
+ *   `git merge --no-ff`, then writes CLOSED on the storage record immediately.
  *
  * Branch deletion under `usePrs: false` is gated by `config.close.deleteBranch`. The `'prompt'`
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
@@ -20,6 +20,7 @@ export type CloseOutEntity = {
 	kind: 'prd' | 'fix'
 	id: string
 	branch: string
+	targetBranch?: string
 	title: string
 }
 
@@ -40,7 +41,7 @@ export type CloseOutDeps = {
 
 export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
 	const tag = `[close-out ${entity.kind}-${entity.id}]`
-	const baseBranch = await deps.git.baseBranch()
+	const targetBranch = entity.targetBranch ?? await deps.git.baseBranch()
 
 	if (deps.config.usePrs) {
 		return withLock(deps, async () => {
@@ -50,11 +51,11 @@ export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): P
 				await deps.gh.createDraftPr({
 					title: entity.title,
 					head: entity.branch,
-					base: baseBranch,
+					base: targetBranch,
 					body: bodyFor(entity),
 				})
 				prNumber = await deps.gh.findPrNumberByHead(entity.branch)
-				deps.log(`${tag} opened PR #${prNumber} ${entity.branch} → ${baseBranch}`)
+				deps.log(`${tag} opened PR #${prNumber} ${entity.branch} → ${targetBranch}`)
 			} else {
 				prNumber = existing.number
 				if (existing.state !== 'OPEN') {
@@ -71,18 +72,18 @@ export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): P
 
 	return withLock(deps, async () => {
 		const current = await deps.git.currentBranch()
-		await deps.git.checkout(baseBranch)
+		await deps.git.checkout(targetBranch)
 		try {
 			await deps.git.mergeNoFf(entity.branch, { noVerify: deps.config.mergeNoVerify })
 		} catch (e) {
 			await deps.git.mergeAbort()
-			if (current !== baseBranch && (await deps.git.branchExists(current))) {
+			if (current !== targetBranch && (await deps.git.branchExists(current))) {
 				await deps.git.checkout(current)
 			}
 			throw e
 		}
-		await deps.git.push(baseBranch)
-		deps.log(`${tag} host-merged ${entity.branch} into ${baseBranch}`)
+		await deps.git.push(targetBranch)
+		deps.log(`${tag} host-merged ${entity.branch} into ${targetBranch}`)
 
 		if (entity.kind === 'prd') await deps.storage.closePrd(entity.id)
 		else await deps.storage.closeFix(entity.id)
@@ -170,26 +171,28 @@ if (import.meta.vitest) {
 	}
 
 	describe('runCloseOut', () => {
-		test('Fix + usePrs:false: host-merges to base, marks Fix CLOSED, deletes branch on always', async () => {
+		test('Fix + usePrs:false: host-merges to targetBranch, marks Fix CLOSED, deletes branch on always', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
+				{ kind: 'fix', id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'always', mergeNoVerify: false } },
 			)
-			expect(calls).toEqual(['checkout(main)', 'mergeNoFf(fix/5-x)', 'push(main)', 'deleteBranch(fix/5-x)'])
+			expect(calls).toEqual(['checkout(hotfix/base)', 'mergeNoFf(fix/5-x)', 'push(hotfix/base)', 'deleteBranch(fix/5-x)'])
 			expect(closed.fix).toEqual(['5'])
 		})
 
-		test('PRD + usePrs:false: host-merges integration to base, marks PRD CLOSED, retains branch on never', async () => {
+		test('PRD + usePrs:false: host-merges integration to targetBranch, marks PRD CLOSED, retains branch on never', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
-				{ kind: 'prd', id: '3', branch: '3-feat', title: 'Feat' },
+				{ kind: 'prd', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: false } },
 			)
+			expect(calls).toContain('checkout(release/1.2)')
+			expect(calls).toContain('push(release/1.2)')
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(closed.prd).toEqual(['3'])
 		})
@@ -220,7 +223,7 @@ if (import.meta.vitest) {
 			expect(closed.fix).toEqual([])
 		})
 
-		test('PRD + usePrs:true, PR does not exist: creates draft then marks ready', async () => {
+		test('PRD + usePrs:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
 			const { storage } = fakeStorage()
 			const { git } = fakeGit()
 			const { gh, calls } = recordingGhOps({
@@ -228,10 +231,15 @@ if (import.meta.vitest) {
 				findPrNumberByHead: async () => 22,
 			})
 			await runCloseOut(
-				{ kind: 'prd', id: '3', branch: '3-feat', title: 'Feat' },
+				{ kind: 'prd', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'never', mergeNoVerify: false } },
 			)
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeDefined()
+			expect(calls.find((c) => c[0] === 'createDraftPr')).toEqual(['createDraftPr', {
+				title: 'Feat',
+				head: '3-feat',
+				base: 'release/1.2',
+				body: 'Closes PRD 3',
+			}])
 			expect(calls).toContainEqual(['markPrReady', 22])
 		})
 

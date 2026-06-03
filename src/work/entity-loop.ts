@@ -11,11 +11,12 @@ import type { GitOps } from '../utils/git-ops.ts'
 /**
  * The unit of work `trowel work` operates on. PRDs have slices (the legacy loop); Fixes are
  * single-blob entities that go through the same Turn machinery but with their own branch off
- * `baseBranch`. See ADR `2026-05-17-fix-entity-unified-close-out.md`.
+ * targetBranch. See ADR `2026-05-17-fix-entity-unified-close-out.md` and
+ * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
  */
 export type LoopEntity =
-	| { kind: 'prd'; id: string; integrationBranch: string; title: string }
-	| { kind: 'fix'; id: string; branch: string; title: string }
+	| { kind: 'prd'; id: string; integrationBranch: string; targetBranch?: string; title: string }
+	| { kind: 'fix'; id: string; branch: string; targetBranch?: string; title: string }
 
 export type EntityLoopDeps = {
 	storage: Storage
@@ -73,7 +74,7 @@ async function runPrdEntity(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: 
 	}
 	deps.log(`[work prd-${entity.id}] all slices CLOSED → running Close-out`)
 	await runCloseOut(
-		{ kind: 'prd', id: entity.id, branch: entity.integrationBranch, title: entity.title },
+		{ kind: 'prd', id: entity.id, branch: entity.integrationBranch, targetBranch: prd.targetBranch, title: entity.title },
 		{
 			storage: deps.storage,
 			git: deps.git,
@@ -111,7 +112,7 @@ async function runFixEntity(entity: Extract<LoopEntity, { kind: 'fix' }>, deps: 
 			if (deps.config.usePrs) {
 				deps.log(`[work fix-${entity.id}] no agent action; running Close-out to ensure PR ready`)
 				await runCloseOut(
-					{ kind: 'fix', id: entity.id, branch: entity.branch, title: entity.title },
+					{ kind: 'fix', id: entity.id, branch: entity.branch, targetBranch: enriched.targetBranch, title: entity.title },
 					{
 						storage: deps.storage,
 						git: deps.git,

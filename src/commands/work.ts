@@ -16,12 +16,12 @@ async function runWork(scope: WorkScope, id: string, rt: WorkRuntime): Promise<v
 	if (scope === 'prd') {
 		const prd = await rt.storage.findPrd(id)
 		if (!prd) throw new Error(`PRD '${id}' not found`)
-		await rt.runEntity({ kind: 'prd', id, integrationBranch: prd.branch, title: prd.title })
+		await rt.runEntity({ kind: 'prd', id, integrationBranch: prd.branch, targetBranch: prd.targetBranch, title: prd.title })
 		return
 	}
 	const fix = await rt.storage.findFix(id)
 	if (!fix) throw new Error(`Fix '${id}' not found`)
-	await rt.runEntity({ kind: 'fix', id, branch: fix.branch, title: fix.title })
+	await rt.runEntity({ kind: 'fix', id, branch: fix.branch, targetBranch: fix.targetBranch, title: fix.title })
 }
 
 export async function work(scope: WorkScope, id: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
@@ -41,10 +41,10 @@ export async function work(scope: WorkScope, id: string, opts: { storage?: Stora
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function makeStorage(state: { prd?: { id: string; branch: string; title: string }; fix?: { id: string; branch: string; title: string } }): Storage {
+	function makeStorage(state: { prd?: { id: string; branch: string; targetBranch?: string; title: string }; fix?: { id: string; branch: string; targetBranch?: string; title: string } }): Storage {
 		return {
 			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async (id) => (state.prd && state.prd.id === id ? { id, branch: state.prd.branch, title: state.prd.title, state: 'OPEN' } : null),
+			findPrd: async (id) => (state.prd && state.prd.id === id ? { id, branch: state.prd.branch, targetBranch: state.prd.targetBranch, title: state.prd.title, state: 'OPEN' } : null),
 			listPrds: async () => [],
 			closePrd: async () => {},
 			createSlice: async () => { throw new Error('not used') },
@@ -52,7 +52,7 @@ if (import.meta.vitest) {
 			findSlice: async () => null,
 			updateSlice: async () => {},
 			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async (id) => (state.fix && state.fix.id === id ? { id, branch: state.fix.branch, title: state.fix.title, body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null } : null),
+			findFix: async (id) => (state.fix && state.fix.id === id ? { id, branch: state.fix.branch, targetBranch: state.fix.targetBranch, title: state.fix.title, body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null } : null),
 			listFixes: async () => [],
 			updateFix: async () => {},
 			closeFix: async () => {},
@@ -60,18 +60,18 @@ if (import.meta.vitest) {
 	}
 
 	describe('runWork', () => {
-		test('prd scope dispatches with the PRD\'s integration branch', async () => {
-			const storage = makeStorage({ prd: { id: 'abc123', branch: 'prd/abc123-feature', title: 'Feature' } })
+		test('prd scope dispatches with the PRD\'s integration and target branches', async () => {
+			const storage = makeStorage({ prd: { id: 'abc123', branch: 'prd/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' } })
 			const calls: LoopEntity[] = []
 			await runWork('prd', 'abc123', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
-			expect(calls).toEqual([{ kind: 'prd', id: 'abc123', integrationBranch: 'prd/abc123-feature', title: 'Feature' }])
+			expect(calls).toEqual([{ kind: 'prd', id: 'abc123', integrationBranch: 'prd/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' }])
 		})
 
-		test('fix scope dispatches with the Fix branch', async () => {
-			const storage = makeStorage({ fix: { id: '5', branch: 'fix/5-x', title: 'X' } })
+		test('fix scope dispatches with the Fix branch and target branch', async () => {
+			const storage = makeStorage({ fix: { id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X' } })
 			const calls: LoopEntity[] = []
 			await runWork('fix', '5', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
-			expect(calls).toEqual([{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' }])
+			expect(calls).toEqual([{ kind: 'fix', id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X' }])
 		})
 
 		test('throws when PRD is not found', async () => {

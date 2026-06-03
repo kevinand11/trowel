@@ -6,10 +6,11 @@ import type { ClassifiedSlice, FixPatch, FixRecord, FixSpec, FixSummary, Storage
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body, labels: [deps.labels.prd] })
+		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithTargetBranch(spec.body, targetBranch), labels: [deps.labels.prd] })
 		const id = parseGhIssueNumber(createOut)
 		const branch = `${id}-${slugify(spec.title)}`
-		await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
+		await deps.git.createLocalBranch(branch, targetBranch)
 		await deps.git.pushSetUpstream(branch)
 		return { id, branch }
 	}
@@ -81,6 +82,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return {
 			id: String(issue.number),
 			branch: `${issue.number}-${slugify(issue.title)}`,
+			targetBranch: targetBranchFromBody(issue.body),
 			title: issue.title,
 			state: issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 		}
@@ -111,11 +113,36 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return `fix/${id}-${slugify(title)}`
 	}
 
+	function bodyWithTargetBranch(body: string, targetBranch: string): string {
+		return `${body}\n\n<!-- trowel:${JSON.stringify({ targetBranch })} -->`
+	}
+
+	function targetBranchFromBody(body: string | null | undefined): string | undefined {
+		const raw = trowelMetadataFromBody(body)
+		if (!raw) return undefined
+		try {
+			const parsed = JSON.parse(raw) as { targetBranch?: unknown }
+			return typeof parsed.targetBranch === 'string' && parsed.targetBranch.length > 0 ? parsed.targetBranch : undefined
+		} catch {
+			return undefined
+		}
+	}
+
+	function bodyWithoutTrowelMetadata(body: string | null | undefined): string {
+		return (body ?? '').replace(/\n?\n?<!--\s*trowel:.*?-->/s, '').trimEnd()
+	}
+
+	function trowelMetadataFromBody(body: string | null | undefined): string | null {
+		const match = /<!--\s*trowel:(.*?)-->/s.exec(body ?? '')
+		return match?.[1]?.trim() ?? null
+	}
+
 	async function createFix(spec: FixSpec): Promise<{ id: string; branch: string }> {
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body, labels: [deps.labels.fix] })
+		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithTargetBranch(spec.body, targetBranch), labels: [deps.labels.fix] })
 		const id = parseGhIssueNumber(createOut)
 		const branch = fixBranchFor(id, spec.title)
-		await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
+		await deps.git.createLocalBranch(branch, targetBranch)
 		await deps.git.pushSetUpstream(branch)
 		return { id, branch }
 	}
@@ -126,10 +153,9 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return {
 			id: String(issue.number),
 			branch: fixBranchFor(String(issue.number), issue.title),
+			targetBranch: targetBranchFromBody(issue.body),
 			title: issue.title,
-			// `viewIssue` doesn't return body; trowel surfaces the title in CLI output and the body
-			// lives on the GitHub issue itself. Empty here keeps the type happy without a second round-trip.
-			body: '',
+			body: bodyWithoutTrowelMetadata(issue.body),
 			state: issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 			readyForAgent: false,
 			needsRevision: false,
@@ -540,10 +566,27 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			const result = await storage.createPrd({ title: 'Fix Tabs on macOS', body: 'the spec' })
 			expect(result).toEqual({ id: '42', branch: '42-fix-tabs-on-macos' })
-			expect(calls).toEqual([['createIssue', { title: 'Fix Tabs on macOS', body: 'the spec', labels: ['prd'] }]])
+			expect(calls).toEqual([['createIssue', { title: 'Fix Tabs on macOS', body: expect.stringContaining('the spec'), labels: ['prd'] }]])
+			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"develop"')
 			expect(gitCalls).toEqual([
 				['createLocalBranch', '42-fix-tabs-on-macos', 'develop'],
 				['pushSetUpstream', '42-fix-tabs-on-macos'],
+			])
+		})
+
+		test('stores explicit targetBranch metadata and creates the integration branch from it', async () => {
+			const { deps, calls, gitCalls } = makeDeps({
+				createIssue: async () => 'https://github.com/o/r/issues/99\n',
+			})
+			const storage = createIssueStorage(deps)
+
+			const result = await storage.createPrd({ title: 'Release Feature', body: 'body', targetBranch: 'release/1.2' })
+
+			expect(result).toEqual({ id: '99', branch: '99-release-feature' })
+			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"release/1.2"')
+			expect(gitCalls).toEqual([
+				['createLocalBranch', '99-release-feature', 'release/1.2'],
+				['pushSetUpstream', '99-release-feature'],
 			])
 		})
 
@@ -558,6 +601,7 @@ if (import.meta.vitest) {
 			const [name, args] = calls[0]!
 			expect(name).toBe('createIssue')
 			expect((args as { labels: string[] }).labels).toEqual(['roadmap'])
+			expect((args as { body: string }).body).toContain('"targetBranch":"develop"')
 			expect(gitCalls).toEqual([
 				['createLocalBranch', '7-add-orm', 'develop'],
 				['pushSetUpstream', '7-add-orm'],
@@ -572,6 +616,38 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			await expect(storage.createPrd({ title: 'Fix', body: 'b' })).rejects.toThrow(/rate limited/)
+		})
+	})
+
+	describe('issue storage: createFix/findFix', () => {
+		test('stores explicit targetBranch metadata and creates the Fix branch from it', async () => {
+			const { deps, calls, gitCalls } = makeDeps({
+				createIssue: async () => 'https://github.com/o/r/issues/5\n',
+			})
+			const storage = createIssueStorage(deps)
+
+			const result = await storage.createFix({ title: 'Fix Tabs', body: 'body', targetBranch: 'hotfix/base' })
+
+			expect(result).toEqual({ id: '5', branch: 'fix/5-fix-tabs' })
+			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"hotfix/base"')
+			expect(gitCalls).toEqual([
+				['createLocalBranch', 'fix/5-fix-tabs', 'hotfix/base'],
+				['pushSetUpstream', 'fix/5-fix-tabs'],
+			])
+		})
+
+		test('findFix parses targetBranch metadata and strips it from body', async () => {
+			const { deps } = makeDeps({
+				viewIssue: async () => ({ number: 5, title: 'Fix Tabs', state: 'OPEN', body: 'visible body\n\n<!-- trowel:{"targetBranch":"hotfix/base"} -->' }),
+			})
+			const storage = createIssueStorage(deps)
+
+			expect(await storage.findFix('5')).toMatchObject({
+				id: '5',
+				branch: 'fix/5-fix-tabs',
+				targetBranch: 'hotfix/base',
+				body: 'visible body',
+			})
 		})
 	})
 
@@ -751,17 +827,17 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: findPrd', () => {
-		test('returns PrdRecord with branch and state for an existing issue', async () => {
+		test('returns PrdRecord with branch, targetBranch, and state for an existing issue', async () => {
 			const { deps } = makeDeps({
-				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN' }),
+				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN', body: 'body\n\n<!-- trowel:{"targetBranch":"release/1.2"} -->' }),
 			})
 			const storage = createIssueStorage(deps)
-			expect(await storage.findPrd('42')).toEqual({ id: '42', branch: '42-fix-tabs', title: 'Fix Tabs', state: 'OPEN' })
+			expect(await storage.findPrd('42')).toEqual({ id: '42', branch: '42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN' })
 		})
 
 		test('maps "CLOSED" GitHub state to CLOSED', async () => {
 			const { deps } = makeDeps({
-				viewIssue: async () => ({ number: 42, title: 'X', state: 'CLOSED' }),
+				viewIssue: async () => ({ number: 42, title: 'X', state: 'CLOSED', body: '' }),
 			})
 			const storage = createIssueStorage(deps)
 			expect((await storage.findPrd('42'))!.state).toBe('CLOSED')

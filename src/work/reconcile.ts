@@ -3,9 +3,10 @@ import type { GhOps } from '../utils/gh-ops.ts'
 
 /**
  * Identifies the entity to reconcile. PRDs and Fixes both have a single "Close-out PR" against
- * `config.baseBranch`; when that PR shows as merged on GitHub, the storage record flips to
- * CLOSED. See ADR `2026-05-17-fix-entity-unified-close-out.md` and
- * `2026-05-17-reads-acquire-mutation-lock.md`.
+ * their targetBranch; when that PR shows as merged on GitHub, the storage record flips to CLOSED.
+ * See ADR `2026-05-17-fix-entity-unified-close-out.md`,
+ * `2026-05-17-reads-acquire-mutation-lock.md`, and
+ * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
  */
 export type LoopEntityRef =
 	| { kind: 'prd'; id: string; branch: string }

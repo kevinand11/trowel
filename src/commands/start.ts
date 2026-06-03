@@ -61,7 +61,8 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 	}
 	if (discardExistingStartOut) await unlinkSwallowEnoent(startOutPath)
 
-	const backTo = await rt.git.currentBranch()
+	const targetBranch = await rt.git.currentBranch()
+	const backTo = targetBranch
 	let stashed = false
 	let materialised = false
 
@@ -86,7 +87,7 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 			stashed = true
 		}
 
-		const { id: prdId, branch } = await rt.storage.createPrd(spec.prd)
+		const { id: prdId, branch } = await rt.storage.createPrd({ ...spec.prd, targetBranch })
 		materialised = true
 		await rt.git.checkout(branch)
 		if (stashed) {
@@ -275,7 +276,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(stalePresentAtRunInteractive).toBe(false)
-				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new' }])
+				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new', targetBranch: 'main' }])
 			} finally {
 				await tmp.cleanup()
 			}
@@ -311,7 +312,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(interactiveCalled).toBe(true)
-				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new' }])
+				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new', targetBranch: 'main' }])
 				expect(calls.stdout.join('')).toMatch(/invalid/i)
 			} finally {
 				await tmp.cleanup()
@@ -411,7 +412,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(interactiveCalls).toBe(0)
-				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run' }])
+				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run', targetBranch: 'main' }])
 				expect(calls.createSlice).toHaveLength(1)
 				expect(await fileExists(tmp.startOutPath)).toBe(false)
 			} finally {
@@ -721,6 +722,22 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: happy path', () => {
+		test('passes the invocation branch as the PRD target branch', async () => {
+			const startOutJson = JSON.stringify({
+				prd: { title: 'Target Develop', body: 'spec body' },
+				slices: [],
+			})
+			const { rt, calls } = makeFakes({
+				startOut: startOutJson,
+				createPrdResult: { id: 'abc123', branch: 'abc123-target-develop' },
+				currentBranch: 'develop',
+			})
+
+			await runStart(rt)
+
+			expect(calls.createPrd).toEqual([{ title: 'Target Develop', body: 'spec body', targetBranch: 'develop' }])
+		})
+
 		test('claude writes valid 2-slice spec → createPrd + 2× createSlice + 2× updateSlice with resolved blockedBy and readyForAgent', async () => {
 			const startOutJson = JSON.stringify({
 				prd: { title: 'Rename Foo', body: 'spec body' },
@@ -738,7 +755,7 @@ if (import.meta.vitest) {
 
 			await runStart(rt)
 
-			expect(calls.createPrd).toEqual([{ title: 'Rename Foo', body: 'spec body' }])
+			expect(calls.createPrd).toEqual([{ title: 'Rename Foo', body: 'spec body', targetBranch: 'main' }])
 			expect(calls.createSlice).toEqual([
 				{ prdId: 'abc123', spec: { title: 'Rename type', body: 'a', blockedBy: [] } },
 				{ prdId: 'abc123', spec: { title: 'Update callsites', body: 'b', blockedBy: [] } },

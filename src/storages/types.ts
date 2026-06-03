@@ -8,6 +8,7 @@ export type { GitOps }
 export type PrdSpec = {
 	title: string
 	body: string
+	targetBranch?: string
 }
 
 export type SliceSpec = {
@@ -33,6 +34,7 @@ export type PrdState = 'OPEN' | 'CLOSED'
 export type PrdRecord = {
 	id: string
 	branch: string
+	targetBranch?: string
 	title: string
 	state: PrdState
 }
@@ -74,8 +76,9 @@ export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' |
 /**
  * A **Fix** is structurally a Slice without a parent PRD: same Turn machinery (implement →
  * optionally review → address), same readiness flags, but lives on its own `fix/<id>-<slug>`
- * branch off `config.baseBranch` (no Integration branch). See ADR
- * `2026-05-17-fix-entity-unified-close-out.md`.
+ * branch off its targetBranch (no Integration branch). See ADR
+ * `2026-05-17-fix-entity-unified-close-out.md` and
+ * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
  *
  * `blockedBy` is on the record for symmetry with Slice but no current use case populates it —
  * default `[]`. `prState` mirrors Slice's PR-state field; the loop populates it before
@@ -84,6 +87,7 @@ export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' |
 export type FixSpec = {
 	title: string
 	body: string
+	targetBranch?: string
 }
 
 export type FixSummary = {
@@ -96,6 +100,7 @@ export type FixSummary = {
 export type FixRecord = {
 	id: string
 	branch: string
+	targetBranch?: string
 	title: string
 	body: string
 	state: PrdState

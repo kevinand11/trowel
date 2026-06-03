@@ -10,8 +10,9 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
 /**
  * Phase machinery for **Fixes** — the slice-without-PRD entity introduced in ADR
  * `2026-05-17-fix-entity-unified-close-out.md`. Mirrors the slice phases in `phases.ts` with two
- * differences: the working branch is `fix/<id>-<slug>` (no Integration branch), and the
- * implementer's `ready` verdict routes through Close-out (Fix has no slice → integration step).
+ * differences: the working branch is `fix/<id>-<slug>` (no Integration branch, based on the Fix's
+ * targetBranch), and the implementer's `ready` verdict routes through Close-out (Fix has no slice
+ * → integration step).
  */
 
 export type FixPhaseConfig = {
@@ -79,12 +80,13 @@ export async function landFixImplement(deps: FixPhaseDeps, fix: FixRecord, verdi
 	if (verdict.verdict === 'partial') return 'partial'
 	if (verdict.verdict === 'no-work-needed') {
 		return withLock(deps, async () => {
-			const ahead = await deps.git.commitsAhead(fix.branch, await deps.git.baseBranch())
+			const targetBranch = await targetBranchForFix(deps, fix)
+			const ahead = await deps.git.commitsAhead(fix.branch, targetBranch)
 			if (ahead > 0) {
 				deps.log(`${tag} no-work-needed but fix branch has ${ahead} unmerged commit(s); treating as ready`)
 				await deps.git.push(fix.branch)
 				await runCloseOut(
-					{ kind: 'fix', id: fix.id, branch: fix.branch, title: fix.title },
+					{ kind: 'fix', id: fix.id, branch: fix.branch, targetBranch, title: fix.title },
 					{
 						storage: deps.storage,
 						git: deps.git,
@@ -113,16 +115,16 @@ export async function landFixImplement(deps: FixPhaseDeps, fix: FixRecord, verdi
 			await deps.gh.createDraftPr({
 				title: fix.title,
 				head: fix.branch,
-				base: await deps.git.baseBranch(),
+				base: await targetBranchForFix(deps, fix),
 				body: `Closes #${fix.id}`,
 			})
 			deps.log(`${tag} opened draft PR for ${fix.branch}`)
 			return 'progress'
 		}
 
-		// usePrs: false — Close-out host-merges fix → base and writes Fix CLOSED.
+		// usePrs: false — Close-out host-merges fix → targetBranch and writes Fix CLOSED.
 		await runCloseOut(
-			{ kind: 'fix', id: fix.id, branch: fix.branch, title: fix.title },
+			{ kind: 'fix', id: fix.id, branch: fix.branch, targetBranch: await targetBranchForFix(deps, fix), title: fix.title },
 			{
 				storage: deps.storage,
 				git: deps.git,
@@ -187,6 +189,10 @@ export async function landFixAddress(deps: FixPhaseDeps, fix: FixRecord, verdict
 	})
 }
 
+async function targetBranchForFix(deps: FixPhaseDeps, fix: FixRecord): Promise<string> {
+	return fix.targetBranch ?? await deps.git.baseBranch()
+}
+
 export function callFixPrepare(role: Role, deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
 	if (role === 'implement') return prepareFixImplement(deps, fix)
 	if (role === 'review') return prepareFixReview(deps, fix)
@@ -197,4 +203,90 @@ export function callFixLand(role: Role, deps: FixPhaseDeps, fix: FixRecord, verd
 	if (role === 'implement') return landFixImplement(deps, fix, verdict)
 	if (role === 'review') return landFixReview(deps, fix, verdict)
 	return landFixAddress(deps, fix, verdict)
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest
+	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+
+	function fakeStorage(): Storage {
+		return {
+			createPrd: async () => ({ id: 'p', branch: 'p' }),
+			findPrd: async () => null,
+			listPrds: async () => [],
+			closePrd: async () => {},
+			createSlice: async () => { throw new Error('not used') },
+			findSlices: async () => [],
+			findSlice: async () => null,
+			updateSlice: async () => {},
+			createFix: async () => ({ id: 'f', branch: 'f' }),
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
+		}
+	}
+
+	function fakeGit(): GitOps {
+		return {
+			currentBranch: async () => 'work',
+			baseBranch: async () => { throw new Error('baseBranch should not be used when Fix has targetBranch') },
+			branchExists: async () => true,
+			isMerged: async () => false,
+			checkout: async () => {},
+			deleteBranch: async () => {},
+			deleteRemoteBranch: async () => {},
+			fetch: async () => {},
+			push: async () => {},
+			mergeNoFf: async () => {},
+			mergeAbort: async () => {},
+			createRemoteBranch: async () => {},
+			createLocalBranch: async () => {},
+			pushSetUpstream: async () => {},
+			worktreeAdd: async () => {},
+			worktreeRemove: async () => {},
+			worktreeList: async () => [],
+			restoreAll: async () => {},
+			cleanUntracked: async () => {},
+			isWorkingTreeClean: async () => true,
+			stashPush: async () => {},
+			stashPop: async () => {},
+			commitsAhead: async () => 0,
+			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
+		}
+	}
+
+	describe('landFixImplement', () => {
+		test('opens draft PRs against the Fix targetBranch', async () => {
+			const { gh, calls } = recordingGhOps()
+			const deps: FixPhaseDeps = {
+				storage: fakeStorage(),
+				git: fakeGit(),
+				gh,
+				log: () => {},
+				config: { usePrs: true, review: false, mergeNoVerify: false, deleteBranch: 'never' },
+			}
+			const fix: FixRecord = {
+				id: '5',
+				branch: 'fix/5-x',
+				targetBranch: 'hotfix/base',
+				title: 'X',
+				body: 'body',
+				state: 'OPEN',
+				readyForAgent: true,
+				needsRevision: false,
+				blockedBy: [],
+				prState: null,
+			}
+
+			await expect(landFixImplement(deps, fix, { verdict: 'ready', commits: 1 })).resolves.toBe('progress')
+
+			expect(calls).toContainEqual(['createDraftPr', {
+				title: 'X',
+				head: 'fix/5-x',
+				base: 'hotfix/base',
+				body: 'Closes #5',
+			}])
+		})
+	})
 }

@@ -22,6 +22,7 @@ export type IssueRecord = {
 	number: number
 	title: string
 	state: string
+	body: string
 }
 
 /**
@@ -136,9 +137,10 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return out
 		},
 		async viewIssue(id) {
-			const r = await runner(['issue', 'view', id, '--json', 'number,title,state'])
+			const r = await runner(['issue', 'view', id, '--json', 'number,title,state,body'])
 			if (!r.ok) return null
-			return JSON.parse(r.stdout) as IssueRecord
+			const parsed = JSON.parse(r.stdout) as IssueRecord & { body: string | null }
+			return { ...parsed, body: parsed.body ?? '' }
 		},
 		async getIssueState(id) {
 			const r = await runner(['issue', 'view', id, '--json', 'state'])
@@ -328,9 +330,9 @@ if (import.meta.vitest) {
 			expect(await createGh(runner).viewIssue('42')).toBeNull()
 		})
 
-		test('viewIssue parses {number,title,state}', async () => {
-			const { runner } = makeRunner([{ match: () => true, respond: ok(JSON.stringify({ number: 42, title: 'X', state: 'OPEN' })) }])
-			expect(await createGh(runner).viewIssue('42')).toEqual({ number: 42, title: 'X', state: 'OPEN' })
+		test('viewIssue parses {number,title,state,body}', async () => {
+			const { runner } = makeRunner([{ match: () => true, respond: ok(JSON.stringify({ number: 42, title: 'X', state: 'OPEN', body: 'body' })) }])
+			expect(await createGh(runner).viewIssue('42')).toEqual({ number: 42, title: 'X', state: 'OPEN', body: 'body' })
 		})
 
 		test('closeIssue passes --comment when provided', async () => {

@@ -28,10 +28,10 @@ type CloseSliceRuntime = CloseRuntime & {
 
 async function runClosePrd(prdId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
-	const baseBranch = await rt.git.baseBranch()
 
 	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
+	const targetBranch = prd.targetBranch ?? await rt.git.baseBranch()
 
 	const slices = await rt.storage.findSlices(prdId)
 	const openSlices = slices.filter((s) => s.state === 'OPEN')
@@ -54,7 +54,7 @@ async function runClosePrd(prdId: string, rt: CloseRuntime): Promise<void> {
 	}
 
 	if (await rt.git.branchExists(prd.branch)) {
-		await maybeDeleteBranch(prd.branch, baseBranch, rt)
+		await maybeDeleteBranch(prd.branch, targetBranch, rt)
 	}
 
 	const current = await rt.git.currentBranch()
@@ -62,7 +62,7 @@ async function runClosePrd(prdId: string, rt: CloseRuntime): Promise<void> {
 		if (await rt.git.branchExists(back)) {
 			await rt.git.checkout(back)
 		} else {
-			rt.stdout(`Switched to '${baseBranch}' (was on deleted branch '${back}')\n`)
+			rt.stdout(`Switched to '${targetBranch}' (was on deleted branch '${back}')\n`)
 		}
 	}
 }
@@ -101,7 +101,8 @@ async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<vo
 	if (!hit) throw new Error(`slice '${sliceId}' not found`)
 	const { prdId } = hit
 	const back = await rt.git.currentBranch()
-	const baseBranch = await rt.git.baseBranch()
+	const prd = await rt.storage.findPrd(prdId)
+	const sliceMergeTarget = prd?.branch ?? await rt.git.baseBranch()
 
 	const siblings = classifySlicesLocal(await rt.storage.findSlices(prdId))
 	const target = siblings.find((s) => s.id === sliceId)
@@ -123,7 +124,7 @@ async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<vo
 	if (rt.perSliceBranches) {
 		const branch = sliceBranchName(prdId, target)
 		if (await rt.git.branchExists(branch)) {
-			await maybeDeleteBranch(branch, baseBranch, rt)
+			await maybeDeleteBranch(branch, sliceMergeTarget, rt)
 		}
 	}
 
@@ -132,7 +133,7 @@ async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<vo
 		if (await rt.git.branchExists(back)) {
 			await rt.git.checkout(back)
 		} else {
-			rt.stdout(`Switched to '${baseBranch}' (was on deleted branch '${back}')\n`)
+			rt.stdout(`Switched to '${sliceMergeTarget}' (was on deleted branch '${back}')\n`)
 		}
 	}
 }
@@ -198,10 +199,10 @@ export async function closePrd(prdId: string, opts: { storage?: StorageKind }): 
 
 async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
-	const baseBranch = await rt.git.baseBranch()
 
 	const fix = await rt.storage.findFix(fixId)
 	if (!fix) throw new Error(`Fix '${fixId}' not found`)
+	const targetBranch = fix.targetBranch ?? await rt.git.baseBranch()
 
 	if (fix.state === 'OPEN') {
 		await rt.storage.closeFix(fixId)
@@ -210,7 +211,7 @@ async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
 	}
 
 	if (await rt.git.branchExists(fix.branch)) {
-		await maybeDeleteBranch(fix.branch, baseBranch, rt)
+		await maybeDeleteBranch(fix.branch, targetBranch, rt)
 	}
 
 	const current = await rt.git.currentBranch()
@@ -218,7 +219,7 @@ async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
 		if (await rt.git.branchExists(back)) {
 			await rt.git.checkout(back)
 		} else {
-			rt.stdout(`Switched to '${baseBranch}' (was on deleted branch '${back}')\n`)
+			rt.stdout(`Switched to '${targetBranch}' (was on deleted branch '${back}')\n`)
 		}
 	}
 }
@@ -330,7 +331,7 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
 	type FakeStorageState = {
-		prd: { id: string; branch: string; title: string; state: 'OPEN' | 'CLOSED' } | null
+		prd: { id: string; branch: string; targetBranch?: string; title: string; state: 'OPEN' | 'CLOSED' } | null
 		slices: Array<{ id: string; title: string; body: string; state: 'OPEN' | 'CLOSED'; readyForAgent: boolean; needsRevision: boolean }>
 	}
 
@@ -390,7 +391,10 @@ if (import.meta.vitest) {
 			currentBranch: async () => state.current,
 			baseBranch: async () => 'main',
 			branchExists: async (b) => state.branches.has(b),
-			isMerged: async (b, base) => (state.mergedAncestors.get(b) ?? []).includes(base),
+			isMerged: async (b, base) => {
+				calls.push(`isMerged(${b},${base})`)
+				return (state.mergedAncestors.get(b) ?? []).includes(base)
+			},
 			checkout: async (b) => {
 				calls.push(`checkout(${b})`)
 				state.current = b
@@ -641,6 +645,32 @@ if (import.meta.vitest) {
 			expect(gitState.branches.has('42-feature')).toBe(false)
 		})
 
+		test('PRD branch deletion safety compares against the PRD targetBranch', async () => {
+			const state: FakeStorageState = {
+				prd: { id: '42', branch: '42-feature', targetBranch: 'release/1.2', title: 'F', state: 'OPEN' },
+				slices: [],
+			}
+			const gitState: GitState = {
+				current: 'main',
+				branches: new Set(['main', 'release/1.2', '42-feature']),
+				mergedAncestors: new Map([['42-feature', ['release/1.2']]]),
+			}
+			const { storage } = fakeStorage(state)
+			const { git, calls: gCalls } = fakeGit(gitState)
+
+			await runClosePrd('42', {
+				storage,
+				deleteBranchPolicy: 'always',
+				confirm: async () => true,
+				stdout: () => {},
+				git,
+				listOpenPrs: async () => [],
+			})
+
+			expect(gCalls).toContain('isMerged(42-feature,release/1.2)')
+			expect(gCalls).toContain('deleteBranch(42-feature)')
+		})
+
 		test("policy='prompt' → asks once; user declines → no delete", async () => {
 			const { state, gitState } = happyState()
 			const { storage } = fakeStorage(state)
@@ -842,6 +872,43 @@ if (import.meta.vitest) {
 		})
 	})
 
+	describe('close fix', () => {
+		test('branch deletion safety compares against the Fix targetBranch', async () => {
+			const storage: Storage = {
+				createPrd: async () => ({ id: 'p', branch: 'p' }),
+				findPrd: async () => null,
+				listPrds: async () => [],
+				closePrd: async () => {},
+				createSlice: async () => { throw new Error('not used') },
+				findSlices: async () => [],
+				findSlice: async () => null,
+				updateSlice: async () => {},
+				createFix: async () => ({ id: 'f', branch: 'f' }),
+				findFix: async () => ({ id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X', body: 'body', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
+				listFixes: async () => [],
+				updateFix: async () => {},
+				closeFix: async () => {},
+			}
+			const { git, calls: gCalls } = fakeGit({
+				current: 'main',
+				branches: new Set(['main', 'hotfix/base', 'fix/5-x']),
+				mergedAncestors: new Map([['fix/5-x', ['hotfix/base']]]),
+			})
+
+			await runCloseFix('5', {
+				storage,
+				deleteBranchPolicy: 'always',
+				confirm: async () => true,
+				stdout: () => {},
+				git,
+				listOpenPrs: async () => [],
+			})
+
+			expect(gCalls).toContain('isMerged(fix/5-x,hotfix/base)')
+			expect(gCalls).toContain('deleteBranch(fix/5-x)')
+		})
+	})
+
 	describe('close slice', () => {
 		type SliceRow = { id: string; title: string; body: string; state: 'OPEN' | 'CLOSED'; readyForAgent: boolean; needsRevision: boolean }
 
@@ -944,13 +1011,13 @@ if (import.meta.vitest) {
 			expect(calls).toContain('updateSlice(s1,{"state":"CLOSED"})')
 		})
 
-		test('perSliceBranches:true → applies deleteBranch policy on the slice branch', async () => {
+		test('perSliceBranches:true → applies deleteBranch policy against the PRD integration branch', async () => {
 			const sliceBranch = 'prd-42/slice-s1-a'
 			const { storage } = sliceStorage('42', [{ id: 's1', title: 'A', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false }])
 			const { git, calls: gCalls } = fakeGit({
 				current: 'main',
-				branches: new Set(['main', sliceBranch]),
-				mergedAncestors: new Map([[sliceBranch, ['main']]]),
+				branches: new Set(['main', '42-feature', sliceBranch]),
+				mergedAncestors: new Map([[sliceBranch, ['42-feature']]]),
 			})
 			await runCloseSlice('s1', {
 				storage,
@@ -961,6 +1028,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [],
 				perSliceBranches: true,
 			})
+			expect(gCalls).toContain(`isMerged(${sliceBranch},42-feature)`)
 			expect(gCalls).toContain(`deleteBranch(${sliceBranch})`)
 		})
 

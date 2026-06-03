@@ -34,7 +34,8 @@ export async function runFix(rt: FixRuntime): Promise<void> {
 	// what the agent just wrote. Mirrors the start-flow's pre-grill discipline.
 	await unlinkSwallowEnoent(fixOutPath)
 
-	const backTo = await rt.git.currentBranch()
+	const targetBranch = await rt.git.currentBranch()
+	const backTo = targetBranch
 
 	try {
 		await rt.runInteractive({ promptText: rt.fixPromptText, cwd: rt.projectRoot })
@@ -46,7 +47,7 @@ export async function runFix(rt: FixRuntime): Promise<void> {
 		}
 		const spec = parseFixOut(raw)
 
-		const { id, branch } = await rt.storage.createFix({ title: spec.title, body: spec.body })
+		const { id, branch } = await rt.storage.createFix({ title: spec.title, body: spec.body, targetBranch })
 
 		rt.stdout(`\nCreated Fix ${id}\n`)
 		rt.stdout(`Branch: ${branch}\n`)
@@ -133,4 +134,73 @@ export async function fix(opts: { storage?: string; harness?: string }): Promise
 		process.stderr.write(`trowel fix: ${(error as Error).message}\n`)
 		process.exit(1)
 	}
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest
+
+	describe('runFix', () => {
+		test('passes the invocation branch as the Fix target branch', async () => {
+			const created: Array<{ title: string; body: string; targetBranch?: string }> = []
+			const storage: Storage = {
+				createPrd: async () => ({ id: 'p', branch: 'p' }),
+				findPrd: async () => null,
+				listPrds: async () => [],
+				closePrd: async () => {},
+				createSlice: async () => { throw new Error('not used') },
+				findSlices: async () => [],
+				findSlice: async () => null,
+				updateSlice: async () => {},
+				createFix: async (spec) => {
+					created.push(spec)
+					return { id: '5', branch: 'fix/5-tabs' }
+				},
+				findFix: async () => null,
+				listFixes: async () => [],
+				updateFix: async () => {},
+				closeFix: async () => {},
+			}
+			let current = 'release/1.2'
+			const git: GitOps = {
+				currentBranch: async () => current,
+				branchExists: async () => true,
+				checkout: async (b) => { current = b },
+				baseBranch: async () => 'main',
+				isWorkingTreeClean: async () => true,
+				stashPush: async () => {},
+				stashPop: async () => {},
+				fetch: async () => {},
+				push: async () => {},
+				mergeNoFf: async () => {},
+				mergeAbort: async () => {},
+				deleteRemoteBranch: async () => {},
+				createRemoteBranch: async () => {},
+				createLocalBranch: async () => {},
+				pushSetUpstream: async () => {},
+				isMerged: async () => false,
+				deleteBranch: async () => {},
+				worktreeAdd: async () => {},
+				worktreeRemove: async () => {},
+				worktreeList: async () => [],
+				restoreAll: async () => {},
+				cleanUntracked: async () => {},
+				commitsAhead: async () => 0,
+				detectVersion: async () => ({ installed: true, version: '0.0.0' }),
+			}
+			const rt: FixRuntime = {
+				projectRoot: '/fake/proj',
+				storage,
+				git,
+				fixPromptText: '<prompt>',
+				runInteractive: async () => {},
+				readFixOut: async () => JSON.stringify({ title: 'Fix Tabs', body: 'body' }),
+				preflight: async () => [],
+				stdout: () => {},
+			}
+
+			await runFix(rt)
+
+			expect(created).toEqual([{ title: 'Fix Tabs', body: 'body', targetBranch: 'release/1.2' }])
+		})
+	})
 }

@@ -31,7 +31,7 @@ import type {
 	StorageFactory,
 } from '../types.ts'
 
-type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }
+type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null; targetBranch?: string }
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 type FixStore = SliceStore & { body: string }
 
@@ -77,6 +77,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
 			const dir = path.join(deps.prdsDir, `${id}-${slug}`)
 			const branch = `${id}-${slug}`
+			const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 
 			await mkdir(dir, { recursive: true })
 			await writeFile(path.join(dir, 'README.md'), spec.body)
@@ -86,10 +87,11 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				title: spec.title,
 				createdAt: new Date().toISOString(),
 				closedAt: null,
+				targetBranch,
 			}
 			await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-			await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
+			await deps.git.createLocalBranch(branch, targetBranch)
 			await deps.git.pushSetUpstream(branch)
 
 			return { id, branch }
@@ -254,6 +256,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			return {
 				id: store.id,
 				branch: `${store.id}-${store.slug}`,
+				targetBranch: store.targetBranch,
 				title: store.title,
 				state: store.closedAt === null ? 'OPEN' : 'CLOSED',
 			}
@@ -287,6 +290,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return {
 			id: store.id,
 			branch: fixBranchFor(store.id, store.slug),
+			targetBranch: store.targetBranch,
 			title: store.title,
 			body: store.body,
 			state: store.closedAt === null ? 'OPEN' : 'CLOSED',
@@ -303,6 +307,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
 			const dir = path.join(deps.fixesDir, `${id}-${slug}`)
 			const branch = fixBranchFor(id, slug)
+			const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 
 			await mkdir(dir, { recursive: true })
 			const store: FixStore = {
@@ -312,13 +317,14 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				body: spec.body,
 				createdAt: new Date().toISOString(),
 				closedAt: null,
+				targetBranch,
 				readyForAgent: true,
 				needsRevision: false,
 				blockedBy: [],
 			}
 			await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
 
-			await deps.git.createLocalBranch(branch, await deps.git.baseBranch())
+			await deps.git.createLocalBranch(branch, targetBranch)
 			await deps.git.pushSetUpstream(branch)
 
 			return { id, branch }
@@ -889,6 +895,41 @@ if (import.meta.vitest) {
 			const commitDelta = (await exec('git', ['-C', f.work, 'rev-list', '--count', `main..${result.branch}`])).stdout.trim()
 			expect(commitDelta).toBe('0')
 		})
+
+		test('stores targetBranch and creates the integration branch from it', async () => {
+			await exec('git', ['-C', f.work, 'checkout', '-q', '-b', 'release/1.2'])
+			await exec('git', ['-C', f.work, 'checkout', '-q', 'main'])
+			const storage = createFileStorage(f.deps)
+
+			const result = await storage.createPrd({ title: 'Ship From Release', body: 'spec', targetBranch: 'release/1.2' })
+
+			expect(f.calls.git).toContainEqual(['createLocalBranch', result.branch, 'release/1.2'])
+			const dir = path.join(f.prdsDir, `${result.id}-ship-from-release`)
+			const store = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
+			expect(store.targetBranch).toBe('release/1.2')
+			expect((await storage.findPrd(result.id))?.targetBranch).toBe('release/1.2')
+		})
+	})
+
+	describe('file storage: createFix', () => {
+		let f: Fixture
+		beforeEach(async () => {
+			f = await setup()
+		})
+		afterEach(async () => {
+			await teardown(f)
+		})
+
+		test('stores targetBranch and creates the Fix branch from it', async () => {
+			await exec('git', ['-C', f.work, 'checkout', '-q', '-b', 'hotfix/base'])
+			await exec('git', ['-C', f.work, 'checkout', '-q', 'main'])
+			const storage = createFileStorage(f.deps)
+
+			const result = await storage.createFix({ title: 'Fix Tabs', body: 'body', targetBranch: 'hotfix/base' })
+
+			expect(f.calls.git).toContainEqual(['createLocalBranch', result.branch, 'hotfix/base'])
+			expect((await storage.findFix(result.id))?.targetBranch).toBe('hotfix/base')
+		})
 	})
 
 	describe('file storage: listPrds', () => {
@@ -1246,7 +1287,7 @@ if (import.meta.vitest) {
 		test('returns PrdRecord with state=OPEN for an open PRD', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id, branch } = await storage.createPrd({ title: 'Alpha', body: 'a' })
-			expect(await storage.findPrd(id)).toEqual({ id, branch, title: 'Alpha', state: 'OPEN' })
+			expect(await storage.findPrd(id)).toEqual({ id, branch, targetBranch: 'main', title: 'Alpha', state: 'OPEN' })
 		})
 
 		test('returns PrdRecord with state=CLOSED after close', async () => {
@@ -1254,7 +1295,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(deps)
 			const { id, branch } = await storage.createPrd({ title: 'Beta', body: 'b' })
 			await storage.closePrd(id)
-			expect(await storage.findPrd(id)).toEqual({ id, branch, title: 'Beta', state: 'CLOSED' })
+			expect(await storage.findPrd(id)).toEqual({ id, branch, targetBranch: 'main', title: 'Beta', state: 'CLOSED' })
 		})
 	})
 
