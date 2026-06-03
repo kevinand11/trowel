@@ -50,6 +50,21 @@ if (import.meta.vitest) {
 		return fakeSliceStorage([], null, { findPrd: async () => null, ...overrides })
 	}
 
+	function openFix(id: string) {
+		return { id, branch: 'b', title: 't', body: '', state: 'OPEN' as const, readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }
+	}
+
+	async function expectFixNotClosed(findAnyPrByHead: () => Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>): Promise<void> {
+		let called = false
+		const storage = fakeStorage({
+			findFix: async (id) => openFix(id),
+			closeFix: async () => { called = true },
+		})
+		const { gh } = recordingGhOps({ findAnyPrByHead })
+		await reconcileEntity({ kind: 'fix', id: '5', branch: 'b' }, { storage, gh })
+		expect(called).toBe(false)
+	}
+
 	describe('reconcileEntity', () => {
 		test('PRD: PR merged → closePrd called', async () => {
 			let closed: string | null = null
@@ -67,7 +82,7 @@ if (import.meta.vitest) {
 		test('Fix: PR merged → closeFix called', async () => {
 			let closed: string | null = null
 			const storage = fakeStorage({
-				findFix: async (id) => ({ id, branch: 'b', title: 't', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
+				findFix: async (id) => openFix(id),
 				closeFix: async (id) => { closed = id },
 			})
 			const { gh } = recordingGhOps({
@@ -78,14 +93,7 @@ if (import.meta.vitest) {
 		})
 
 		test('PR open → no-op', async () => {
-			let called = false
-			const storage = fakeStorage({
-				findFix: async (id) => ({ id, branch: 'b', title: 't', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
-				closeFix: async () => { called = true },
-			})
-			const { gh } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'OPEN' }) })
-			await reconcileEntity({ kind: 'fix', id: '5', branch: 'b' }, { storage, gh })
-			expect(called).toBe(false)
+			await expectFixNotClosed(async () => ({ number: 9, state: 'OPEN' }))
 		})
 
 		test('no PR exists → no-op', async () => {
@@ -110,14 +118,7 @@ if (import.meta.vitest) {
 		})
 
 		test('gh throws → swallowed, no close call', async () => {
-			let called = false
-			const storage = fakeStorage({
-				findFix: async (id) => ({ id, branch: 'b', title: 't', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
-				closeFix: async () => { called = true },
-			})
-			const { gh } = recordingGhOps({ findAnyPrByHead: async () => { throw new Error('no gh') } })
-			await reconcileEntity({ kind: 'fix', id: '5', branch: 'b' }, { storage, gh })
-			expect(called).toBe(false)
+			await expectFixNotClosed(async () => { throw new Error('no gh') })
 		})
 	})
 }

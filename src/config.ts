@@ -30,15 +30,18 @@ async function tryLoadJson(filePath: string): Promise<unknown | null> {
 	}
 }
 
-async function loadAndValidate(filePath: string): Promise<PartialConfig | null> {
-	const raw = await tryLoadJson(filePath)
-	if (raw === null) return null
+export function validatePartialConfig(filePath: string, raw: unknown, label = 'Invalid config'): PartialConfig {
 	const result = v.validate(partialConfigPipe(), raw)
 	if (!result.valid) {
 		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
-		throw new Error(`Invalid config at ${filePath}:\n${messages}`)
+		throw new Error(`${label} at ${filePath}:\n${messages}`)
 	}
 	return result.value as PartialConfig
+}
+
+async function loadAndValidate(filePath: string): Promise<PartialConfig | null> {
+	const raw = await tryLoadJson(filePath)
+	return raw === null ? null : validatePartialConfig(filePath, raw)
 }
 
 export async function loadConfig(cwd: string = process.cwd(), home: string = homedir()): Promise<ConfigResolution> {

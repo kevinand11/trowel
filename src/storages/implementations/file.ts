@@ -536,6 +536,16 @@ if (import.meta.vitest) {
 		return { storage, prdId, slice }
 	}
 
+	async function bucketForReadySliceBlockedByA(f: Fixture, doneA: boolean): Promise<string> {
+		const storage = createFileStorage(f.deps)
+		const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+		const a = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+		const b = await storage.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
+		if (doneA) await storage.updateSlice(prdId, a.id, { state: 'CLOSED' })
+		await storage.updateSlice(prdId, b.id, { readyForAgent: true })
+		return classifySlices(await storage.findSlices(prdId)).find((s) => s.id === b.id)!.bucket
+	}
+
 	describe('file storage: phase primitives', () => {
 		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 			return {
@@ -579,6 +589,31 @@ if (import.meta.vitest) {
 					baseBranch: async () => baseBranch,
 				}),
 			}
+		}
+
+		async function landReadySlice(f: Fixture, verdict: { verdict: 'no-work-needed' | 'partial'; commits: number }) {
+			const storage = createFileStorage(f.deps)
+			const { result, slice } = await createReadySlice(f, storage)
+			const outcome = await landImplement(
+				makePhaseDeps(f, storage),
+				{ ...slice, readyForAgent: true },
+				verdict,
+				{
+					prdId: result.id,
+					integrationBranch: result.branch,
+					config: { usePrs: false, review: false, perSliceBranches: false },
+				},
+			)
+			return { outcome, after: await storage.findSlices(result.id) }
+		}
+
+		async function readySliceBranchFixture(f: Fixture, baseBranch: string) {
+			const storage = createFileStorage(f.deps)
+			const { result: { id: prdId, branch: integration }, slice } = await createReadySlice(f, storage, 'Implement A')
+			const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
+			const { git: recordingGit, calls } = makeRecordingGit(integration, baseBranch)
+			const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
+			return { storage, prdId, integration, slice, sliceBranch, deps, calls }
 		}
 
 		test('prepareImplement: branch is the integration branch; turnIn carries the slice', async () => {
@@ -626,23 +661,9 @@ if (import.meta.vitest) {
 		test('landImplement + no-work-needed: clears readyForAgent, returns no-work, does not push', async () => {
 			const f = await setup()
 			try {
-				const storage = createFileStorage(f.deps)
-				const { result, slice } = await createReadySlice(f, storage)
-
-				const outcome = await landImplement(
-					makePhaseDeps(f, storage),
-					{ ...slice, readyForAgent: true },
-					{ verdict: 'no-work-needed', commits: 0 },
-					{
-						prdId: result.id,
-						integrationBranch: result.branch,
-						config: { usePrs: false, review: false, perSliceBranches: false },
-					},
-				)
-
+				const { outcome, after } = await landReadySlice(f, { verdict: 'no-work-needed', commits: 0 })
 				expect(outcome).toBe('no-work')
 				expect(f.calls.git.find((c) => c[0] === 'push')).toBeUndefined()
-				const after = await storage.findSlices(result.id)
 				expect(after[0]!.state).toBe('OPEN')
 				expect(after[0]!.readyForAgent).toBe(false)
 			} finally {
@@ -653,23 +674,9 @@ if (import.meta.vitest) {
 		test('landImplement + partial: no host action, returns partial', async () => {
 			const f = await setup()
 			try {
-				const storage = createFileStorage(f.deps)
-				const { result, slice } = await createReadySlice(f, storage)
-
-				const outcome = await landImplement(
-					makePhaseDeps(f, storage),
-					{ ...slice, readyForAgent: true },
-					{ verdict: 'partial', commits: 0 },
-					{
-						prdId: result.id,
-						integrationBranch: result.branch,
-						config: { usePrs: false, review: false, perSliceBranches: false },
-					},
-				)
-
+				const { outcome, after } = await landReadySlice(f, { verdict: 'partial', commits: 0 })
 				expect(outcome).toBe('partial')
 				expect(f.calls.git).toEqual([])
-				const after = await storage.findSlices(result.id)
 				expect(after[0]!.state).toBe('OPEN')
 				expect(after[0]!.readyForAgent).toBe(true)
 			} finally {
@@ -701,13 +708,9 @@ if (import.meta.vitest) {
 		test('landImplement + perSliceBranches:true + usePrs:false + ready: slice branch → host-merge → updateSlice CLOSED; returns done', async () => {
 			const f = await setup()
 			try {
-				const storage = createFileStorage(f.deps)
-				const { result: { id: prdId, branch: integration }, slice } = await createReadySlice(f, storage, 'Implement A')
-				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
 				// Replace the spy git with a recording no-op for this matrix cell — we want to assert the
 				// call sequence, not exercise real git state on a synthetic slice branch.
-				const { git: recordingGit, calls } = makeRecordingGit(integration, 'main')
-				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
+				const { storage, prdId, integration, slice, sliceBranch, deps, calls } = await readySliceBranchFixture(f, 'main')
 
 				const outcome = await landImplement(
 					deps,
@@ -732,12 +735,9 @@ if (import.meta.vitest) {
 		test('landImplement + perSliceBranches:true + usePrs:true + ready: opens a draft PR, returns progress, slice stays OPEN (capability gate retired)', async () => {
 			const f = await setup()
 			try {
-				const storage = createFileStorage(f.deps)
-				const { result: { id: prdId, branch: integration }, slice } = await createReadySlice(f, storage, 'Implement A')
-				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
-				const { git: recordingGit, calls: gitCalls } = makeRecordingGit(integration, 'develop')
+				const { storage, prdId, integration, slice, sliceBranch, deps, calls: gitCalls } = await readySliceBranchFixture(f, 'develop')
 				const { gh, calls: ghCalls } = recordingGhOps()
-				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log!, mergeNoVerify: false }
+				deps.gh = gh
 
 				const outcome = await landImplement(
 					deps,
@@ -1084,26 +1084,11 @@ if (import.meta.vitest) {
 		})
 
 		test('slice with Depends-on: pointing to a non-done slice → blocked', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const a = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			const b = await storage.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-			await storage.updateSlice(prdId, b.id, { readyForAgent: true })
-			const slices = classifySlices(await storage.findSlices(prdId))
-			const bAfter = slices.find((s) => s.id === b.id)!
-			expect(bAfter.bucket).toBe('blocked')
+			expect(await bucketForReadySliceBlockedByA(f, false)).toBe('blocked')
 		})
 
 		test('slice with Depends-on: pointing to a done slice → ready (dep satisfied)', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const a = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			const b = await storage.createSlice(prdId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-			await storage.updateSlice(prdId, a.id, { state: 'CLOSED' })
-			await storage.updateSlice(prdId, b.id, { readyForAgent: true })
-			const slices = classifySlices(await storage.findSlices(prdId))
-			const bAfter = slices.find((s) => s.id === b.id)!
-			expect(bAfter.bucket).toBe('ready')
+			expect(await bucketForReadySliceBlockedByA(f, true)).toBe('ready')
 		})
 
 		test('file storage never returns in-flight (no PR concept)', async () => {

@@ -186,26 +186,7 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	return withPhaseLock(deps, async () => {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'partial') return 'partial'
-		const branch = sliceBranchFor(ctx.prdId, slice)
-
-		if (verdict.verdict === 'ready') {
-			await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-			const prNumber = await deps.gh.findPrNumberByHead(branch)
-			await deps.gh.markPrReady(prNumber)
-			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
-			return 'progress'
-		}
-		if (verdict.verdict === 'needs-revision') {
-			await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
-			deps.log(`${tag} flagged needsRevision`)
-			return 'progress'
-		}
-		return 'partial'
-	})
+	return withPhaseLock(deps, async () => landReviewOrAddress('review', deps, slice, verdict, ctx))
 }
 
 /**
@@ -237,24 +218,37 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCt
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	return withPhaseLock(deps, async () => {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'partial') return 'partial'
-		const branch = sliceBranchFor(ctx.prdId, slice)
+	return withPhaseLock(deps, async () => landReviewOrAddress('address', deps, slice, verdict, ctx))
+}
 
-		if (verdict.verdict === 'ready') {
-			await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
+async function landReviewOrAddress(kind: 'review' | 'address', deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	if (verdict.verdict === 'partial') return 'partial'
+	const branch = sliceBranchFor(ctx.prdId, slice)
+	if (verdict.verdict === 'ready') {
+		await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
+		if (kind === 'review') {
+			const prNumber = await deps.gh.findPrNumberByHead(branch)
+			await deps.gh.markPrReady(prNumber)
+			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
+		} else {
 			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
 			deps.log(`${tag} cleared needsRevision`)
-			return 'progress'
 		}
-		if (verdict.verdict === 'no-work-needed') {
-			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-			deps.log(`${tag} no-work-needed: cleared needsRevision`)
-			return 'no-work'
-		}
-		return 'partial'
-	})
+		return 'progress'
+	}
+	if (kind === 'review' && verdict.verdict === 'needs-revision') {
+		await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
+		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
+		deps.log(`${tag} flagged needsRevision`)
+		return 'progress'
+	}
+	if (kind === 'address' && verdict.verdict === 'no-work-needed') {
+		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+		deps.log(`${tag} no-work-needed: cleared needsRevision`)
+		return 'no-work'
+	}
+	return 'partial'
 }
 
 if (import.meta.vitest) {

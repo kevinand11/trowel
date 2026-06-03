@@ -104,6 +104,14 @@ if (import.meta.vitest) {
 			if (cleanupRepo) await cleanupRepo()
 		})
 
+		async function writeTurnOut(worktree: TurnWorktree, verdict: Record<string, unknown>): Promise<void> {
+			await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify(verdict))
+		}
+
+		function depsWithAgent(runAgent: SpawnTurnDeps['runAgent']): SpawnTurnDeps {
+			return { prdId: '142', projectRoot, copyToWorktree: [], git, runAgent }
+		}
+
 		test('writes turn-in.json into the worktree and reads turn-out.json into the parsed verdict', async () => {
 			let observedTurnIn: TurnIn | null = null
 			const args = makeArgs()
@@ -115,7 +123,7 @@ if (import.meta.vitest) {
 				runAgent: async ({ worktree }) => {
 					const inRaw = await readFile(path.join(worktree.worktreePath, '.trowel', 'turn-in.json'), 'utf8')
 					observedTurnIn = JSON.parse(inRaw) as TurnIn
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					await writeTurnOut(worktree, { verdict: 'ready' })
 					return { commits: 2 }
 				},
 			}
@@ -136,40 +144,22 @@ if (import.meta.vitest) {
 			await new Promise<void>((res, rej) => exec('git checkout feature && git merge main --no-edit && git checkout main', { cwd: projectRoot }, (err) => err ? rej(err) : res()))
 
 			// First turn: agent writes a valid ready verdict
-			const firstDeps: SpawnTurnDeps = {
-				prdId: '142',
-				projectRoot,
-				copyToWorktree: [],
-				git,
-				runAgent: async ({ worktree }) => {
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
-					return { commits: 1 }
-				},
-			}
+			const firstDeps = depsWithAgent(async ({ worktree }) => {
+				await writeTurnOut(worktree, { verdict: 'ready' })
+				return { commits: 1 }
+			})
 			const first = await spawnTurn(makeArgs(), firstDeps)
 			expect(first.verdict).toBe('ready')
 
 			// Second turn against the SAME worktree: agent doesn't write a turn-out.json this time
 			// (simulates a crash mid-Turn). Without the pre-Turn unlink, the stale 'ready' from
 			// the prior Turn would be read and accepted as the current verdict — silent bug.
-			const secondDeps: SpawnTurnDeps = {
-				prdId: '142',
-				projectRoot,
-				copyToWorktree: [],
-				git,
-				runAgent: async () => ({ commits: 0 }),
-			}
+			const secondDeps = depsWithAgent(async () => ({ commits: 0 }))
 			await expect(spawnTurn(makeArgs(), secondDeps)).rejects.toThrow(/verdict file missing/i)
 		})
 
 		test('lets parseVerdict throw bubble when turn-out.json is missing (no coercion to partial)', async () => {
-			const deps: SpawnTurnDeps = {
-				prdId: '142',
-				projectRoot,
-				copyToWorktree: [],
-				git,
-				runAgent: async () => ({ commits: 0 }),
-			}
+			const deps = depsWithAgent(async () => ({ commits: 0 }))
 			await expect(spawnTurn(makeArgs(), deps)).rejects.toThrow(/verdict file missing/i)
 		})
 
@@ -182,7 +172,7 @@ if (import.meta.vitest) {
 				git,
 				runAgent: async ({ logPath, worktree }) => {
 					observedLogPath = logPath
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					await writeTurnOut(worktree, { verdict: 'partial', notes: 'stop' })
 					return { commits: 0 }
 				},
 			}
@@ -196,7 +186,7 @@ if (import.meta.vitest) {
 				...deps,
 				runAgent: async ({ logPath, worktree }) => {
 					secondPath = logPath
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					await writeTurnOut(worktree, { verdict: 'partial', notes: 'stop' })
 					return { commits: 0 }
 				},
 			}
@@ -213,7 +203,7 @@ if (import.meta.vitest) {
 				git,
 				runAgent: async ({ worktree }) => {
 					observedWorktreePath = worktree.worktreePath
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'partial', notes: 'stop' }))
+					await writeTurnOut(worktree, { verdict: 'partial', notes: 'stop' })
 					return { commits: 0 }
 				},
 			}
@@ -231,7 +221,7 @@ if (import.meta.vitest) {
 				git,
 				runAgent: async ({ worktree }) => {
 					await writeFile(path.join(worktree.worktreePath, 'leftover.txt'), 'from prior turn\n')
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					await writeTurnOut(worktree, { verdict: 'ready' })
 					return { commits: 1 }
 				},
 			}
@@ -243,7 +233,7 @@ if (import.meta.vitest) {
 				...deps,
 				runAgent: async ({ worktree }) => {
 					leftoverSeen = await stat(path.join(worktree.worktreePath, 'leftover.txt')).then(() => true, () => false)
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					await writeTurnOut(worktree, { verdict: 'ready' })
 					return { commits: 1 }
 				},
 			}
@@ -258,7 +248,7 @@ if (import.meta.vitest) {
 				copyToWorktree: [],
 				git,
 				runAgent: async ({ worktree }) => {
-					await writeFile(path.join(worktree.worktreePath, '.trowel', 'turn-out.json'), JSON.stringify({ verdict: 'ready' }))
+					await writeTurnOut(worktree, { verdict: 'ready' })
 					return { commits: 1 }
 				},
 			}

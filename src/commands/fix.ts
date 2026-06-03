@@ -79,6 +79,8 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { mkdtemp, mkdir, writeFile, readFile: fsReadFile, rm } = await import('node:fs/promises')
 	const { tmpdir } = await import('node:os')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
+	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	async function setupTmp(): Promise<{ projectRoot: string; fixOutPath: string; cleanup: () => Promise<void> }> {
 		const projectRoot = await mkdtemp(path.join(tmpdir(), 'trowel-fix-cleanup-'))
@@ -96,56 +98,48 @@ if (import.meta.vitest) {
 		}
 	}
 
+	function readFixOutFile(fixOutPath: string): Promise<string | null> {
+		return fsReadFile(fixOutPath, 'utf8').catch(() => null)
+	}
+
+	async function writeFixOut(tmp: { fixOutPath: string }, title: string, body: string): Promise<void> {
+		await writeFile(tmp.fixOutPath, JSON.stringify({ title, body }))
+	}
+
+	function attachFixOutFile(rt: FixRuntime, tmp: { projectRoot: string; fixOutPath: string }): void {
+		rt.projectRoot = tmp.projectRoot
+		rt.readFixOut = () => readFixOutFile(tmp.fixOutPath)
+	}
+
+	function prepareInteractiveFixRuntime(tmp: { projectRoot: string; fixOutPath: string }): { rt: FixRuntime; calls: ReturnType<typeof makeFixFakes>['calls']; getInteractiveCalled: () => boolean } {
+		const { rt, calls } = makeFixFakes({ fixOut: null, preflightFailures: ['working tree dirty'] })
+		attachFixOutFile(rt, tmp)
+		let interactiveCalled = false
+		rt.runInteractive = async () => { interactiveCalled = true }
+		return { rt, calls, getInteractiveCalled: () => interactiveCalled }
+	}
+
 	function makeFixFakes(opts: { fixOut: string | null; currentBranch?: string; cleanTree?: boolean; preflightFailures?: string[] }) {
 		const created: Array<{ title: string; body: string; targetBranch?: string }> = []
 		const calls = { git: [] as string[], stdout: [] as string[], created }
 		let current = opts.currentBranch ?? 'main'
 		let clean = opts.cleanTree ?? true
-		const storage: Storage = {
-			createPrd: async () => ({ id: 'p', branch: 'p' }),
+		const storage = fakeSliceStorage([], null, {
 			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async () => {},
-			createSlice: async () => { throw new Error('not used') },
-			findSlices: async () => [],
-			findSlice: async () => null,
-			updateSlice: async () => {},
 			createFix: async (spec) => {
 				created.push(spec)
 				current = 'fix/5-tabs'
 				return { id: '5', branch: 'fix/5-tabs' }
 			},
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
-		}
-		const git: GitOps = {
+		})
+		const git: GitOps = noopGitOps({
 			currentBranch: async () => current,
-			branchExists: async () => true,
 			checkout: async (b) => { calls.git.push(`checkout(${b})`); current = b },
 			baseBranch: async () => 'main',
 			isWorkingTreeClean: async () => clean,
 			stashPush: async () => { calls.git.push('stashPush'); clean = true },
 			stashPop: async () => { calls.git.push('stashPop') },
-			fetch: async () => {},
-			push: async () => {},
-			mergeNoFf: async () => {},
-			mergeAbort: async () => {},
-			deleteRemoteBranch: async () => {},
-			createRemoteBranch: async () => {},
-			createLocalBranch: async () => {},
-			pushSetUpstream: async () => {},
-			isMerged: async () => false,
-			deleteBranch: async () => {},
-			worktreeAdd: async () => {},
-			worktreeRemove: async () => {},
-			worktreeList: async () => [],
-			restoreAll: async () => {},
-			cleanUntracked: async () => {},
-			commitsAhead: async () => 0,
-			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-		}
+		})
 		const rt: FixRuntime = {
 			projectRoot: '/fake/proj',
 			storage,
@@ -175,19 +169,13 @@ if (import.meta.vitest) {
 		test('valid existing fix-out + user confirms continue + preflight would fail → skips preflight and materialises', async () => {
 			const tmp = await setupTmp()
 			try {
-				await writeFile(tmp.fixOutPath, JSON.stringify({ title: 'Resume Fix', body: 'body from prior grill' }))
-				const { rt, calls } = makeFixFakes({ fixOut: null, preflightFailures: ['working tree dirty'] })
-				rt.projectRoot = tmp.projectRoot
-				let interactiveCalled = false
-				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.readFixOut = async () => {
-					try { return await fsReadFile(tmp.fixOutPath, 'utf8') } catch { return null }
-				}
+				await writeFixOut(tmp, 'Resume Fix', 'body from prior grill')
+				const { rt, calls, getInteractiveCalled } = prepareInteractiveFixRuntime(tmp)
 				rt.confirm = async () => true
 
 				await runFix(rt)
 
-				expect(interactiveCalled).toBe(false)
+				expect(getInteractiveCalled()).toBe(false)
 				expect(calls.created).toEqual([{ title: 'Resume Fix', body: 'body from prior grill', targetBranch: 'main' }])
 				expect(await fileExists(tmp.fixOutPath)).toBe(false)
 			} finally {
@@ -198,19 +186,13 @@ if (import.meta.vitest) {
 		test('valid existing fix-out + user starts fresh + preflight fails → stale fix-out.json persists', async () => {
 			const tmp = await setupTmp()
 			try {
-				await writeFile(tmp.fixOutPath, JSON.stringify({ title: 'Stale Fix', body: 'old' }))
-				const { rt, calls } = makeFixFakes({ fixOut: null, preflightFailures: ['working tree dirty'] })
-				rt.projectRoot = tmp.projectRoot
-				let interactiveCalled = false
-				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.readFixOut = async () => {
-					try { return await fsReadFile(tmp.fixOutPath, 'utf8') } catch { return null }
-				}
+				await writeFixOut(tmp, 'Stale Fix', 'old')
+				const { rt, calls, getInteractiveCalled } = prepareInteractiveFixRuntime(tmp)
 				rt.confirm = async () => false
 
 				await expect(runFix(rt)).rejects.toThrow(/preflight failed/i)
 
-				expect(interactiveCalled).toBe(false)
+				expect(getInteractiveCalled()).toBe(false)
 				expect(calls.created).toEqual([])
 				expect(await fileExists(tmp.fixOutPath)).toBe(true)
 			} finally {

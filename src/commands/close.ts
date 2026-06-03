@@ -259,11 +259,11 @@ if (import.meta.vitest) {
 				if (s && patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
 				if (s && patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
 			},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
+			createFix: async () => ({ id: 'unused-fix', branch: 'unused-fix' }),
 			findFix: async () => null,
 			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
+			updateFix: async () => undefined,
+			closeFix: async () => undefined,
 		}
 		return { storage, calls }
 	}
@@ -362,112 +362,57 @@ if (import.meta.vitest) {
 		const baseSlice = { title: 'X', body: '', readyForAgent: false, needsRevision: false }
 
 		test('warns with slice ids and confirms before auto-closing', async () => {
-			const state: FakeStorageState = {
-				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
-				slices: [
-					{ id: 's1', ...baseSlice, state: 'OPEN' },
-					{ id: 's2', ...baseSlice, state: 'CLOSED' },
-					{ id: 's3', ...baseSlice, state: 'OPEN' },
-				],
-			}
-			const gitState: GitState = { current: 'main', branches: new Set(['main', '42-feature']), mergedAncestors: new Map() }
-			const { storage, calls } = fakeStorage(state)
-			const { git } = fakeGit(gitState)
+			const state = prdState('OPEN', {}, [
+				{ id: 's1', ...baseSlice, state: 'OPEN' },
+				{ id: 's2', ...baseSlice, state: 'CLOSED' },
+				{ id: 's3', ...baseSlice, state: 'OPEN' },
+			])
 			let confirmMsg = ''
-			await runClosePrd('42', {
-				storage,
-				deleteBranchPolicy: 'never',
+			const { storageCalls } = await runClosePrdWith(state, branchState(), {
 				confirm: async (m) => {
 					confirmMsg = m
 					return true
 				},
-				stdout: () => {},
-				git,
-				listOpenPrs: async () => [],
 			})
 			expect(confirmMsg).toMatch(/2 open slices/i)
 			expect(confirmMsg).toContain('s1')
 			expect(confirmMsg).toContain('s3')
 			expect(confirmMsg).not.toContain('s2')
 			expect(state.slices.every((s) => s.state === 'CLOSED')).toBe(true)
-			expect(calls).toContain('closePrd(42)')
+			expect(storageCalls).toContain('closePrd(42)')
 		})
 
 		test('declining the warn → no auto-close, no storage.close, no branch ops', async () => {
-			const state: FakeStorageState = {
-				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
-				slices: [{ id: 's1', ...baseSlice, state: 'OPEN' }],
-			}
-			const gitState: GitState = { current: 'main', branches: new Set(['main', '42-feature']), mergedAncestors: new Map() }
-			const { storage, calls: bCalls } = fakeStorage(state)
-			const { git, calls: gCalls } = fakeGit(gitState)
-			let stdoutBuf = ''
-			await runClosePrd('42', {
-				storage,
-				deleteBranchPolicy: 'always',
-				confirm: async () => false,
-				stdout: (s) => {
-					stdoutBuf += s
-				},
-				git,
-				listOpenPrs: async () => [],
-			})
+			const state = prdState('OPEN', {}, [{ id: 's1', ...baseSlice, state: 'OPEN' }])
+			const { storageCalls, gitCalls, stdoutBuf } = await runClosePrdWith(state, branchState(), { deleteBranchPolicy: 'always' })
 			expect(state.slices[0]!.state).toBe('OPEN')
 			expect(state.prd!.state).toBe('OPEN')
-			expect(bCalls).not.toContain('closePrd(42)')
-			expect(gCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
+			expect(storageCalls).not.toContain('closePrd(42)')
+			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(stdoutBuf).toMatch(/aborted/i)
 		})
 
 		test('no open slices → no prompt, proceeds straight to storage.close', async () => {
-			const state: FakeStorageState = {
-				prd: { id: '42', branch: '42-feature', title: 'F', state: 'OPEN' },
-				slices: [{ id: 's1', ...baseSlice, state: 'CLOSED' }],
-			}
-			const gitState: GitState = { current: 'main', branches: new Set(['main', '42-feature']), mergedAncestors: new Map() }
-			const { storage, calls } = fakeStorage(state)
-			const { git } = fakeGit(gitState)
 			let confirmCalled = 0
-			await runClosePrd('42', {
-				storage,
-				deleteBranchPolicy: 'never',
+			const { storageCalls } = await runClosePrdWith(prdState('OPEN', {}, [{ id: 's1', ...baseSlice, state: 'CLOSED' }]), branchState(), {
 				confirm: async () => {
 					confirmCalled++
 					return false
 				},
-				stdout: () => {},
-				git,
-				listOpenPrs: async () => [],
 			})
 			expect(confirmCalled).toBe(0)
-			expect(calls).toContain('closePrd(42)')
+			expect(storageCalls).toContain('closePrd(42)')
 		})
 	})
 
 	describe('close: tracer (PRD open, no slices, policy=never)', () => {
 		test('calls storage.close, leaves branch intact, returns user to BACK_TO', async () => {
-			const state: FakeStorageState = {
-				prd: { id: '42', branch: '42-feature', title: 'Feature', state: 'OPEN' },
-				slices: [],
-			}
-			const gitState: GitState = {
-				current: 'main',
-				branches: new Set(['main', '42-feature']),
-				mergedAncestors: new Map(),
-			}
-			const { storage, calls: bCalls } = fakeStorage(state)
-			const { git, calls: gCalls } = fakeGit(gitState)
-			await runClosePrd('42', {
-				storage,
-				deleteBranchPolicy: 'never',
-				confirm: async () => false,
-				stdout: () => {},
-				git,
-				listOpenPrs: async () => [],
-			})
+			const state = prdState('OPEN', { title: 'Feature' })
+			const gitState = branchState()
+			const { storageCalls, gitCalls } = await runClosePrdWith(state, gitState)
 			expect(state.prd!.state).toBe('CLOSED')
-			expect(bCalls).toContain('closePrd(42)')
-			expect(gCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
+			expect(storageCalls).toContain('closePrd(42)')
+			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(gitState.branches.has('42-feature')).toBe(true)
 			expect(gitState.current).toBe('main')
 		})
@@ -565,49 +510,38 @@ if (import.meta.vitest) {
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
+		function expectBranchKeptAfterPrompt(msgs: string[], pattern: RegExp, gitState: GitState): void {
+			expect(msgs.some((m) => pattern.test(m))).toBe(true)
+			expect(gitState.branches.has('42-feature')).toBe(true)
+		}
+
 		test('open slice PRs → warn + confirm before delete; decline → keep branch', async () => {
 			const { state, gitState } = happyState()
-			const { storage } = fakeStorage(state)
-			const { git } = fakeGit(gitState)
 			const msgs: string[] = []
-			let stdoutBuf = ''
-			await runClosePrd('42', {
-				storage,
+			const { stdoutBuf } = await runClosePrdWith(state, gitState, {
 				deleteBranchPolicy: 'always',
 				confirm: async (m) => {
 					msgs.push(m)
 					return false // decline
 				},
-				stdout: (s) => {
-					stdoutBuf += s
-				},
-				git,
 				listOpenPrs: async (b) => [{ number: 99, url: `https://github.com/o/r/pull/99 base=${b}` }],
 			})
 			expect(stdoutBuf).toContain('#99')
-			expect(msgs.some((m) => /deleting the branch will close these PRs/i.test(m))).toBe(true)
-			expect(gitState.branches.has('42-feature')).toBe(true)
+			expectBranchKeptAfterPrompt(msgs, /deleting the branch will close these PRs/i, gitState)
 		})
 
 		test('unmerged branch → warn + confirm; decline → keep branch', async () => {
 			const { state, gitState } = happyState()
 			gitState.mergedAncestors = new Map() // branch not merged
-			const { storage } = fakeStorage(state)
-			const { git } = fakeGit(gitState)
 			const msgs: string[] = []
-			await runClosePrd('42', {
-				storage,
+			await runClosePrdWith(state, gitState, {
 				deleteBranchPolicy: 'always',
 				confirm: async (m) => {
 					msgs.push(m)
 					return false
 				},
-				stdout: () => {},
-				git,
-				listOpenPrs: async () => [],
 			})
-			expect(msgs.some((m) => /contains commits not on 'main'/i.test(m))).toBe(true)
-			expect(gitState.branches.has('42-feature')).toBe(true)
+			expectBranchKeptAfterPrompt(msgs, /contains commits not on 'main'/i, gitState)
 		})
 
 		test('unmerged + accept → deletes', async () => {
@@ -673,29 +607,29 @@ if (import.meta.vitest) {
 			const calls: string[] = []
 			const byId = new Map(slices.map((s) => [s.id, s]))
 			const toSlice = (s: SliceRow): Slice => ({ ...s, blockedBy: [], prState: null })
-			const storage: Storage = {
-				createPrd: async () => ({ id: 'x', branch: 'x' }),
+			const storage = fakeSliceStorage(slices.map(toSlice), prdId, {
 				findPrd: async (id) => (id === prdId ? { id, branch: `${prdId}-feature`, title: 'F', state: 'OPEN' } : null),
-				listPrds: async () => [],
-				closePrd: async () => {},
-				createSlice: async () => { throw new Error('nyi') },
-				findSlices: async () => slices.map(toSlice),
-				findSlice: async (sliceId) => {
-					const s = byId.get(sliceId)
-					return s ? { prdId, slice: toSlice(s) } : null
-				},
 				updateSlice: async (_p, sliceId, patch) => {
 					calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)
 					const s = byId.get(sliceId)
 					if (s && patch.state === 'CLOSED') s.state = 'CLOSED'
 				},
-				createFix: async () => ({ id: 'x', branch: 'x' }),
-				findFix: async () => null,
-				listFixes: async () => [],
-				updateFix: async () => {},
-				closeFix: async () => {},
-			}
+			})
 			return { storage, calls }
+		}
+
+		function runCloseSliceWith(storage: Storage, git: GitOps, perSliceBranches: boolean): Promise<void> {
+			return runCloseSlice('s1', {
+				storage,
+				deleteBranchPolicy: 'always',
+				confirm: async () => true,
+				stdout: () => {},
+				git,
+				gh: noPrGh(),
+				usePrs: false,
+				listOpenPrs: async () => [],
+				perSliceBranches,
+			})
 		}
 
 		test('throws when slice id not found', async () => {
@@ -784,17 +718,7 @@ if (import.meta.vitest) {
 				branches: new Set(['main', '42-feature', sliceBranch]),
 				mergedAncestors: new Map([[sliceBranch, ['42-feature']]]),
 			})
-			await runCloseSlice('s1', {
-				storage,
-				deleteBranchPolicy: 'always',
-				confirm: async () => true,
-				stdout: () => {},
-				git,
-				gh: noPrGh(),
-				usePrs: false,
-				listOpenPrs: async () => [],
-				perSliceBranches: true,
-			})
+			await runCloseSliceWith(storage, git, true)
 			expect(gCalls).toContain(`isMerged(${sliceBranch},42-feature)`)
 			expect(gCalls).toContain(`deleteBranch(${sliceBranch})`)
 		})
@@ -802,17 +726,7 @@ if (import.meta.vitest) {
 		test('perSliceBranches:true + branch absent → no branch ops', async () => {
 			const { storage } = sliceStorage('42', [{ id: 's1', title: 'A', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false }])
 			const { git, calls: gCalls } = fakeGit({ current: 'main', branches: new Set(['main']), mergedAncestors: new Map() })
-			await runCloseSlice('s1', {
-				storage,
-				deleteBranchPolicy: 'always',
-				confirm: async () => true,
-				stdout: () => {},
-				git,
-				gh: noPrGh(),
-				usePrs: false,
-				listOpenPrs: async () => [],
-				perSliceBranches: true,
-			})
+			await runCloseSliceWith(storage, git, true)
 			expect(gCalls.find((c) => c[0] === 'deleteBranch')).toBeUndefined()
 		})
 	})

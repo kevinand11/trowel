@@ -191,6 +191,21 @@ if (import.meta.vitest) {
 		usePrs: false, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null, mergeNoVerify: false,
 	}
 
+	async function prdClosedAfterLoop(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<boolean> {
+		let prdClosed = false
+		const storage = makeStorage({
+			findPrd: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
+			findSlices: async () => slices,
+			closePrd: async () => { prdClosed = true },
+		})
+		const { gh } = recordingGhOps()
+		await runEntityLoop(
+			{ kind: 'prd', id: '3', integrationBranch: '3-feat', title: 'Feat' },
+			{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: () => {}, config },
+		)
+		return prdClosed
+	}
+
 	describe('runEntityLoop: fix', () => {
 		test('ready implementer + usePrs:false → host-merges fix → base + closes Fix', async () => {
 			let closedFix: string | null = null
@@ -240,35 +255,13 @@ if (import.meta.vitest) {
 
 	describe('runEntityLoop: prd', () => {
 		test('all slices already CLOSED + usePrs:false → Close-out fires, PRD CLOSED', async () => {
-			let prdClosed = false
-			const storage = makeStorage({
-				findPrd: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
-				findSlices: async () => [
-					{ id: 's1', title: 'a', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
-				],
-				closePrd: async () => { prdClosed = true },
-			})
-			const { gh } = recordingGhOps()
-			await runEntityLoop(
-				{ kind: 'prd', id: '3', integrationBranch: '3-feat', title: 'Feat' },
-				{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: () => {}, config: { ...baseConfig, usePrs: false } },
-			)
-			expect(prdClosed).toBe(true)
+			expect(await prdClosedAfterLoop([
+				{ id: 's1', title: 'a', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
+			], { ...baseConfig, usePrs: false })).toBe(true)
 		})
 
 		test('empty slices → skips Close-out (nothing to ship)', async () => {
-			let prdClosed = false
-			const storage = makeStorage({
-				findPrd: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
-				findSlices: async () => [],
-				closePrd: async () => { prdClosed = true },
-			})
-			const { gh } = recordingGhOps()
-			await runEntityLoop(
-				{ kind: 'prd', id: '3', integrationBranch: '3-feat', title: 'Feat' },
-				{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: () => {}, config: baseConfig },
-			)
-			expect(prdClosed).toBe(false)
+			expect(await prdClosedAfterLoop([], baseConfig)).toBe(false)
 		})
 
 		test('PRD already CLOSED → no loop, no Close-out', async () => {

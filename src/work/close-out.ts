@@ -154,6 +154,19 @@ if (import.meta.vitest) {
 		return { git, calls }
 	}
 
+	async function runFixCloseOutWithPr(state: 'OPEN' | 'MERGED'): Promise<{ closed: { prd: string[]; fix: string[] }; calls: Array<[string, ...unknown[]]> }> {
+		const { storage, closed } = fakeStorage()
+		const { git } = fakeGit()
+		const { gh, calls } = recordingGhOps({
+			findAnyPrByHead: async () => ({ number: 11, state }),
+		})
+		await runCloseOut(
+			{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
+			{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'always', mergeNoVerify: false } },
+		)
+		return { closed, calls }
+	}
+
 	describe('runCloseOut', () => {
 		test('Fix + usePrs:false: host-merges to targetBranch, marks Fix CLOSED, deletes branch on always', async () => {
 			const { storage, closed } = fakeStorage()
@@ -193,15 +206,7 @@ if (import.meta.vitest) {
 		})
 
 		test('Fix + usePrs:true, PR exists open: marks ready, does not create', async () => {
-			const { storage, closed } = fakeStorage()
-			const { git } = fakeGit()
-			const { gh, calls } = recordingGhOps({
-				findAnyPrByHead: async () => ({ number: 11, state: 'OPEN' }),
-			})
-			await runCloseOut(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
-				{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'always', mergeNoVerify: false } },
-			)
+			const { closed, calls } = await runFixCloseOutWithPr('OPEN')
 			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
 			expect(calls).toContainEqual(['markPrReady', 11])
 			expect(closed.fix).toEqual([])
@@ -228,15 +233,7 @@ if (import.meta.vitest) {
 		})
 
 		test('Fix + usePrs:true, PR already merged: no-op (reconciliation owns CLOSED)', async () => {
-			const { storage, closed } = fakeStorage()
-			const { git } = fakeGit()
-			const { gh, calls } = recordingGhOps({
-				findAnyPrByHead: async () => ({ number: 11, state: 'MERGED' }),
-			})
-			await runCloseOut(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
-				{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'always', mergeNoVerify: false } },
-			)
+			const { closed, calls } = await runFixCloseOutWithPr('MERGED')
 			expect(calls.find((c) => c[0] === 'markPrReady')).toBeUndefined()
 			expect(closed.fix).toEqual([])
 		})

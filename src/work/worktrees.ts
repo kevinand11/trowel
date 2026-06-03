@@ -142,11 +142,16 @@ if (import.meta.vitest) {
 			await fsRm(projectRoot, { recursive: true, force: true })
 		})
 
-		test('creates .trowel/ and .trowel/.gitignore with worktrees/ and logs/ entries when both are missing', async () => {
+		async function expectGitignoreHasRequiredEntries(): Promise<string> {
 			await ensureTrowelDir(projectRoot)
 			const gitignore = await fsReadFile(path.join(projectRoot, '.trowel', '.gitignore'), 'utf8')
 			expect(gitignore).toContain('worktrees/')
 			expect(gitignore).toContain('logs/')
+			return gitignore
+		}
+
+		test('creates .trowel/ and .trowel/.gitignore with worktrees/ and logs/ entries when both are missing', async () => {
+			await expectGitignoreHasRequiredEntries()
 		})
 
 		test('idempotent: a second call does not clobber lines that are already correct', async () => {
@@ -181,10 +186,7 @@ if (import.meta.vitest) {
 
 		test('writes a fresh .gitignore when .trowel/ already exists but .gitignore does not', async () => {
 			await fsMkdir(path.join(projectRoot, '.trowel'), { recursive: true })
-			await ensureTrowelDir(projectRoot)
-			const gitignore = await fsReadFile(path.join(projectRoot, '.trowel', '.gitignore'), 'utf8')
-			expect(gitignore).toContain('worktrees/')
-			expect(gitignore).toContain('logs/')
+			await expectGitignoreHasRequiredEntries()
 		})
 
 		test('appends only the missing entry when .gitignore already has one of the required lines', async () => {

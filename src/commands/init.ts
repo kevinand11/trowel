@@ -3,12 +3,11 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 
 import { confirm, input, select } from '@inquirer/prompts'
-import { v } from 'valleyed'
 
-import { pathForLayer } from '../config.ts'
+import { pathForLayer, validatePartialConfig } from '../config.ts'
 import { harnessFactories } from '../harnesses/registry.ts'
 import { resolveProjectRoot } from '../project.ts'
-import { defaultConfig, emitJsonSchema, partialConfigPipe, type InitableLayer, type PartialConfig } from '../schema.ts'
+import { defaultConfig, emitJsonSchema, type InitableLayer, type PartialConfig } from '../schema.ts'
 import { storageFactories } from '../storages/registry.ts'
 
 type InitPrompts = {
@@ -185,13 +184,7 @@ async function readExisting(filePath: string): Promise<PartialConfig | null> {
 		if ((error as any).code === 'ENOENT') return null
 		throw error
 	}
-	const parsed = JSON.parse(raw)
-	const result = v.validate(partialConfigPipe(), parsed)
-	if (!result.valid) {
-		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
-		throw new Error(`Invalid existing config at ${filePath}:\n${messages}`)
-	}
-	return result.value as PartialConfig
+	return validatePartialConfig(filePath, JSON.parse(raw), 'Invalid existing config')
 }
 
 if (import.meta.vitest) {
@@ -607,24 +600,15 @@ if (import.meta.vitest) {
 			await write(configPath, JSON.stringify({ storage: 'issue' }), 'utf8')
 
 			let promptDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
+			await runProjectInit(
+				f,
+				fixedPrompts('issue', true, {
 					storage: async (current) => {
 						promptDefault = current
 						return 'issue'
 					},
-					prdsDir: async (current) => current,
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async (current) => current,
-					review: async (current) => current,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(promptDefault).toBe('issue')
 		})
 
@@ -684,24 +668,15 @@ if (import.meta.vitest) {
 
 		test('confirm prompt receives the rendered JSON in its message', async () => {
 			let confirmMsg = ''
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'issue',
-					prdsDir: async (current) => current,
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async (current) => current,
-					review: async (current) => current,
+			await runProjectInit(
+				f,
+				fixedPrompts('issue', true, {
 					confirm: async (m) => {
 						confirmMsg = m
 						return false
 					},
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(confirmMsg).toContain('"storage": "issue"')
 			expect(confirmMsg).toContain(path.join(f.project, '.trowel', 'config.json'))
 		})

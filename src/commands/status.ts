@@ -385,25 +385,27 @@ if (import.meta.vitest) {
 			...overrides,
 		})
 
-		test('renders slice header + parent PRD ref + bucket', async () => {
-			const storage = sliceStorage(prd, [rawSlice({ id: '42' })])
+		async function renderSliceStatus(slices: Slice[]): Promise<string> {
+			const storage = sliceStorage(prd, slices)
 			const { gh } = recordingGhOps()
 			let buf = ''
 			await runStatusSlice('42', { storage, gh, usePrs: false, stdout: (s) => (buf += s) })
+			return buf
+		}
+
+		test('renders slice header + parent PRD ref + bucket', async () => {
+			const buf = await renderSliceStatus([rawSlice({ id: '42' })])
 			expect(buf).toContain('Slice 42  Implement tab parser')
 			expect(buf).toContain(`PRD:     ${prd.id}  ${prd.title}`)
 			expect(buf).toContain('bucket: ready')
 		})
 
 		test('renders blockedBy with each blocker\'s bucket', async () => {
-			const storage = sliceStorage(prd, [
+			const buf = await renderSliceStatus([
 				rawSlice({ id: '40', title: 'Migration', state: 'CLOSED' }),
 				rawSlice({ id: '41', title: 'Constants', readyForAgent: true }),
 				rawSlice({ id: '42', title: 'Tab parser', blockedBy: ['40', '41'] }),
 			])
-			const { gh } = recordingGhOps()
-			let buf = ''
-			await runStatusSlice('42', { storage, gh, usePrs: false, stdout: (s) => (buf += s) })
 			expect(buf).toContain('blockedBy:')
 			expect(buf).toMatch(/40.*done.*Migration/)
 			expect(buf).toMatch(/41.*ready.*Constants/)

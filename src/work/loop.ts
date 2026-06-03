@@ -232,6 +232,24 @@ if (import.meta.vitest) {
 		}
 	}
 
+	async function peakConcurrentImplementers(perSliceBranches: boolean, maxConcurrent: number): Promise<number> {
+		const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
+		const storage = makeStorage({ slices })
+		let live = 0
+		let peak = 0
+		await runLoop('p1', makeDeps(storage, {
+			spawnTurn: async () => {
+				live++
+				peak = Math.max(peak, live)
+				await new Promise((r) => setTimeout(r, 5))
+				live--
+				return { verdict: 'partial', commits: 0 }
+			},
+			config: { usePrs: false, review: false, perSliceBranches, sliceStepCap: 1, maxConcurrent, mergeNoVerify: false },
+		}))
+		return peak
+	}
+
 	describe('runLoop', () => {
 		test('blocked slice → no sandbox spawn; outcome no-work', async () => {
 			const blocked = makeSlice({ id: 'b1', bucket: 'blocked', blockedBy: ['a'] })
@@ -360,38 +378,11 @@ if (import.meta.vitest) {
 		})
 
 		test('perSliceBranches:false forces serial implementers even when config allows 3 (parallel implementers on integration would race)', async () => {
-			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
-			const storage = makeStorage({ slices })
-			let live = 0
-			let peak = 0
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async () => {
-					live++
-					peak = Math.max(peak, live)
-					await new Promise((r) => setTimeout(r, 5))
-					live--
-					return { verdict: 'partial', commits: 0 }
-				},
-				config: { usePrs: false, review: false, perSliceBranches: false, sliceStepCap: 1, maxConcurrent: 3, mergeNoVerify: false },
-			}))
-			expect(peak).toBe(1)
+			expect(await peakConcurrentImplementers(false, 3)).toBe(1)
 		})
 
 		test('perSliceBranches:true honors config.maxConcurrent (slice-branches are parallel-safe)', async () => {
-			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
-			const storage = makeStorage({ slices })
-			let live = 0
-			let peak = 0
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async () => {
-					live++
-					peak = Math.max(peak, live)
-					await new Promise((r) => setTimeout(r, 5))
-					live--
-					return { verdict: 'partial', commits: 0 }
-				},
-				config: { usePrs: false, review: false, perSliceBranches: true, sliceStepCap: 1, maxConcurrent: 2, mergeNoVerify: false },
-			}))
+			const peak = await peakConcurrentImplementers(true, 2)
 			expect(peak).toBeLessThanOrEqual(2)
 			expect(peak).toBeGreaterThan(1)
 		})

@@ -151,6 +151,34 @@ if (import.meta.vitest) {
 		})
 	}
 
+	async function writeStartOut(tmp: { startOutPath: string }, spec = resumeSpec()): Promise<void> {
+		await writeFile(tmp.startOutPath, JSON.stringify(spec))
+	}
+
+	function makeAttachedFakes(tmp: { projectRoot: string; startOutPath: string }, opts: Parameters<typeof makeFakes>[0]) {
+		const fakes = makeFakes(opts)
+		attachStartOutFile(fakes.rt, tmp)
+		return fakes
+	}
+
+	async function expectRunStartRejectsWithoutCreate(startOut: string, error: RegExp): Promise<void> {
+		const { rt, calls, gitState } = makeFakes({ startOut, currentBranch: 'main' })
+		await expect(runStart(rt)).rejects.toThrow(error)
+		expect(calls.createPrd).toEqual([])
+		expect(gitState.current).toBe('main')
+	}
+
+	async function expectAttachedStartOutAbort(tmp: { projectRoot: string; startOutPath: string }, opts: Parameters<typeof makeFakes>[0], error: RegExp): Promise<void> {
+		const { rt, calls } = makeAttachedFakes(tmp, opts)
+		let interactiveCalled = false
+		rt.runInteractive = async () => { interactiveCalled = true }
+		rt.confirm = async () => false
+		await expect(runStart(rt)).rejects.toThrow(error)
+		expect(interactiveCalled).toBe(false)
+		expect(calls.createPrd).toEqual([])
+		expect(await fileExists(tmp.startOutPath)).toBe(true)
+	}
+
 	describe('runStart: existing start-out.json offers resume', () => {
 		test('valid existing spec + user picks skip → stale file wiped, claude runs fresh grill, new spec materialised', async () => {
 			const tmp = await setupTmp()
@@ -228,19 +256,7 @@ if (import.meta.vitest) {
 			try {
 				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing prd
 
-				const { rt, calls } = makeFakes({
-					startOut: null,
-					currentBranch: 'main',
-				})
-				attachStartOutFile(rt, tmp)
-				let interactiveCalled = false
-				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.confirm = async () => false // abort
-
-				await expect(runStart(rt)).rejects.toThrow(/Invalid start-out\.json/)
-				expect(interactiveCalled).toBe(false)
-				expect(calls.createPrd).toEqual([])
-				expect(await fileExists(tmp.startOutPath)).toBe(true)
+				await expectAttachedStartOutAbort(tmp, { startOut: null, currentBranch: 'main' }, /Invalid start-out\.json/)
 			} finally {
 				await tmp.cleanup()
 			}
@@ -287,16 +303,14 @@ if (import.meta.vitest) {
 		test('valid existing spec + user confirms continue → claude is skipped, materialisation runs from in-memory spec, file is gone after', async () => {
 			const tmp = await setupTmp()
 			try {
-				const spec = resumeSpec()
-				await writeFile(tmp.startOutPath, JSON.stringify(spec))
+				await writeStartOut(tmp)
 
-				const { rt, calls } = makeFakes({
+				const { rt, calls } = makeAttachedFakes(tmp, {
 					startOut: null, // not used — readStartOut overridden below
 					createPrdResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
-				attachStartOutFile(rt, tmp)
 				let interactiveCalls = 0
 				rt.runInteractive = async () => { interactiveCalls++ }
 				rt.confirm = async () => true // continue
@@ -315,17 +329,15 @@ if (import.meta.vitest) {
 		test('valid existing spec + user confirms continue + preflight would fail → skips preflight and materialises', async () => {
 			const tmp = await setupTmp()
 			try {
-				const spec = resumeSpec()
-				await writeFile(tmp.startOutPath, JSON.stringify(spec))
+				await writeStartOut(tmp)
 
-				const { rt, calls } = makeFakes({
+				const { rt, calls } = makeAttachedFakes(tmp, {
 					startOut: null,
 					createPrdResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 					preflightFailures: ['working tree dirty'],
 				})
-				attachStartOutFile(rt, tmp)
 				let interactiveCalled = false
 				rt.runInteractive = async () => { interactiveCalled = true }
 				rt.confirm = async () => true // continue
@@ -349,21 +361,7 @@ if (import.meta.vitest) {
 				}
 				await writeFile(tmp.startOutPath, JSON.stringify(spec))
 
-				const { rt, calls } = makeFakes({
-					startOut: null,
-					currentBranch: 'main',
-					preflightFailures: ['working tree dirty'],
-				})
-				attachStartOutFile(rt, tmp)
-				let interactiveCalled = false
-				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.confirm = async () => false // discard and start fresh, but preflight stops first
-
-				await expect(runStart(rt)).rejects.toThrow(/preflight failed/i)
-
-				expect(interactiveCalled).toBe(false)
-				expect(calls.createPrd).toEqual([])
-				expect(await fileExists(tmp.startOutPath)).toBe(true)
+				await expectAttachedStartOutAbort(tmp, { startOut: null, currentBranch: 'main', preflightFailures: ['working tree dirty'] }, /preflight failed/i)
 			} finally {
 				await tmp.cleanup()
 			}
@@ -465,11 +463,7 @@ if (import.meta.vitest) {
 
 	describe('runStart: invalid start-out.json', () => {
 		test('schema violation (missing prd) → re-raises validation error, BACK_TO restored, no createPrd', async () => {
-			const bad = JSON.stringify({ slices: [] })
-			const { rt, calls, gitState } = makeFakes({ startOut: bad, currentBranch: 'main' })
-			await expect(runStart(rt)).rejects.toThrow(/Invalid start-out\.json/)
-			expect(calls.createPrd).toEqual([])
-			expect(gitState.current).toBe('main')
+			await expectRunStartRejectsWithoutCreate(JSON.stringify({ slices: [] }), /Invalid start-out\.json/)
 		})
 
 		test('blockedBy cycle → re-raises, no createPrd, BACK_TO restored', async () => {
@@ -480,10 +474,7 @@ if (import.meta.vitest) {
 					{ title: 'B', body: 'b', blockedBy: [0], readyForAgent: true },
 				],
 			})
-			const { rt, calls, gitState } = makeFakes({ startOut: cyclic, currentBranch: 'main' })
-			await expect(runStart(rt)).rejects.toThrow(/cycle/i)
-			expect(calls.createPrd).toEqual([])
-			expect(gitState.current).toBe('main')
+			await expectRunStartRejectsWithoutCreate(cyclic, /cycle/i)
 		})
 	})
 
