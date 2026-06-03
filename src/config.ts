@@ -44,65 +44,65 @@ async function loadAndValidate(filePath: string): Promise<PartialConfig | null> 
 	return raw === null ? null : validatePartialConfig(filePath, raw)
 }
 
+const CONFIG_LAYER_ORDER: InitableLayer[] = ['global', 'private', 'project']
+
+type ConfigLoadState = { config: Config; loaded: LoadedLayer[] }
+
 export async function loadConfig(cwd: string = process.cwd(), home: string = homedir()): Promise<ConfigResolution> {
 	const projectRoot = await resolveProjectRoot(cwd)
+	const state: ConfigLoadState = { config: defaultConfig, loaded: [] }
+	for (const layer of CONFIG_LAYER_ORDER) await applyConfigLayer(state, layer, projectRoot, home)
+	validateCapabilities(state.config)
+	return { config: state.config, projectRoot, loaded: state.loaded }
+}
 
-	const loaded: LoadedLayer[] = []
-	let config = defaultConfig // 'default' layer
-
-	// 'global'
-	const globalPath = pathForLayer('global', projectRoot, home)
-	if (globalPath) {
-		const content = await loadAndValidate(globalPath)
-		if (content) {
-			config = mergePartial(config, content)
-			loaded.push({ layer: 'global', path: globalPath, content })
-		}
-	}
-
-	// 'private' (user per-project) — needs projectRoot
-	const privatePath = pathForLayer('private', projectRoot, home)
-	if (privatePath) {
-		const content = await loadAndValidate(privatePath)
-		if (content) {
-			config = mergePartial(config, content)
-			loaded.push({ layer: 'private', path: privatePath, content })
-		}
-	}
-
-	// 'project' — wins outright under β precedence
-	const projectPath = pathForLayer('project', projectRoot, home)
-	if (projectPath) {
-		const content = await loadAndValidate(projectPath)
-		if (content) {
-			config = mergePartial(config, content)
-			loaded.push({ layer: 'project', path: projectPath, content })
-		}
-	}
-
-	validateCapabilities(config)
-
-	return { config, projectRoot, loaded }
+async function applyConfigLayer(state: ConfigLoadState, layer: InitableLayer, projectRoot: string | null, home: string): Promise<void> {
+	const layerPath = pathForLayer(layer, projectRoot, home)
+	if (!layerPath) return
+	const content = await loadAndValidate(layerPath)
+	if (!content) return
+	state.config = mergePartial(state.config, content)
+	state.loaded.push({ layer, path: layerPath, content })
 }
 
 /**
  * Cross-field flag validation. See ADRs `storage-behavior-separation` and
  * `decouple-pr-flow-from-storage`: flag combinations are validated storage-independently.
  */
+type ConfigValidationRule = { invalid: (config: Config) => boolean; message: string }
+
+const CONFIG_VALIDATION_RULES: ConfigValidationRule[] = [
+	{
+		invalid: (config) => config.work.review && !config.work.usePrs,
+		message: 'config.work.review requires config.work.usePrs: true (there is no PR for the reviewer to operate on otherwise)',
+	},
+	{
+		invalid: (config) => config.work.usePrs && !config.work.perSliceBranches,
+		message: 'config.work.usePrs requires config.work.perSliceBranches: true (there is no slice branch to open a PR against otherwise)',
+	},
+]
+
 function validateCapabilities(config: Config): void {
-	if (config.work.review && !config.work.usePrs) {
-		throw new Error(`config.work.review requires config.work.usePrs: true (there is no PR for the reviewer to operate on otherwise)`)
-	}
-	if (config.work.usePrs && !config.work.perSliceBranches) {
-		throw new Error(`config.work.usePrs requires config.work.perSliceBranches: true (there is no slice branch to open a PR against otherwise)`)
-	}
+	const violation = CONFIG_VALIDATION_RULES.find((rule) => rule.invalid(config))
+	if (violation) throw new Error(violation.message)
+}
+
+const PATH_FOR_LAYER: Record<InitableLayer, (projectRoot: string | null, home: string) => string | null> = {
+	global: (_projectRoot, home) => path.join(home, '.trowel', 'config.json'),
+	project: (projectRoot) => projectRootPath(projectRoot),
+	private: (projectRoot, home) => privateProjectPath(projectRoot, home),
 }
 
 export function pathForLayer(layer: InitableLayer, projectRoot: string | null, home: string = homedir()): string | null {
-	if (layer === 'global') return path.join(home, '.trowel', 'config.json')
-	if (layer === 'project') return projectRoot ? path.join(projectRoot, '.trowel', 'config.json') : null
-	if (layer === 'private') return projectRoot ? path.join(home, '.trowel', 'projects', projectRoot.replace(/^\//, ''), 'config.json') : null
-	return null
+	return PATH_FOR_LAYER[layer](projectRoot, home)
+}
+
+function projectRootPath(projectRoot: string | null): string | null {
+	return projectRoot ? path.join(projectRoot, '.trowel', 'config.json') : null
+}
+
+function privateProjectPath(projectRoot: string | null, home: string): string | null {
+	return projectRoot ? path.join(home, '.trowel', 'projects', projectRoot.replace(/^\//, ''), 'config.json') : null
 }
 
 if (import.meta.vitest) {

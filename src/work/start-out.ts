@@ -28,31 +28,48 @@ export function parseStartOut(raw: string): StartOut {
 }
 
 function checkBlockedBy(slices: StartOut['slices']): void {
+	checkBlockedByReferences(slices)
+	checkBlockedByAcyclic(slices)
+}
+
+function checkBlockedByReferences(slices: StartOut['slices']): void {
 	for (const [i, slice] of slices.entries()) {
-		for (const ref of slice.blockedBy) {
-			if (!Number.isInteger(ref) || ref < 0 || ref >= slices.length) {
-				throw new Error(`Invalid start-out.json: slice ${i} blockedBy references out-of-range index ${ref} (valid range: 0..${slices.length - 1})`)
-			}
-			if (ref === i) {
-				throw new Error(`Invalid start-out.json: slice ${i} blockedBy contains a self-reference`)
-			}
-		}
+		for (const ref of slice.blockedBy) checkBlockedByReference(slices, i, ref)
 	}
-	const visited = new Array<0 | 1 | 2>(slices.length).fill(0) // 0=unseen, 1=in-stack, 2=done
-	const stack: number[] = []
-	const visit = (i: number): void => {
-		if (visited[i] === 2) return
-		if (visited[i] === 1) {
-			const start = stack.indexOf(i)
-			throw new Error(`Invalid start-out.json: blockedBy cycle detected: ${stack.slice(start).concat(i).join(' → ')}`)
-		}
-		visited[i] = 1
-		stack.push(i)
-		for (const ref of slices[i].blockedBy) visit(ref)
-		stack.pop()
-		visited[i] = 2
+}
+
+function checkBlockedByReference(slices: StartOut['slices'], sliceIndex: number, ref: number): void {
+	if (!isSliceIndex(ref, slices.length)) {
+		throw new Error(`Invalid start-out.json: slice ${sliceIndex} blockedBy references out-of-range index ${ref} (valid range: 0..${slices.length - 1})`)
 	}
-	for (let i = 0; i < slices.length; i++) visit(i)
+	if (ref === sliceIndex) throw new Error(`Invalid start-out.json: slice ${sliceIndex} blockedBy contains a self-reference`)
+}
+
+function isSliceIndex(ref: number, length: number): boolean {
+	return Number.isInteger(ref) && ref >= 0 && ref < length
+}
+
+function checkBlockedByAcyclic(slices: StartOut['slices']): void {
+	const state = {
+		visited: new Array<0 | 1 | 2>(slices.length).fill(0), // 0=unseen, 1=in-stack, 2=done
+		stack: [] as number[],
+	}
+	for (let i = 0; i < slices.length; i++) visitBlockedBy(slices, state, i)
+}
+
+function visitBlockedBy(slices: StartOut['slices'], state: { visited: Array<0 | 1 | 2>; stack: number[] }, i: number): void {
+	if (state.visited[i] === 2) return
+	if (state.visited[i] === 1) throw blockedByCycleError(state.stack, i)
+	state.visited[i] = 1
+	state.stack.push(i)
+	for (const ref of slices[i].blockedBy) visitBlockedBy(slices, state, ref)
+	state.stack.pop()
+	state.visited[i] = 2
+}
+
+function blockedByCycleError(stack: number[], repeated: number): Error {
+	const start = stack.indexOf(repeated)
+	return new Error(`Invalid start-out.json: blockedBy cycle detected: ${stack.slice(start).concat(repeated).join(' → ')}`)
 }
 
 if (import.meta.vitest) {

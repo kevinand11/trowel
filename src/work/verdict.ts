@@ -37,30 +37,48 @@ const turnOutPipe = () =>
 	})
 
 export function parseVerdict(raw: string | null, role: Role, commits: number): TurnOut {
+	const value = parseTurnOut(raw)
+	const kind = assertVerdictAllowedForRole(value.verdict as VerdictKind, role)
+	assertImplementerReadyHasCommits(role, kind, commits)
+	return toTurnOut(kind, value.notes, commits)
+}
+
+function parseTurnOut(raw: string | null): PipeOutput<ReturnType<typeof turnOutPipe>> {
 	if (raw === null) throw new Error('verdict file missing (.trowel/turn-out.json)')
-	let parsed: unknown
+	const parsed = parseVerdictJson(raw)
+	rejectUnknownVerdictKind(parsed)
+	return validateJson<PipeOutput<ReturnType<typeof turnOutPipe>>>(turnOutPipe(), parsed, 'verdict file rejected')
+}
+
+function parseVerdictJson(raw: string): unknown {
 	try {
-		parsed = JSON.parse(raw)
+		return JSON.parse(raw)
 	} catch (e) {
 		throw new Error(`verdict file parse error: ${(e as Error).message}`)
 	}
-	// Peek at the verdict field before pipe validation so the unknown-verdict error
-	// surfaces the offending value (the pipe's "not in enum" message doesn't).
-	if (typeof parsed === 'object' && parsed !== null && 'verdict' in parsed) {
-		const v = (parsed as { verdict: unknown }).verdict
-		if (typeof v === 'string' && !ALL_VERDICTS.includes(v as VerdictKind)) {
-			throw new Error(`verdict file rejected: unknown verdict kind '${v}'`)
-		}
+}
+
+function rejectUnknownVerdictKind(parsed: unknown): void {
+	const verdict = rawVerdictField(parsed)
+	if (typeof verdict === 'string' && !ALL_VERDICTS.includes(verdict as VerdictKind)) {
+		throw new Error(`verdict file rejected: unknown verdict kind '${verdict}'`)
 	}
-	const value = validateJson<PipeOutput<ReturnType<typeof turnOutPipe>>>(turnOutPipe(), parsed, 'verdict file rejected')
-	const kind = value.verdict as VerdictKind
-	if (!ROLE_VERDICTS[role].includes(kind)) {
-		throw new Error(`verdict '${kind}' is not valid for role '${role}'`)
-	}
-	if (role === 'implement' && kind === 'ready' && commits === 0) {
-		throw new Error('implementer reported ready but made no commits')
-	}
-	const notes = value.notes
+}
+
+function rawVerdictField(parsed: unknown): unknown {
+	return typeof parsed === 'object' && parsed !== null && 'verdict' in parsed ? (parsed as { verdict: unknown }).verdict : undefined
+}
+
+function assertVerdictAllowedForRole(kind: VerdictKind, role: Role): VerdictKind {
+	if (!ROLE_VERDICTS[role].includes(kind)) throw new Error(`verdict '${kind}' is not valid for role '${role}'`)
+	return kind
+}
+
+function assertImplementerReadyHasCommits(role: Role, kind: VerdictKind, commits: number): void {
+	if (role === 'implement' && kind === 'ready' && commits === 0) throw new Error('implementer reported ready but made no commits')
+}
+
+function toTurnOut(kind: VerdictKind, notes: string | undefined, commits: number): TurnOut {
 	return notes === undefined ? { verdict: kind, commits } : { verdict: kind, notes, commits }
 }
 

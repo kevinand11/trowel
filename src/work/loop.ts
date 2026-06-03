@@ -3,7 +3,7 @@ import { landAddress, landImplement, landReview, prepareAddress, prepareImplemen
 import { enrichSlicePrStates } from './pr-flow.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { ClassifiedSlice, ClassifySliceConfig, Storage, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
+import type { ClassifiedSlice, ClassifySliceConfig, Storage, PhaseOutcome, ResumeState, Slice, SlicePatch } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
@@ -105,50 +105,86 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 	}
 }
 
-async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
-	const { storage, config } = deps
-	const ctx: { prdId: string; integrationBranch: string; config: ClassifySliceConfig } = {
-		prdId,
-		integrationBranch: deps.integrationBranch,
-		config: { usePrs: config.usePrs, review: config.review, perSliceBranches: config.perSliceBranches },
-	}
-	const tag = `[work prd-${prdId} slice-${initial.id}]`
+type LoopPhaseCtx = { prdId: string; integrationBranch: string; config: ClassifySliceConfig }
+type SliceStepResult = { outcome: ProcessOutcome } | { slice: ClassifiedSlice }
 
-	if (classify(initial, ctx.config) === 'blocked') {
-		deps.log(`${tag} blocked by [${initial.blockedBy.join(', ')}]; skipping`)
-		return 'no-work'
-	}
+async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
+	const ctx = loopPhaseCtx(prdId, deps)
+	const tag = `[work prd-${prdId} slice-${initial.id}]`
+	const initialOutcome = initialProcessOutcome(initial, ctx, tag, deps)
+	if (initialOutcome) return initialOutcome
 
 	let slice: ClassifiedSlice = initial
-	for (let step = 0; step < config.sliceStepCap; step++) {
-		const state = classify(slice, ctx.config)
-		if (state === 'done') return 'done'
-		if (state === 'blocked') return 'no-work'
-		if (!SANDBOX_ROLES.has(state)) {
-			deps.log(`${tag} unexpected state ${state}; treating as partial`)
-			return 'partial'
-		}
-		const role = state as Role
-		deps.log(`${tag} state=${role}: "${slice.title}"`)
-
-		const phaseDeps: PhaseDeps = { storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: config.mergeNoVerify, projectRoot: deps.projectRoot }
-		const prep = await callPrepare(phaseDeps, role, slice, ctx)
-		deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
-		const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
-		deps.log(`${tag} ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
-		const outcome: PhaseOutcome = await callLand(phaseDeps, role, slice, verdict, ctx)
-		if (outcome === 'done') return 'done'
-		if (outcome === 'no-work') return 'no-work'
-		if (outcome === 'partial') return 'partial'
-		// outcome === 'progress': refetch (with PR-state enrichment when usePrs is on) and continue
-		const raw = await storage.findSlices(prdId)
-		const enriched = config.usePrs ? await enrichSlicePrStates(deps.gh, prdId, raw) : raw
-		const refreshed = classifySlices(enriched).find((s) => s.id === slice.id)
-		if (!refreshed) return 'partial'
-		slice = refreshed
+	for (let step = 0; step < deps.config.sliceStepCap; step++) {
+		const stepResult = await processSliceStep(slice, ctx, tag, deps)
+		if ('outcome' in stepResult) return stepResult.outcome
+		slice = stepResult.slice
 	}
-	deps.log(`${tag} step-cap reached after ${config.sliceStepCap} step(s); returning partial`)
+	deps.log(`${tag} step-cap reached after ${deps.config.sliceStepCap} step(s); returning partial`)
 	return 'partial'
+}
+
+function loopPhaseCtx(prdId: string, deps: LoopDeps): LoopPhaseCtx {
+	return {
+		prdId,
+		integrationBranch: deps.integrationBranch,
+		config: { usePrs: deps.config.usePrs, review: deps.config.review, perSliceBranches: deps.config.perSliceBranches },
+	}
+}
+
+function initialProcessOutcome(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): ProcessOutcome | null {
+	if (classify(slice, ctx.config) !== 'blocked') return null
+	deps.log(`${tag} blocked by [${slice.blockedBy.join(', ')}]; skipping`)
+	return 'no-work'
+}
+
+async function processSliceStep(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<SliceStepResult> {
+	const state = classify(slice, ctx.config)
+	const terminal = terminalOutcomeForState(state)
+	if (terminal) return { outcome: terminal }
+	if (!SANDBOX_ROLES.has(state)) return unexpectedStateOutcome(state, tag, deps)
+	const outcome = await runSlicePhase(state as Role, slice, ctx, tag, deps)
+	const processOutcome = PROCESS_OUTCOME_BY_PHASE[outcome]
+	return processOutcome ? { outcome: processOutcome } : refreshSliceResult(slice, ctx, deps)
+}
+
+function terminalOutcomeForState(state: ResumeState): ProcessOutcome | null {
+	if (state === 'done') return 'done'
+	if (state === 'blocked') return 'no-work'
+	return null
+}
+
+function unexpectedStateOutcome(state: ResumeState, tag: string, deps: LoopDeps): SliceStepResult {
+	deps.log(`${tag} unexpected state ${state}; treating as partial`)
+	return { outcome: 'partial' }
+}
+
+const PROCESS_OUTCOME_BY_PHASE: Record<PhaseOutcome, ProcessOutcome | null> = {
+	done: 'done',
+	'no-work': 'no-work',
+	partial: 'partial',
+	progress: null,
+}
+
+async function runSlicePhase(role: Role, slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<PhaseOutcome> {
+	deps.log(`${tag} state=${role}: "${slice.title}"`)
+	const phaseDeps = phaseDepsFor(deps)
+	const prep = await callPrepare(phaseDeps, role, slice, ctx)
+	deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
+	const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
+	deps.log(`${tag} ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
+	return callLand(phaseDeps, role, slice, verdict, ctx)
+}
+
+function phaseDepsFor(deps: LoopDeps): PhaseDeps {
+	return { storage: deps.storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: deps.config.mergeNoVerify, projectRoot: deps.projectRoot }
+}
+
+async function refreshSliceResult(slice: ClassifiedSlice, ctx: LoopPhaseCtx, deps: LoopDeps): Promise<SliceStepResult> {
+	const raw = await deps.storage.findSlices(ctx.prdId)
+	const enriched = ctx.config.usePrs ? await enrichSlicePrStates(deps.gh, ctx.prdId, raw) : raw
+	const refreshed = classifySlices(enriched).find((s) => s.id === slice.id)
+	return refreshed ? { slice: refreshed } : { outcome: 'partial' }
 }
 
 function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: { prdId: string; integrationBranch: string; config: ClassifySliceConfig }) {
@@ -183,11 +219,7 @@ if (import.meta.vitest) {
 			findSlices: async () => state.slices.map((s) => ({ ...s })),
 			findSlice: async () => null,
 			updateSlice: async (_p, sliceId, patch) => {
-				const s = state.slices.find((x) => x.id === sliceId)
-				if (!s) return
-				if (patch.state !== undefined) s.state = patch.state
-				if (patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
-				if (patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
+				applyTestSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
 			},
 			createFix: async () => ({ id: 'x', branch: 'x' }),
 			findFix: async () => null,
@@ -196,6 +228,25 @@ if (import.meta.vitest) {
 			closeFix: async () => {},
 			...overrides,
 		}
+	}
+
+	function applyTestSlicePatch(slice: Slice | undefined, patch: SlicePatch): void {
+		if (!slice) return
+		setTestSliceState(slice, patch.state)
+		setTestReadyForAgent(slice, patch.readyForAgent)
+		setTestNeedsRevision(slice, patch.needsRevision)
+	}
+
+	function setTestSliceState(slice: Slice, state: SlicePatch['state']): void {
+		if (state !== undefined) slice.state = state
+	}
+
+	function setTestReadyForAgent(slice: Slice, value: boolean | undefined): void {
+		if (value !== undefined) slice.readyForAgent = value
+	}
+
+	function setTestNeedsRevision(slice: Slice, value: boolean | undefined): void {
+		if (value !== undefined) slice.needsRevision = value
 	}
 
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')

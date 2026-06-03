@@ -24,21 +24,36 @@ export type ReconcileDeps = {
  * failures (no remote, no auth) the call quietly does nothing — reconciliation is best-effort and
  * must not crash entity-touching commands.
  */
+type CloseOutPr = { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' }
+
 export async function reconcileEntity(entity: LoopEntityRef, deps: ReconcileDeps): Promise<void> {
+	if (await entityAlreadyClosed(entity, deps)) return
+	const pr = await findCloseOutPr(entity, deps)
+	if (!isMergedPr(pr)) return
+	await closeEntity(entity, deps)
+	deps.log?.(`[reconcile ${entity.kind}-${entity.id}] PR #${pr.number} merged on GitHub → marked CLOSED`)
+}
+
+async function entityAlreadyClosed(entity: LoopEntityRef, deps: ReconcileDeps): Promise<boolean> {
 	const current = entity.kind === 'prd' ? await deps.storage.findPrd(entity.id) : await deps.storage.findFix(entity.id)
-	if (!current || current.state === 'CLOSED') return
+	return !current || current.state === 'CLOSED'
+}
 
-	let pr: { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null
+async function findCloseOutPr(entity: LoopEntityRef, deps: ReconcileDeps): Promise<CloseOutPr | null> {
 	try {
-		pr = await deps.gh.findAnyPrByHead(entity.branch)
+		return await deps.gh.findAnyPrByHead(entity.branch)
 	} catch {
-		return
+		return null
 	}
-	if (!pr || pr.state !== 'MERGED') return
+}
 
+function isMergedPr(pr: CloseOutPr | null): pr is CloseOutPr {
+	return pr?.state === 'MERGED'
+}
+
+async function closeEntity(entity: LoopEntityRef, deps: ReconcileDeps): Promise<void> {
 	if (entity.kind === 'prd') await deps.storage.closePrd(entity.id)
 	else await deps.storage.closeFix(entity.id)
-	deps.log?.(`[reconcile ${entity.kind}-${entity.id}] PR #${pr.number} merged on GitHub → marked CLOSED`)
 }
 
 if (import.meta.vitest) {

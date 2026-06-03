@@ -7,7 +7,7 @@ import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt, type Role } from '../prompts/load.ts'
 import type { Config } from '../schema.ts'
 import type { StorageKind } from '../storages/registry.ts'
-import type { Storage, Slice } from '../storages/types.ts'
+import type { PhaseCtx, Storage, Slice } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
@@ -48,9 +48,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			const startedAt = new Date().toISOString()
 			logStream.write(`\n=== ${startedAt} · prd-${worktree.prdId} · ${role} · harness=${harness.kind} ===\n`)
 
-			const baseHeadR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])
-			const baseHead = baseHeadR.ok ? baseHeadR.stdout.trim() : ''
-
+			const baseHead = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], '')
 			const { waitForExit } = await harness.spawnPrint({
 				model: config.agent.model,
 				prompt: rendered,
@@ -61,16 +59,10 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			const endedAt = new Date().toISOString()
 			logStream.write(`\n=== ${endedAt} · exit=${exitCode} ===\n`)
 			logStream.end()
+			logHarnessExitIfFailed(exitCode, worktree, harness.kind, logPath, log)
 
-			if (exitCode !== 0) {
-				log(`[work prd-${worktree.prdId} slice-${worktree.branch}] ${harness.kind} exited ${exitCode}; see ${logPath}`)
-			}
-
-			const headAfterR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-parse', 'HEAD'])
-			const headAfter = headAfterR.ok ? headAfterR.stdout.trim() : baseHead
-			const commitsR = await tryExec('git', ['-C', worktree.worktreePath, 'rev-list', '--count', `${baseHead}..${headAfter}`])
-			const commits = commitsR.ok ? parseInt(commitsR.stdout.trim(), 10) : 0
-
+			const headAfter = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], baseHead)
+			const commits = await gitCountOrZero(worktree.worktreePath, `${baseHead}..${headAfter}`)
 			return { commits }
 		}
 
@@ -94,15 +86,9 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		const branch = await integrationBranch(prdId)
 		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
 		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
-		const prep = role === 'implement'
-			? await prepareImplement(phaseDeps, slice, ctx)
-			: role === 'review'
-				? await prepareReview(phaseDeps, slice, ctx)
-				: await prepareAddress(phaseDeps, slice, ctx)
+		const prep = await prepareOnePhase(role, phaseDeps, slice, ctx)
 		const verdict: TurnOut = await makeSpawnTurnFor(prdId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
-		if (role === 'implement') await landImplement(phaseDeps, slice, verdict, ctx)
-		else if (role === 'review') await landReview(phaseDeps, slice, verdict, ctx)
-		else await landAddress(phaseDeps, slice, verdict, ctx)
+		await landOnePhase(role, phaseDeps, slice, verdict, ctx)
 	}
 
 	const runEntityLoopFor = async (entity: LoopEntity): Promise<void> => {
@@ -135,4 +121,31 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 	}
 
 	return { config, projectRoot, storage, gh, integrationBranch, runOnePhase, runEntityLoopFor }
+}
+
+async function gitStdoutOr(cwd: string, args: string[], fallback: string): Promise<string> {
+	const result = await tryExec('git', ['-C', cwd, ...args])
+	return result.ok ? result.stdout.trim() : fallback
+}
+
+async function gitCountOrZero(cwd: string, revRange: string): Promise<number> {
+	const raw = await gitStdoutOr(cwd, ['rev-list', '--count', revRange], '0')
+	const count = parseInt(raw, 10)
+	return Number.isFinite(count) ? count : 0
+}
+
+function logHarnessExitIfFailed(exitCode: number, worktree: TurnWorktree, harnessKind: string, logPath: string, log: (m: string) => void): void {
+	if (exitCode !== 0) log(`[work prd-${worktree.prdId} slice-${worktree.branch}] ${harnessKind} exited ${exitCode}; see ${logPath}`)
+}
+
+function prepareOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, ctx: PhaseCtx) {
+	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
+	if (role === 'review') return prepareReview(phaseDeps, slice, ctx)
+	return prepareAddress(phaseDeps, slice, ctx)
+}
+
+function landOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx) {
+	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
+	if (role === 'review') return landReview(phaseDeps, slice, verdict, ctx)
+	return landAddress(phaseDeps, slice, verdict, ctx)
 }

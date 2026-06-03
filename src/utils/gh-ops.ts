@@ -207,13 +207,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		},
 		async findAnyPrByHead(head) {
 			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state', '--jq', '.[0]'])
-			if (!r.ok) return null
-			const trimmed = r.stdout.trim()
-			if (!trimmed || trimmed === 'null') return null
-			const parsed = JSON.parse(trimmed) as { number: number; state: string }
-			const st = parsed.state.toUpperCase()
-			const state: 'OPEN' | 'CLOSED' | 'MERGED' = st === 'MERGED' ? 'MERGED' : st === 'CLOSED' ? 'CLOSED' : 'OPEN'
-			return { number: parsed.number, state }
+			return r.ok ? parseAnyPrByHead(r.stdout) : null
 		},
 		async listOpenPrs(opts) {
 			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url']
@@ -236,6 +230,22 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return wrapped.comments
 		},
 	}
+}
+
+type AnyPrByHead = { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' }
+
+function parseAnyPrByHead(stdout: string): AnyPrByHead | null {
+	const trimmed = stdout.trim()
+	if (!trimmed || trimmed === 'null') return null
+	const parsed = JSON.parse(trimmed) as { number: number; state: string }
+	return { number: parsed.number, state: normalizePrState(parsed.state) }
+}
+
+function normalizePrState(state: string): AnyPrByHead['state'] {
+	const upper = state.toUpperCase()
+	if (upper === 'MERGED') return 'MERGED'
+	if (upper === 'CLOSED') return 'CLOSED'
+	return 'OPEN'
 }
 
 /**

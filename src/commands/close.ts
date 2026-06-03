@@ -2,7 +2,7 @@ import { confirm as inqConfirm } from '@inquirer/prompts'
 
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from './runtime.ts'
 import type { StorageKind } from '../storages/registry.ts'
-import type { Slice, Storage, DeleteBranchPolicy } from '../storages/types.ts'
+import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, SlicePatch, Storage, DeleteBranchPolicy } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
@@ -28,36 +28,48 @@ type CloseSliceRuntime = CloseRuntime & {
 
 async function runClosePrd(prdId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
+	const prd = await findPrdOrThrow(prdId, rt.storage)
+	const targetBranch = await prdTargetBranch(prd, rt)
 
-	const prd = await rt.storage.findPrd(prdId)
+	if (!(await closeOpenPrdSlices(prdId, rt))) return
+	await closePrdRecord(prdId, prd, rt)
+	await deleteBranchIfPresent(prd.branch, targetBranch, rt)
+	await restoreStartingBranch(back, targetBranch, rt)
+}
+
+async function findPrdOrThrow(prdId: string, storage: Storage): Promise<PrdRecord> {
+	const prd = await storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
-	const targetBranch = prd.targetBranch ?? await rt.git.baseBranch()
+	return prd
+}
 
-	const slices = await rt.storage.findSlices(prdId)
-	const openSlices = slices.filter((s) => s.state === 'OPEN')
-	if (openSlices.length > 0) {
-		const ids = openSlices.map((s) => s.id).join(', ')
-		const ok = await rt.confirm(`PRD has ${openSlices.length} open slices: ${ids}. Auto-close all? [y/N]`)
-		if (!ok) {
-			rt.stdout('Aborted; nothing changed.\n')
-			return
-		}
-		for (const s of openSlices) {
-			await rt.storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
-		}
+async function prdTargetBranch(prd: PrdRecord, rt: CloseRuntime): Promise<string> {
+	return prd.targetBranch ?? await rt.git.baseBranch()
+}
+
+async function closeOpenPrdSlices(prdId: string, rt: CloseRuntime): Promise<boolean> {
+	const openSlices = (await rt.storage.findSlices(prdId)).filter((s) => s.state === 'OPEN')
+	if (openSlices.length === 0) return true
+	const ids = openSlices.map((s) => s.id).join(', ')
+	const ok = await rt.confirm(`PRD has ${openSlices.length} open slices: ${ids}. Auto-close all? [y/N]`)
+	if (!ok) {
+		rt.stdout('Aborted; nothing changed.\n')
+		return false
 	}
+	for (const s of openSlices) await rt.storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
+	return true
+}
 
+async function closePrdRecord(prdId: string, prd: PrdRecord, rt: CloseRuntime): Promise<void> {
 	if (prd.state === 'OPEN') {
 		await rt.storage.closePrd(prdId)
 	} else {
 		rt.stdout(`PRD '${prdId}' already closed in store.\n`)
 	}
+}
 
-	if (await rt.git.branchExists(prd.branch)) {
-		await maybeDeleteBranch(prd.branch, targetBranch, rt)
-	}
-
-	await restoreStartingBranch(back, targetBranch, rt)
+async function deleteBranchIfPresent(branch: string, targetBranch: string, rt: CloseRuntime): Promise<void> {
+	if (await rt.git.branchExists(branch)) await maybeDeleteBranch(branch, targetBranch, rt)
 }
 
 async function restoreStartingBranch(back: string, fallbackBranch: string, rt: CloseRuntime): Promise<void> {
@@ -71,67 +83,87 @@ async function restoreStartingBranch(back: string, fallbackBranch: string, rt: C
 }
 
 async function maybeDeleteBranch(branch: string, baseBranch: string, rt: CloseRuntime): Promise<void> {
-	if (rt.deleteBranchPolicy === 'never') return
-	if (rt.deleteBranchPolicy === 'prompt') {
-		const ok = await rt.confirm(`Delete integration branch '${branch}' (local + origin)? [y/N]`)
-		if (!ok) return
-	}
-
-	const prs = await rt.listOpenPrs(branch)
-	if (prs.length > 0) {
-		rt.stdout(`Open PRs targeting '${branch}':\n`)
-		for (const pr of prs) rt.stdout(`  #${pr.number}  ${pr.url}\n`)
-		const ok = await rt.confirm('Deleting the branch will close these PRs. Continue? [y/N]')
-		if (!ok) return
-	}
-
-	const merged = await rt.git.isMerged(branch, baseBranch)
-	if (!merged) {
-		const ok = await rt.confirm(`Branch '${branch}' contains commits not on '${baseBranch}' — delete anyway? [y/N]`)
-		if (!ok) return
-	}
-
-	const current = await rt.git.currentBranch()
-	if (current === branch) {
-		await rt.git.checkout(baseBranch)
-	}
-
+	if (!(await confirmBranchDeletePolicy(branch, rt))) return
+	if (!(await confirmNoBlockingOpenPrs(branch, rt))) return
+	if (!(await confirmMergedOrDeletionAccepted(branch, baseBranch, rt))) return
+	await checkoutAwayFromDeletedBranch(branch, baseBranch, rt)
 	await rt.git.deleteBranch(branch)
 }
 
-async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<void> {
-	const hit = await rt.storage.findSlice(sliceId)
-	if (!hit) throw new Error(`slice '${sliceId}' not found`)
-	const { prdId } = hit
-	const back = await rt.git.currentBranch()
-	const prd = await rt.storage.findPrd(prdId)
-	const sliceMergeTarget = prd?.branch ?? await rt.git.baseBranch()
+async function confirmBranchDeletePolicy(branch: string, rt: CloseRuntime): Promise<boolean> {
+	if (rt.deleteBranchPolicy === 'never') return false
+	if (rt.deleteBranchPolicy === 'always') return true
+	return rt.confirm(`Delete integration branch '${branch}' (local + origin)? [y/N]`)
+}
 
+async function confirmNoBlockingOpenPrs(branch: string, rt: CloseRuntime): Promise<boolean> {
+	const prs = await rt.listOpenPrs(branch)
+	if (prs.length === 0) return true
+	rt.stdout(`Open PRs targeting '${branch}':\n`)
+	for (const pr of prs) rt.stdout(`  #${pr.number}  ${pr.url}\n`)
+	return rt.confirm('Deleting the branch will close these PRs. Continue? [y/N]')
+}
+
+async function confirmMergedOrDeletionAccepted(branch: string, baseBranch: string, rt: CloseRuntime): Promise<boolean> {
+	if (await rt.git.isMerged(branch, baseBranch)) return true
+	return rt.confirm(`Branch '${branch}' contains commits not on '${baseBranch}' — delete anyway? [y/N]`)
+}
+
+async function checkoutAwayFromDeletedBranch(branch: string, baseBranch: string, rt: CloseRuntime): Promise<void> {
+	const current = await rt.git.currentBranch()
+	if (current === branch) await rt.git.checkout(baseBranch)
+}
+
+async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<void> {
+	const { prdId } = await findSliceOrThrow(sliceId, rt.storage)
+	const back = await rt.git.currentBranch()
+	const sliceMergeTarget = await sliceMergeTargetBranch(prdId, rt)
+	const target = await findClassifiedSliceOrThrow(sliceId, prdId, rt)
+
+	if (!(await closeSliceRecord(prdId, sliceId, target, rt))) return
+	await deleteSliceBranchIfPresent(prdId, target, sliceMergeTarget, rt)
+	await restoreStartingBranch(back, sliceMergeTarget, rt)
+}
+
+async function findSliceOrThrow(sliceId: string, storage: Storage): Promise<{ prdId: string; slice: Slice }> {
+	const hit = await storage.findSlice(sliceId)
+	if (!hit) throw new Error(`slice '${sliceId}' not found`)
+	return hit
+}
+
+async function sliceMergeTargetBranch(prdId: string, rt: CloseSliceRuntime): Promise<string> {
+	const prd = await rt.storage.findPrd(prdId)
+	return prd?.branch ?? await rt.git.baseBranch()
+}
+
+async function findClassifiedSliceOrThrow(sliceId: string, prdId: string, rt: CloseSliceRuntime): Promise<ClassifiedSlice> {
 	const siblings = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId, usePrs: rt.usePrs })
 	const target = siblings.find((s) => s.id === sliceId)
 	if (!target) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
+	return target
+}
 
+async function closeSliceRecord(prdId: string, sliceId: string, target: ClassifiedSlice, rt: CloseSliceRuntime): Promise<boolean> {
 	if (target.state === 'CLOSED') {
 		rt.stdout(`Slice '${sliceId}' already closed.\n`)
-	} else {
-		if (target.bucket !== 'done') {
-			const ok = await rt.confirm(`Slice '${sliceId}' is in bucket '${target.bucket}', not 'done'. Close anyway? [y/N]`)
-			if (!ok) {
-				rt.stdout('Aborted; nothing changed.\n')
-				return
-			}
-		}
-		await rt.storage.updateSlice(prdId, sliceId, { state: 'CLOSED' })
+		return true
 	}
+	if (target.bucket !== 'done' && !(await confirmCloseNonDoneSlice(sliceId, target, rt))) return false
+	await rt.storage.updateSlice(prdId, sliceId, { state: 'CLOSED' })
+	return true
+}
 
-	if (rt.perSliceBranches) {
-		const branch = sliceBranchName(prdId, target)
-		if (await rt.git.branchExists(branch)) {
-			await maybeDeleteBranch(branch, sliceMergeTarget, rt)
-		}
-	}
+async function confirmCloseNonDoneSlice(sliceId: string, target: ClassifiedSlice, rt: CloseSliceRuntime): Promise<boolean> {
+	const ok = await rt.confirm(`Slice '${sliceId}' is in bucket '${target.bucket}', not 'done'. Close anyway? [y/N]`)
+	if (ok) return true
+	rt.stdout('Aborted; nothing changed.\n')
+	return false
+}
 
-	await restoreStartingBranch(back, sliceMergeTarget, rt)
+async function deleteSliceBranchIfPresent(prdId: string, target: ClassifiedSlice, sliceMergeTarget: string, rt: CloseSliceRuntime): Promise<void> {
+	if (!rt.perSliceBranches) return
+	const branch = sliceBranchName(prdId, target)
+	if (await rt.git.branchExists(branch)) await maybeDeleteBranch(branch, sliceMergeTarget, rt)
 }
 
 function sliceBranchName(prdId: string, slice: Slice): string {
@@ -174,22 +206,29 @@ export async function closePrd(prdId: string, opts: { storage?: StorageKind }): 
 
 async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
 	const back = await rt.git.currentBranch()
+	const fix = await findFixOrThrow(fixId, rt.storage)
+	const targetBranch = await fixTargetBranch(fix, rt)
+	await closeFixRecord(fixId, fix, rt)
+	await deleteBranchIfPresent(fix.branch, targetBranch, rt)
+	await restoreStartingBranch(back, targetBranch, rt)
+}
 
-	const fix = await rt.storage.findFix(fixId)
+async function findFixOrThrow(fixId: string, storage: Storage): Promise<FixRecord> {
+	const fix = await storage.findFix(fixId)
 	if (!fix) throw new Error(`Fix '${fixId}' not found`)
-	const targetBranch = fix.targetBranch ?? await rt.git.baseBranch()
+	return fix
+}
 
+async function fixTargetBranch(fix: FixRecord, rt: CloseRuntime): Promise<string> {
+	return fix.targetBranch ?? await rt.git.baseBranch()
+}
+
+async function closeFixRecord(fixId: string, fix: FixRecord, rt: CloseRuntime): Promise<void> {
 	if (fix.state === 'OPEN') {
 		await rt.storage.closeFix(fixId)
 	} else {
 		rt.stdout(`Fix '${fixId}' already closed in store.\n`)
 	}
-
-	if (await rt.git.branchExists(fix.branch)) {
-		await maybeDeleteBranch(fix.branch, targetBranch, rt)
-	}
-
-	await restoreStartingBranch(back, targetBranch, rt)
 }
 
 export async function closeFix(fixId: string, opts: { storage?: StorageKind }): Promise<void> {
@@ -254,10 +293,7 @@ if (import.meta.vitest) {
 			findSlice: async () => null,
 			updateSlice: async (_pid, sliceId, patch) => {
 				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)
-				const s = state.slices.find((x) => x.id === sliceId)
-				if (s && patch.state === 'CLOSED') s.state = 'CLOSED'
-				if (s && patch.readyForAgent !== undefined) s.readyForAgent = patch.readyForAgent
-				if (s && patch.needsRevision !== undefined) s.needsRevision = patch.needsRevision
+				applyFakeSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
 			},
 			createFix: async () => ({ id: 'unused-fix', branch: 'unused-fix' }),
 			findFix: async () => null,
@@ -266,6 +302,25 @@ if (import.meta.vitest) {
 			closeFix: async () => undefined,
 		}
 		return { storage, calls }
+	}
+
+	function applyFakeSlicePatch(slice: FakeStorageState['slices'][number] | undefined, patch: SlicePatch): void {
+		if (!slice) return
+		closeFakeSliceIfRequested(slice, patch.state)
+		setFakeReadyForAgent(slice, patch.readyForAgent)
+		setFakeNeedsRevision(slice, patch.needsRevision)
+	}
+
+	function closeFakeSliceIfRequested(slice: FakeStorageState['slices'][number], state: SlicePatch['state']): void {
+		if (state === 'CLOSED') slice.state = 'CLOSED'
+	}
+
+	function setFakeReadyForAgent(slice: FakeStorageState['slices'][number], value: boolean | undefined): void {
+		if (value !== undefined) slice.readyForAgent = value
+	}
+
+	function setFakeNeedsRevision(slice: FakeStorageState['slices'][number], value: boolean | undefined): void {
+		if (value !== undefined) slice.needsRevision = value
 	}
 
 	type GitState = {

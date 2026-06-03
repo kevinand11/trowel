@@ -29,27 +29,38 @@ const heldRoots = new AsyncLocalStorage<Set<string>>()
 export async function withMutationLock<T>(projectRoot: string, fn: () => Promise<T>): Promise<T> {
 	const key = path.resolve(projectRoot)
 	const heldHere = heldRoots.getStore()
-	if (heldHere && heldHere.has(key)) {
-		return fn()
-	}
+	if (lockAlreadyHeld(heldHere, key)) return fn()
+	const release = await acquireMutationLock(key)
+	return runWithHeldMutationLock(key, heldHere, release, fn)
+}
+
+function lockAlreadyHeld(heldHere: Set<string> | undefined, key: string): boolean {
+	return heldHere?.has(key) ?? false
+}
+
+async function acquireMutationLock(key: string): Promise<() => Promise<void>> {
 	const trowelDir = path.join(key, '.trowel')
 	const lockPath = path.join(trowelDir, 'lock')
 	await mkdir(trowelDir, { recursive: true })
 	// proper-lockfile locks against an existing path; ensure the target file exists so the lock can
 	// pin to it without us racing the create step.
 	await ensureFile(lockPath)
-	let release: () => Promise<void>
 	try {
-		release = await lockfile.lock(lockPath, {
+		return await lockfile.lock(lockPath, {
 			retries: { retries: 50, minTimeout: 50, maxTimeout: 200, factor: 1.2 },
 			stale: 30_000,
 		})
 	} catch (err) {
-		if ((err as { code?: string }).code === 'ELOCKED') {
-			throw new Error('trowel busy: another command holds the lock')
-		}
-		throw err
+		throw mutationLockError(err)
 	}
+}
+
+function mutationLockError(err: unknown): Error {
+	if ((err as { code?: string }).code === 'ELOCKED') return new Error('trowel busy: another command holds the lock')
+	return err as Error
+}
+
+async function runWithHeldMutationLock<T>(key: string, heldHere: Set<string> | undefined, release: () => Promise<void>, fn: () => Promise<T>): Promise<T> {
 	const nextSet = new Set(heldHere ?? [])
 	nextSet.add(key)
 	try {

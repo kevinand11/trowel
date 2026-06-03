@@ -42,59 +42,81 @@ export type CloseOutDeps = {
 export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
 	const tag = `[close-out ${entity.kind}-${entity.id}]`
 	const targetBranch = entity.targetBranch ?? await deps.git.baseBranch()
+	return deps.config.usePrs ? closeOutViaPr(entity, deps, targetBranch, tag) : closeOutViaMerge(entity, deps, targetBranch, tag)
+}
 
-	if (deps.config.usePrs) {
-		return withLock(deps, async () => {
-			const existing = await deps.gh.findAnyPrByHead(entity.branch).catch(() => null)
-			let prNumber: number
-			if (!existing) {
-				await deps.gh.createDraftPr({
-					title: entity.title,
-					head: entity.branch,
-					base: targetBranch,
-					body: bodyFor(entity),
-				})
-				prNumber = await deps.gh.findPrNumberByHead(entity.branch)
-				deps.log(`${tag} opened PR #${prNumber} ${entity.branch} → ${targetBranch}`)
-			} else {
-				prNumber = existing.number
-				if (existing.state !== 'OPEN') {
-					deps.log(`${tag} PR #${prNumber} state ${existing.state}; nothing to mark ready`)
-					return
-				}
-			}
-			await deps.gh.markPrReady(prNumber).catch((e: Error) => {
-				deps.log(`${tag} markPrReady #${prNumber} failed (already ready or no permission): ${e.message}`)
-			})
-			deps.log(`${tag} marked PR #${prNumber} ready; awaiting merge`)
-		})
+function closeOutViaPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
+	return withLock(deps, () => closeOutViaPrLocked(entity, deps, targetBranch, tag))
+}
+
+async function closeOutViaPrLocked(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
+	const prNumber = await ensureCloseOutPr(entity, deps, targetBranch, tag)
+	if (prNumber === null) return
+	await markCloseOutPrReady(prNumber, deps, tag)
+	deps.log(`${tag} marked PR #${prNumber} ready; awaiting merge`)
+}
+
+async function ensureCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number | null> {
+	const existing = await deps.gh.findAnyPrByHead(entity.branch).catch(() => null)
+	if (!existing) return createCloseOutPr(entity, deps, targetBranch, tag)
+	if (existing.state !== 'OPEN') {
+		deps.log(`${tag} PR #${existing.number} state ${existing.state}; nothing to mark ready`)
+		return null
 	}
+	return existing.number
+}
 
-	return withLock(deps, async () => {
-		const current = await deps.git.currentBranch()
-		await deps.git.checkout(targetBranch)
-		try {
-			await deps.git.mergeNoFf(entity.branch, { noVerify: deps.config.mergeNoVerify })
-		} catch (e) {
-			await deps.git.mergeAbort()
-			if (current !== targetBranch && (await deps.git.branchExists(current))) {
-				await deps.git.checkout(current)
-			}
-			throw e
-		}
-		await deps.git.push(targetBranch)
-		deps.log(`${tag} host-merged ${entity.branch} into ${targetBranch}`)
+async function createCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number> {
+	await deps.gh.createDraftPr({ title: entity.title, head: entity.branch, base: targetBranch, body: bodyFor(entity) })
+	const prNumber = await deps.gh.findPrNumberByHead(entity.branch)
+	deps.log(`${tag} opened PR #${prNumber} ${entity.branch} → ${targetBranch}`)
+	return prNumber
+}
 
-		if (entity.kind === 'prd') await deps.storage.closePrd(entity.id)
-		else await deps.storage.closeFix(entity.id)
-		deps.log(`${tag} marked CLOSED`)
-
-		const policy = autoDeletePolicy(deps.config.deleteBranch)
-		if (policy === 'always') {
-			await deps.git.deleteBranch(entity.branch)
-			deps.log(`${tag} deleted ${entity.branch}`)
-		}
+async function markCloseOutPrReady(prNumber: number, deps: CloseOutDeps, tag: string): Promise<void> {
+	await deps.gh.markPrReady(prNumber).catch((e: Error) => {
+		deps.log(`${tag} markPrReady #${prNumber} failed (already ready or no permission): ${e.message}`)
 	})
+}
+
+function closeOutViaMerge(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
+	return withLock(deps, () => closeOutViaMergeLocked(entity, deps, targetBranch, tag))
+}
+
+async function closeOutViaMergeLocked(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
+	await mergeCloseOutBranch(entity, deps, targetBranch)
+	deps.log(`${tag} host-merged ${entity.branch} into ${targetBranch}`)
+	await markEntityClosed(entity, deps)
+	deps.log(`${tag} marked CLOSED`)
+	await deleteAutoBranchIfAllowed(entity, deps, tag)
+}
+
+async function mergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string): Promise<void> {
+	const current = await deps.git.currentBranch()
+	await deps.git.checkout(targetBranch)
+	try {
+		await deps.git.mergeNoFf(entity.branch, { noVerify: deps.config.mergeNoVerify })
+	} catch (e) {
+		await deps.git.mergeAbort()
+		await restoreAfterFailedCloseOutMerge(current, targetBranch, deps)
+		throw e
+	}
+	await deps.git.push(targetBranch)
+}
+
+async function restoreAfterFailedCloseOutMerge(current: string, targetBranch: string, deps: CloseOutDeps): Promise<void> {
+	if (current !== targetBranch && (await deps.git.branchExists(current))) await deps.git.checkout(current)
+}
+
+async function markEntityClosed(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
+	if (entity.kind === 'prd') await deps.storage.closePrd(entity.id)
+	else await deps.storage.closeFix(entity.id)
+}
+
+async function deleteAutoBranchIfAllowed(entity: CloseOutEntity, deps: CloseOutDeps, tag: string): Promise<void> {
+	if (autoDeletePolicy(deps.config.deleteBranch) !== 'always') return
+	await deps.git.deleteBranch(entity.branch)
+	deps.log(`${tag} deleted ${entity.branch}`)
 }
 
 function bodyFor(entity: CloseOutEntity): string {

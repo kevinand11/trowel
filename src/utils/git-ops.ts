@@ -148,24 +148,61 @@ export function createRepoGit(projectRoot: string): GitOps {
 	}
 }
 
-function parseWorktreePorcelain(stdout: string): Array<{ path: string; branch: string | null; head: string }> {
-	const result: Array<{ path: string; branch: string | null; head: string }> = []
-	let current: { path?: string; branch: string | null; head?: string } = { branch: null }
-	for (const line of stdout.split('\n')) {
-		if (line.startsWith('worktree ')) {
-			if (current.path && current.head) result.push({ path: current.path, branch: current.branch, head: current.head })
-			current = { path: line.slice('worktree '.length).trim(), branch: null }
-		} else if (line.startsWith('HEAD ')) {
-			current.head = line.slice('HEAD '.length).trim()
-		} else if (line.startsWith('branch ')) {
-			const ref = line.slice('branch '.length).trim()
-			current.branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
-		} else if (line.startsWith('detached')) {
-			current.branch = null
-		}
-	}
-	if (current.path && current.head) result.push({ path: current.path, branch: current.branch, head: current.head })
+type WorktreeEntry = { path: string; branch: string | null; head: string }
+type PartialWorktreeEntry = { path?: string; branch: string | null; head?: string }
+
+function parseWorktreePorcelain(stdout: string): WorktreeEntry[] {
+	const result: WorktreeEntry[] = []
+	let current = emptyWorktreeEntry()
+	for (const line of stdout.split('\n')) current = applyWorktreeLine(result, current, line)
+	pushCompleteWorktree(result, current)
 	return result
+}
+
+function emptyWorktreeEntry(): PartialWorktreeEntry {
+	return { branch: null }
+}
+
+type WorktreeLineHandler = {
+	prefix: string
+	apply: (result: WorktreeEntry[], current: PartialWorktreeEntry, line: string) => PartialWorktreeEntry
+}
+
+const WORKTREE_LINE_HANDLERS: WorktreeLineHandler[] = [
+	{ prefix: 'worktree ', apply: startWorktreeEntry },
+	{ prefix: 'HEAD ', apply: setWorktreeHead },
+	{ prefix: 'branch ', apply: setWorktreeBranch },
+	{ prefix: 'detached', apply: detachWorktreeBranch },
+]
+
+function applyWorktreeLine(result: WorktreeEntry[], current: PartialWorktreeEntry, line: string): PartialWorktreeEntry {
+	const handler = WORKTREE_LINE_HANDLERS.find((h) => line.startsWith(h.prefix))
+	return handler ? handler.apply(result, current, line) : current
+}
+
+function setWorktreeHead(_result: WorktreeEntry[], current: PartialWorktreeEntry, line: string): PartialWorktreeEntry {
+	return { ...current, head: line.slice('HEAD '.length).trim() }
+}
+
+function setWorktreeBranch(_result: WorktreeEntry[], current: PartialWorktreeEntry, line: string): PartialWorktreeEntry {
+	return { ...current, branch: normalizeBranchRef(line.slice('branch '.length).trim()) }
+}
+
+function detachWorktreeBranch(_result: WorktreeEntry[], current: PartialWorktreeEntry): PartialWorktreeEntry {
+	return { ...current, branch: null }
+}
+
+function startWorktreeEntry(result: WorktreeEntry[], current: PartialWorktreeEntry, line: string): PartialWorktreeEntry {
+	pushCompleteWorktree(result, current)
+	return { path: line.slice('worktree '.length).trim(), branch: null }
+}
+
+function pushCompleteWorktree(result: WorktreeEntry[], current: PartialWorktreeEntry): void {
+	if (current.path && current.head) result.push({ path: current.path, branch: current.branch, head: current.head })
+}
+
+function normalizeBranchRef(ref: string): string {
+	return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }
 
 if (import.meta.vitest) {

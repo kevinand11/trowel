@@ -17,20 +17,29 @@ type PrdListRow = {
 }
 
 function renderList(rows: PrdListRow[], filter: ListState): string {
-	if (rows.length === 0) {
-		return filter === 'all' ? 'No PRDs found.\n' : `No ${filter} PRDs.\n`
-	}
-	const lines: string[] = []
-	for (const row of rows) {
-		const counts: Record<Bucket, number> = emptyBucketCounts()
-		for (const s of row.slices) counts[s.bucket]++
-		const summary = row.slices.length === 0 ? '(no slices)' : formatBucketCounts(counts)
-		const idCol = row.summary.id.padEnd(8)
-		const stateCol = row.state.padEnd(8)
-		const titleCol = row.summary.title.padEnd(48)
-		lines.push(`${idCol}  ${stateCol}  ${titleCol}  ${summary}`)
-	}
-	return `${lines.join('\n')}\n`
+	if (rows.length === 0) return emptyPrdListMessage(filter)
+	return `${rows.map(renderPrdListRow).join('\n')}\n`
+}
+
+function emptyPrdListMessage(filter: ListState): string {
+	return filter === 'all' ? 'No PRDs found.\n' : `No ${filter} PRDs.\n`
+}
+
+function renderPrdListRow(row: PrdListRow): string {
+	const idCol = row.summary.id.padEnd(8)
+	const stateCol = row.state.padEnd(8)
+	const titleCol = row.summary.title.padEnd(48)
+	return `${idCol}  ${stateCol}  ${titleCol}  ${prdSliceSummary(row.slices)}`
+}
+
+function prdSliceSummary(slices: ClassifiedSlice[]): string {
+	return slices.length === 0 ? '(no slices)' : formatBucketCounts(bucketCounts(slices))
+}
+
+function bucketCounts(slices: ClassifiedSlice[]): Record<Bucket, number> {
+	const counts: Record<Bucket, number> = emptyBucketCounts()
+	for (const s of slices) counts[s.bucket]++
+	return counts
 }
 
 type ListRuntime = {

@@ -1,6 +1,6 @@
 import path from 'node:path'
 
-import { resolveGrillSpec } from './grill-flow.ts'
+import { resolveGrillSpec, type GrillSpecResult } from './grill-flow.ts'
 import { buildGrillCommandRuntime, exitOnCommandError } from './runtime.ts'
 import type { Storage } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
@@ -18,8 +18,24 @@ export type StartRuntime = {
 	confirm: (msg: string) => Promise<boolean>
 }
 
+type StartSpec = ReturnType<typeof parseStartOut>
+type StartGrillResult = GrillSpecResult<StartSpec>
+type CreatedStartPrd = { prdId: string; branch: string; realIds: string[]; spec: StartSpec }
+
 export async function runStart(rt: StartRuntime): Promise<void> {
-	const result = await resolveGrillSpec({
+	const result = await resolveStartSpec(rt)
+	try {
+		const created = await materialiseStartPrd(rt, result)
+		printCreatedStartPrd(rt, created)
+		await result.clearOut()
+	} catch (e) {
+		await result.recover()
+		throw e
+	}
+}
+
+function resolveStartSpec(rt: StartRuntime): Promise<StartGrillResult> {
+	return resolveGrillSpec({
 		projectRoot: rt.projectRoot,
 		git: rt.git,
 		readOut: rt.readStartOut,
@@ -35,55 +51,70 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 		invalidPrompt: 'Discard the invalid file and start a fresh grill? (no → abort)',
 		outFileName: 'start-out.json',
 	})
+}
 
-	try {
-		const { id: prdId, branch } = await rt.storage.createPrd({ ...result.spec.prd, targetBranch: result.targetBranch })
-		result.markMaterialised()
-		await rt.git.checkout(branch)
-		if (result.stashed) await rt.git.stashPop()
+async function materialiseStartPrd(rt: StartRuntime, result: StartGrillResult): Promise<CreatedStartPrd> {
+	const { id: prdId, branch } = await rt.storage.createPrd({ ...result.spec.prd, targetBranch: result.targetBranch })
+	result.markMaterialised()
+	await rt.git.checkout(branch)
+	if (result.stashed) await rt.git.stashPop()
+	const realIds = await createStartSlices(rt, prdId, result.spec)
+	await updateStartSliceLinks(rt, prdId, result.spec, realIds)
+	return { prdId, branch, realIds, spec: result.spec }
+}
 
-		const realIds: string[] = []
-		for (const slice of result.spec.slices) {
-			const created = await rt.storage.createSlice(prdId, { title: slice.title, body: slice.body, blockedBy: [] })
-			realIds.push(created.id)
-		}
-		for (const [i, slice] of result.spec.slices.entries()) {
-			await rt.storage.updateSlice(prdId, realIds[i]!, {
-				blockedBy: slice.blockedBy.map((idx) => realIds[idx]!),
-				readyForAgent: slice.readyForAgent,
-			})
-		}
-
-		rt.stdout(`\nCreated PRD ${prdId}\n`)
-		rt.stdout(`Branch: ${branch} (you are now on it)\n`)
-		if (realIds.length > 0) {
-			rt.stdout('Slices:\n')
-			for (const [i, slice] of result.spec.slices.entries()) {
-				rt.stdout(`  - ${realIds[i]} ${slice.title}\n`)
-			}
-		}
-		rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the PRD/slice artifacts). Commit at your discretion.\n')
-		rt.stdout(`\nNext: trowel work ${prdId}\n`)
-
-		await result.clearOut()
-	} catch (e) {
-		await result.recover()
-		throw e
+async function createStartSlices(rt: StartRuntime, prdId: string, spec: StartSpec): Promise<string[]> {
+	const realIds: string[] = []
+	for (const slice of spec.slices) {
+		const created = await rt.storage.createSlice(prdId, { title: slice.title, body: slice.body, blockedBy: [] })
+		realIds.push(created.id)
 	}
+	return realIds
+}
+
+async function updateStartSliceLinks(rt: StartRuntime, prdId: string, spec: StartSpec, realIds: string[]): Promise<void> {
+	for (const [i, slice] of spec.slices.entries()) {
+		await rt.storage.updateSlice(prdId, realIds[i]!, {
+			blockedBy: slice.blockedBy.map((idx) => realIds[idx]!),
+			readyForAgent: slice.readyForAgent,
+		})
+	}
+}
+
+function printCreatedStartPrd(rt: StartRuntime, created: CreatedStartPrd): void {
+	rt.stdout(`\nCreated PRD ${created.prdId}\n`)
+	rt.stdout(`Branch: ${created.branch} (you are now on it)\n`)
+	printCreatedStartSlices(rt, created)
+	rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the PRD/slice artifacts). Commit at your discretion.\n')
+	rt.stdout(`\nNext: trowel work ${created.prdId}\n`)
+}
+
+function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartPrd): void {
+	if (created.realIds.length === 0) return
+	rt.stdout('Slices:\n')
+	for (const [i, slice] of created.spec.slices.entries()) rt.stdout(`  - ${created.realIds[i]} ${slice.title}\n`)
 }
 
 function printResumePreview(rt: StartRuntime, spec: ReturnType<typeof parseStartOut>): void {
 	rt.stdout('\nFound existing .trowel/start-out.json from a prior run:\n')
 	rt.stdout(`\n# ${spec.prd.title}\n\n${spec.prd.body}\n`)
-	if (spec.slices.length > 0) {
-		rt.stdout('\nSlices:\n')
-		for (const [i, slice] of spec.slices.entries()) {
-			const ready = slice.readyForAgent ? 'AFK' : 'HITL'
-			const blocks = slice.blockedBy.length > 0 ? ` blocked by [${slice.blockedBy.join(', ')}]` : ''
-			rt.stdout(`  ${i}. ${slice.title}  (${ready}${blocks})\n`)
-		}
-	}
+	printResumeSlices(rt, spec.slices)
 	rt.stdout('\n')
+}
+
+function printResumeSlices(rt: StartRuntime, slices: StartSpec['slices']): void {
+	if (slices.length === 0) return
+	rt.stdout('\nSlices:\n')
+	for (const [i, slice] of slices.entries()) rt.stdout(resumeSliceLine(i, slice))
+}
+
+function resumeSliceLine(i: number, slice: StartSpec['slices'][number]): string {
+	const ready = slice.readyForAgent ? 'AFK' : 'HITL'
+	return `  ${i}. ${slice.title}  (${ready}${blockedBySuffix(slice)})\n`
+}
+
+function blockedBySuffix(slice: StartSpec['slices'][number]): string {
+	return slice.blockedBy.length > 0 ? ` blocked by [${slice.blockedBy.join(', ')}]` : ''
 }
 
 export async function start(opts: { storage?: string; harness?: string }): Promise<void> {

@@ -110,50 +110,63 @@ async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: Pha
 }
 
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	return withPhaseLock(deps, async () => {
-		const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-		if (verdict.verdict === 'partial') return 'partial'
-		if (verdict.verdict === 'no-work-needed') {
-			// Recovery case: prior aborted run left the slice branch ahead of integration with the
-			// implementer's commits, and this Turn correctly reports no-work-needed because the work
-			// is already on the branch. Treat as ready and complete the merge so the slice can close.
-			if (ctx.config.perSliceBranches && !ctx.config.usePrs) {
-				const branch = sliceBranchFor(ctx.prdId, slice)
-				const ahead = await deps.git.commitsAhead(branch, ctx.integrationBranch)
-				if (ahead > 0) {
-					deps.log(`${tag} no-work-needed but slice branch has ${ahead} unmerged commit(s) from a prior Turn; treating as ready`)
-					await mergeSliceIntoIntegration(deps, slice, ctx, branch)
-					return 'done'
-				}
-			}
-			await deps.storage.updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
-			deps.log(`${tag} no-work-needed: cleared readyForAgent`)
-			return 'no-work'
-		}
-		if (verdict.verdict !== 'ready') return 'partial'
+	return withPhaseLock(deps, () => landImplementLocked(deps, slice, verdict, ctx))
+}
 
-		if (!ctx.config.perSliceBranches) {
-			await deps.git.push(ctx.integrationBranch)
-			deps.log(`${tag} pushed ${ctx.integrationBranch}`)
-			await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
-			deps.log(`${tag} closed slice`)
-			return 'done'
-		}
+async function landImplementLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+	if (verdict.verdict === 'partial') return 'partial'
+	if (verdict.verdict === 'no-work-needed') return landImplementNoWork(deps, slice, ctx)
+	if (verdict.verdict !== 'ready') return 'partial'
+	return landImplementReady(deps, slice, ctx, verdict.commits)
+}
 
-		const branch = sliceBranchFor(ctx.prdId, slice)
-		await deps.git.push(branch)
-		deps.log(`${tag} pushed ${branch}`)
+async function landImplementNoWork(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
+	const recovered = await recoverNoWorkNeededSliceBranch(deps, slice, ctx)
+	if (recovered) return recovered
+	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
+	deps.log(`${tag} no-work-needed: cleared readyForAgent`)
+	return 'no-work'
+}
 
-		if (ctx.config.usePrs) {
-			await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.integrationBranch, body: `Closes #${slice.id}` })
-			deps.log(`${tag} opened draft PR for ${branch}`)
-			return 'progress'
-		}
+async function recoverNoWorkNeededSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome | null> {
+	if (!canRecoverNoWorkNeededSliceBranch(ctx)) return null
+	const branch = sliceBranchFor(ctx.prdId, slice)
+	const ahead = await deps.git.commitsAhead(branch, ctx.integrationBranch)
+	if (ahead <= 0) return null
+	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	deps.log(`${tag} no-work-needed but slice branch has ${ahead} unmerged commit(s) from a prior Turn; treating as ready`)
+	await mergeSliceIntoIntegration(deps, slice, ctx, branch)
+	return 'done'
+}
 
-		// usePrs: false → host-side merge-and-close.
-		await mergeSliceIntoIntegration(deps, slice, ctx, branch)
-		return 'done'
-	})
+function canRecoverNoWorkNeededSliceBranch(ctx: PhaseCtx): boolean {
+	return ctx.config.perSliceBranches && !ctx.config.usePrs
+}
+
+async function landImplementReady(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, commits: number): Promise<PhaseOutcome> {
+	if (!ctx.config.perSliceBranches) return closeDirectIntegrationSlice(deps, slice, ctx)
+	const branch = sliceBranchFor(ctx.prdId, slice)
+	await pushSliceBranchIfNeeded(deps, branch, commits, `[work prd-${ctx.prdId} slice-${slice.id}]`)
+	if (ctx.config.usePrs) return openSliceDraftPr(deps, slice, ctx, branch)
+	await mergeSliceIntoIntegration(deps, slice, ctx, branch)
+	return 'done'
+}
+
+async function closeDirectIntegrationSlice(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
+	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	await deps.git.push(ctx.integrationBranch)
+	deps.log(`${tag} pushed ${ctx.integrationBranch}`)
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+	deps.log(`${tag} closed slice`)
+	return 'done'
+}
+
+async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
+	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.integrationBranch, body: `Closes #${slice.id}` })
+	deps.log(`${tag} opened draft PR for ${branch}`)
+	return 'progress'
 }
 
 /**
@@ -221,34 +234,52 @@ export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOu
 	return withPhaseLock(deps, async () => landReviewOrAddress('address', deps, slice, verdict, ctx))
 }
 
-async function landReviewOrAddress(kind: 'review' | 'address', deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+type ReviewAddressKind = 'review' | 'address'
+type ReviewAddressLandRule = {
+	matches: (kind: ReviewAddressKind, verdict: TurnOut) => boolean
+	land: (kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string) => Promise<PhaseOutcome>
+}
+
+const REVIEW_ADDRESS_LAND_RULES: ReviewAddressLandRule[] = [
+	{ matches: (_kind, verdict) => verdict.verdict === 'partial', land: async () => 'partial' },
+	{ matches: (_kind, verdict) => verdict.verdict === 'ready', land: landReadyReviewOrAddress },
+	{ matches: (kind, verdict) => kind === 'review' && verdict.verdict === 'needs-revision', land: landReviewNeedsRevision },
+	{ matches: (kind, verdict) => kind === 'address' && verdict.verdict === 'no-work-needed', land: landAddressNoWorkNeeded },
+]
+
+async function landReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-	if (verdict.verdict === 'partial') return 'partial'
 	const branch = sliceBranchFor(ctx.prdId, slice)
-	if (verdict.verdict === 'ready') {
-		await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-		if (kind === 'review') {
-			const prNumber = await deps.gh.findPrNumberByHead(branch)
-			await deps.gh.markPrReady(prNumber)
-			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
-		} else {
-			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-			deps.log(`${tag} cleared needsRevision`)
-		}
-		return 'progress'
-	}
-	if (kind === 'review' && verdict.verdict === 'needs-revision') {
-		await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
-		deps.log(`${tag} flagged needsRevision`)
-		return 'progress'
-	}
-	if (kind === 'address' && verdict.verdict === 'no-work-needed') {
-		await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-		deps.log(`${tag} no-work-needed: cleared needsRevision`)
-		return 'no-work'
-	}
-	return 'partial'
+	const rule = REVIEW_ADDRESS_LAND_RULES.find((r) => r.matches(kind, verdict))
+	return rule?.land(kind, deps, slice, verdict, ctx, branch, tag) ?? 'partial'
+}
+
+async function landReadyReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
+	if (kind === 'review') return markSlicePrReady(deps, branch, tag)
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+	deps.log(`${tag} cleared needsRevision`)
+	return 'progress'
+}
+
+async function markSlicePrReady(deps: PhaseDeps, branch: string, tag: string): Promise<PhaseOutcome> {
+	const prNumber = await deps.gh.findPrNumberByHead(branch)
+	await deps.gh.markPrReady(prNumber)
+	deps.log(`${tag} marked PR #${prNumber} ready for merge`)
+	return 'progress'
+}
+
+async function landReviewNeedsRevision(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
+	deps.log(`${tag} flagged needsRevision`)
+	return 'progress'
+}
+
+async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, _verdict: TurnOut, ctx: PhaseCtx, _branch: string, tag: string): Promise<PhaseOutcome> {
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+	deps.log(`${tag} no-work-needed: cleared needsRevision`)
+	return 'no-work'
 }
 
 if (import.meta.vitest) {

@@ -4,7 +4,7 @@ import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
 import { reconcileEntity, type LoopEntityRef } from './reconcile.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { Slice, Storage } from '../storages/types.ts'
+import type { FixRecord, PrdRecord, Slice, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
@@ -47,14 +47,22 @@ export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): P
 }
 
 async function runPrdEntity(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: EntityLoopDeps): Promise<void> {
+	const prd = await openPrdOrStop(entity, deps)
+	if (!prd) return
+	await runLoop(entity.id, loopDepsForPrd(entity, deps))
+	await closeOutPrdIfReady(entity, prd, deps)
+}
+
+async function openPrdOrStop(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: EntityLoopDeps): Promise<PrdRecord | null> {
 	const prd = await deps.storage.findPrd(entity.id)
 	if (!prd) throw new Error(`PRD '${entity.id}' not found`)
-	if (prd.state === 'CLOSED') {
-		deps.log(`[work prd-${entity.id}] already CLOSED; nothing to do`)
-		return
-	}
+	if (prd.state !== 'CLOSED') return prd
+	deps.log(`[work prd-${entity.id}] already CLOSED; nothing to do`)
+	return null
+}
 
-	const loopDeps: LoopDeps = {
+function loopDepsForPrd(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: EntityLoopDeps): LoopDeps {
+	return {
 		storage: deps.storage,
 		git: deps.git,
 		gh: deps.gh,
@@ -64,14 +72,11 @@ async function runPrdEntity(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: 
 		config: deps.config,
 		projectRoot: deps.projectRoot,
 	}
-	await runLoop(entity.id, loopDeps)
+}
 
+async function closeOutPrdIfReady(entity: Extract<LoopEntity, { kind: 'prd' }>, prd: PrdRecord, deps: EntityLoopDeps): Promise<void> {
 	const slices = await deps.storage.findSlices(entity.id)
-	const allClosed = slices.length > 0 && slices.every((s) => s.state === 'CLOSED')
-	if (!allClosed) {
-		if (slices.length === 0) deps.log(`[work prd-${entity.id}] no slices; skipping Close-out`)
-		return
-	}
+	if (!prdReadyForCloseOut(entity, slices, deps)) return
 	deps.log(`[work prd-${entity.id}] all slices CLOSED → running Close-out`)
 	await runCloseOut(
 		{ kind: 'prd', id: entity.id, branch: entity.integrationBranch, targetBranch: prd.targetBranch, title: entity.title },
@@ -86,8 +91,24 @@ async function runPrdEntity(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: 
 	)
 }
 
+function prdReadyForCloseOut(entity: Extract<LoopEntity, { kind: 'prd' }>, slices: Slice[], deps: EntityLoopDeps): boolean {
+	if (slices.length === 0) deps.log(`[work prd-${entity.id}] no slices; skipping Close-out`)
+	return slices.length > 0 && slices.every((s) => s.state === 'CLOSED')
+}
+
+type FixStepResult = 'progress' | 'stop'
+
 async function runFixEntity(entity: Extract<LoopEntity, { kind: 'fix' }>, deps: EntityLoopDeps): Promise<void> {
-	const fixPhaseDeps: FixPhaseDeps = {
+	const fixPhaseDeps = fixPhaseDepsFor(deps)
+	for (let step = 0; step < deps.config.sliceStepCap; step++) {
+		const result = await runFixEntityStep(entity, deps, fixPhaseDeps)
+		if (result === 'stop') return
+	}
+	deps.log(`[work fix-${entity.id}] step-cap reached after ${deps.config.sliceStepCap} step(s); stopping`)
+}
+
+function fixPhaseDepsFor(deps: EntityLoopDeps): FixPhaseDeps {
+	return {
 		storage: deps.storage,
 		git: deps.git,
 		gh: deps.gh,
@@ -95,61 +116,76 @@ async function runFixEntity(entity: Extract<LoopEntity, { kind: 'fix' }>, deps: 
 		projectRoot: deps.projectRoot,
 		config: fixPhaseConfig(deps.config),
 	}
+}
 
-	for (let step = 0; step < deps.config.sliceStepCap; step++) {
-		const fix = await deps.storage.findFix(entity.id)
-		if (!fix) throw new Error(`Fix '${entity.id}' not found`)
-		if (fix.state === 'CLOSED') {
-			deps.log(`[work fix-${entity.id}] CLOSED`)
-			return
-		}
-		// Enrich prState by peeking at any open PR for the fix branch.
-		const enriched = deps.config.usePrs ? await enrichFixPrState(deps.gh, fix) : fix
-		const resume = classifyFix(enriched, { usePrs: deps.config.usePrs, review: deps.config.review })
-		if (resume === 'done') {
-			// Fix has no actionable phase right now. Under usePrs:true that typically means the PR is
-			// open awaiting human review/merge. Try Close-out to mark it ready (idempotent), then exit.
-			if (deps.config.usePrs) {
-				deps.log(`[work fix-${entity.id}] no agent action; running Close-out to ensure PR ready`)
-				await runCloseOut(
-					{ kind: 'fix', id: entity.id, branch: entity.branch, targetBranch: enriched.targetBranch, title: entity.title },
-					{
-						storage: deps.storage,
-						git: deps.git,
-						gh: deps.gh,
-						log: deps.log,
-						config: { usePrs: true, deleteBranch: deps.config.usePrs ? 'never' : 'prompt', mergeNoVerify: deps.config.mergeNoVerify },
-						projectRoot: deps.projectRoot,
-					},
-				)
-			}
-			return
-		}
-		const role = resume as Role
-		deps.log(`[work fix-${entity.id}] state=${role}: "${fix.title}"`)
-		const prep = await callFixPrepare(role, fixPhaseDeps, enriched)
-		const slice: Slice = {
-			id: enriched.id,
-			title: enriched.title,
-			body: enriched.body,
-			state: enriched.state,
-			readyForAgent: enriched.readyForAgent,
-			needsRevision: enriched.needsRevision,
-			blockedBy: enriched.blockedBy,
-			prState: enriched.prState,
-		}
-		const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
-		deps.log(`[work fix-${entity.id}] ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
-		const outcome = await callFixLand(role, fixPhaseDeps, enriched, verdict)
-		if (outcome === 'done') return
-		if (outcome === 'no-work') return
-		if (outcome === 'partial') {
-			deps.log(`[work fix-${entity.id}] partial; stopping for this run`)
-			return
-		}
-		// 'progress' → loop and re-evaluate state
+async function runFixEntityStep(entity: Extract<LoopEntity, { kind: 'fix' }>, deps: EntityLoopDeps, fixPhaseDeps: FixPhaseDeps): Promise<FixStepResult> {
+	const fix = await openFixOrStop(entity, deps)
+	if (!fix) return 'stop'
+	const enriched = await enrichFixIfNeeded(deps, fix)
+	const resume = classifyFix(enriched, { usePrs: deps.config.usePrs, review: deps.config.review })
+	if (await stopAfterDoneFixResume(entity, enriched, resume, deps)) return 'stop'
+	const outcome = await runFixPhase(entity, enriched, resume as Role, deps, fixPhaseDeps)
+	return stopAfterFixOutcome(entity, outcome, deps) ? 'stop' : 'progress'
+}
+
+async function openFixOrStop(entity: Extract<LoopEntity, { kind: 'fix' }>, deps: EntityLoopDeps): Promise<FixRecord | null> {
+	const fix = await deps.storage.findFix(entity.id)
+	if (!fix) throw new Error(`Fix '${entity.id}' not found`)
+	if (fix.state !== 'CLOSED') return fix
+	deps.log(`[work fix-${entity.id}] CLOSED`)
+	return null
+}
+
+function enrichFixIfNeeded(deps: EntityLoopDeps, fix: FixRecord): Promise<FixRecord> | FixRecord {
+	return deps.config.usePrs ? enrichFixPrState(deps.gh, fix) : fix
+}
+
+async function stopAfterDoneFixResume(entity: Extract<LoopEntity, { kind: 'fix' }>, enriched: FixRecord, resume: ReturnType<typeof classifyFix>, deps: EntityLoopDeps): Promise<boolean> {
+	if (resume !== 'done') return false
+	if (deps.config.usePrs) await ensureFixCloseOutPrReady(entity, enriched, deps)
+	return true
+}
+
+async function ensureFixCloseOutPrReady(entity: Extract<LoopEntity, { kind: 'fix' }>, fix: FixRecord, deps: EntityLoopDeps): Promise<void> {
+	deps.log(`[work fix-${entity.id}] no agent action; running Close-out to ensure PR ready`)
+	await runCloseOut(
+		{ kind: 'fix', id: entity.id, branch: entity.branch, targetBranch: fix.targetBranch, title: entity.title },
+		{
+			storage: deps.storage,
+			git: deps.git,
+			gh: deps.gh,
+			log: deps.log,
+			config: { usePrs: true, deleteBranch: deps.config.usePrs ? 'never' : 'prompt', mergeNoVerify: deps.config.mergeNoVerify },
+			projectRoot: deps.projectRoot,
+		},
+	)
+}
+
+async function runFixPhase(entity: Extract<LoopEntity, { kind: 'fix' }>, fix: FixRecord, role: Role, deps: EntityLoopDeps, fixPhaseDeps: FixPhaseDeps) {
+	deps.log(`[work fix-${entity.id}] state=${role}: "${fix.title}"`)
+	const prep = await callFixPrepare(role, fixPhaseDeps, fix)
+	const slice = sliceFromFix(fix)
+	const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
+	deps.log(`[work fix-${entity.id}] ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
+	return callFixLand(role, fixPhaseDeps, fix, verdict)
+}
+
+function sliceFromFix(fix: FixRecord): Slice {
+	return {
+		id: fix.id,
+		title: fix.title,
+		body: fix.body,
+		state: fix.state,
+		readyForAgent: fix.readyForAgent,
+		needsRevision: fix.needsRevision,
+		blockedBy: fix.blockedBy,
+		prState: fix.prState,
 	}
-	deps.log(`[work fix-${entity.id}] step-cap reached after ${deps.config.sliceStepCap} step(s); stopping`)
+}
+
+function stopAfterFixOutcome(entity: Extract<LoopEntity, { kind: 'fix' }>, outcome: Awaited<ReturnType<typeof callFixLand>>, deps: EntityLoopDeps): boolean {
+	if (outcome === 'partial') deps.log(`[work fix-${entity.id}] partial; stopping for this run`)
+	return outcome !== 'progress'
 }
 
 async function enrichFixPrState(gh: GhOps, fix: import('../storages/types.ts').FixRecord): Promise<import('../storages/types.ts').FixRecord> {

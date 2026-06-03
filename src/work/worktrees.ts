@@ -4,29 +4,52 @@ import path from 'node:path'
 import type { GitOps } from '../utils/git-ops.ts'
 import { slug } from '../utils/slug.ts'
 
+const REQUIRED_TROWEL_GITIGNORE_ENTRIES = ['worktrees/', 'logs/']
+
 export async function ensureTrowelDir(projectRoot: string): Promise<void> {
 	const trowelDir = path.join(projectRoot, '.trowel')
 	await mkdir(trowelDir, { recursive: true })
-	const gitignorePath = path.join(trowelDir, '.gitignore')
-	const required = ['worktrees/', 'logs/']
-	let existing: string | null = null
-	try {
-		existing = await readFile(gitignorePath, 'utf8')
-	} catch {
-		existing = null
-	}
+	await ensureTrowelGitignore(path.join(trowelDir, '.gitignore'))
+}
+
+async function ensureTrowelGitignore(gitignorePath: string): Promise<void> {
+	const existing = await readOptionalFile(gitignorePath)
 	if (existing === null) {
-		await writeFile(gitignorePath, `${required.join('\n')}\n`)
+		await writeGitignoreEntries(gitignorePath, REQUIRED_TROWEL_GITIGNORE_ENTRIES)
 		return
 	}
+	const missing = missingGitignoreEntries(existing, REQUIRED_TROWEL_GITIGNORE_ENTRIES)
+	if (missing.length > 0) await appendGitignoreEntries(gitignorePath, existing, missing)
+}
+
+async function readOptionalFile(filePath: string): Promise<string | null> {
+	try {
+		return await readFile(filePath, 'utf8')
+	} catch {
+		return null
+	}
+}
+
+async function writeGitignoreEntries(gitignorePath: string, entries: string[]): Promise<void> {
+	await writeFile(gitignorePath, `${entries.join('\n')}\n`)
+}
+
+function missingGitignoreEntries(existing: string, required: string[]): string[] {
 	const presentLines = new Set(existing.split('\n').map((line) => line.trim()))
-	const missing = required.filter((entry) => !presentLines.has(entry))
-	if (missing.length === 0) return
-	const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
-	await writeFile(gitignorePath, `${existing}${sep}${missing.join('\n')}\n`)
+	return required.filter((entry) => !presentLines.has(entry))
+}
+
+async function appendGitignoreEntries(gitignorePath: string, existing: string, entries: string[]): Promise<void> {
+	const sep = gitignoreAppendSeparator(existing)
+	await writeFile(gitignorePath, `${existing}${sep}${entries.join('\n')}\n`)
+}
+
+function gitignoreAppendSeparator(existing: string): string {
+	return existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
 }
 
 export type TurnWorktree = { worktreePath: string; branch: string; prdId: string }
+type GitWorktree = Awaited<ReturnType<GitOps['worktreeList']>>[number]
 
 function worktreePathFor(projectRoot: string, prdId: string, branch: string): string {
 	return path.join(projectRoot, '.trowel', 'worktrees', prdId, slug(branch))
@@ -43,29 +66,48 @@ export async function ensureWorktree(args: {
 	const worktreePath = worktreePathFor(args.projectRoot, args.prdId, args.branch)
 	const wt: TurnWorktree = { worktreePath, branch: args.branch, prdId: args.prdId }
 
-	const existing = (await args.git.worktreeList()).find((w) => w.path === worktreePath)
-	if (existing) {
-		if (existing.branch === args.branch) return wt
-		await destroyWorktree(wt, args.git)
-	} else if (await pathExists(worktreePath)) {
-		await rm(worktreePath, { recursive: true, force: true })
-	}
+	const existing = await findRegisteredWorktree(args.git, worktreePath)
+	if (await reuseOrClearRegisteredWorktree(existing, wt, args.git)) return wt
+	if (!existing) await removeStaleWorktreePath(worktreePath)
 
-	await mkdir(path.dirname(worktreePath), { recursive: true })
-	await args.git.worktreeAdd(worktreePath, args.branch)
-
-	for (const entry of args.copyToWorktree) {
-		const src = path.join(args.projectRoot, entry)
-		const dst = path.join(worktreePath, entry)
-		try {
-			await mkdir(path.dirname(dst), { recursive: true })
-			await cp(src, dst, { recursive: true })
-		} catch (e) {
-			args.log?.(`ensureWorktree: failed to copy ${entry} into ${worktreePath}: ${(e as Error).message}`)
-		}
-	}
-
+	await createWorktree(wt, args.git)
+	await copyWorktreeEntries(args.projectRoot, wt.worktreePath, args.copyToWorktree, args.log)
 	return wt
+}
+
+async function findRegisteredWorktree(git: GitOps, worktreePath: string): Promise<GitWorktree | undefined> {
+	return (await git.worktreeList()).find((w) => w.path === worktreePath)
+}
+
+async function reuseOrClearRegisteredWorktree(existing: GitWorktree | undefined, wt: TurnWorktree, git: GitOps): Promise<boolean> {
+	if (!existing) return false
+	if (existing.branch === wt.branch) return true
+	await destroyWorktree(wt, git)
+	return false
+}
+
+async function removeStaleWorktreePath(worktreePath: string): Promise<void> {
+	if (await pathExists(worktreePath)) await rm(worktreePath, { recursive: true, force: true })
+}
+
+async function createWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
+	await mkdir(path.dirname(wt.worktreePath), { recursive: true })
+	await git.worktreeAdd(wt.worktreePath, wt.branch)
+}
+
+async function copyWorktreeEntries(projectRoot: string, worktreePath: string, entries: string[], log?: (m: string) => void): Promise<void> {
+	for (const entry of entries) await copyWorktreeEntry(projectRoot, worktreePath, entry, log)
+}
+
+async function copyWorktreeEntry(projectRoot: string, worktreePath: string, entry: string, log?: (m: string) => void): Promise<void> {
+	const src = path.join(projectRoot, entry)
+	const dst = path.join(worktreePath, entry)
+	try {
+		await mkdir(path.dirname(dst), { recursive: true })
+		await cp(src, dst, { recursive: true })
+	} catch (e) {
+		log?.(`ensureWorktree: failed to copy ${entry} into ${worktreePath}: ${(e as Error).message}`)
+	}
 }
 
 export async function resetWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
@@ -92,20 +134,45 @@ export async function sweepOrphanWorktrees(args: {
 	const minAgeMs = parseDurationMs(args.cleanupAge)
 	const now = (args.now ?? new Date()).getTime()
 	const root = path.join(args.projectRoot, '.trowel', 'worktrees')
-	const list = await args.git.worktreeList()
-	for (const w of list) {
-		if (!w.path.startsWith(`${root}${path.sep}`)) continue
-		const rel = path.relative(root, w.path)
-		const parts = rel.split(path.sep)
-		if (parts.length < 2) continue
-		const [prdId, branchSlug] = parts
-		const s = await stat(w.path).catch(() => null)
-		if (!s) continue
-		if (now - s.mtimeMs < minAgeMs) continue
-		const branch = w.branch ?? branchSlug
-		if (!(await args.orphanCheck(prdId, branch))) continue
-		await destroyWorktree({ worktreePath: w.path, branch, prdId }, args.git)
-	}
+	for (const w of await args.git.worktreeList()) await sweepWorktreeIfOrphan(args, root, minAgeMs, now, w)
+}
+
+async function sweepWorktreeIfOrphan(args: { orphanCheck: (prdId: string, branch: string) => Promise<boolean>; git: GitOps }, root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<void> {
+	const candidate = await orphanWorktreeCandidate(root, minAgeMs, now, w)
+	if (!candidate) return
+	if (!(await args.orphanCheck(candidate.prdId, candidate.branch))) return
+	await destroyWorktree(candidate, args.git)
+}
+
+async function orphanWorktreeCandidate(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
+	if (!isUnderWorktreeRoot(root, w.path)) return null
+	return candidateInsideWorktreeRoot(root, minAgeMs, now, w)
+}
+
+async function candidateInsideWorktreeRoot(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
+	const ids = worktreeIdsFromPath(root, w.path)
+	if (!ids) return null
+	if (!(await worktreeOldEnough(w.path, minAgeMs, now))) return null
+	return { worktreePath: w.path, prdId: ids.prdId, branch: worktreeBranch(w, ids.branchSlug) }
+}
+
+function worktreeBranch(w: GitWorktree, branchSlug: string): string {
+	return w.branch ?? branchSlug
+}
+
+function isUnderWorktreeRoot(root: string, worktreePath: string): boolean {
+	return worktreePath.startsWith(`${root}${path.sep}`)
+}
+
+function worktreeIdsFromPath(root: string, worktreePath: string): { prdId: string; branchSlug: string } | null {
+	const parts = path.relative(root, worktreePath).split(path.sep)
+	if (parts.length < 2) return null
+	return { prdId: parts[0]!, branchSlug: parts[1]! }
+}
+
+async function worktreeOldEnough(worktreePath: string, minAgeMs: number, now: number): Promise<boolean> {
+	const s = await stat(worktreePath).catch(() => null)
+	return s !== null && now - s.mtimeMs >= minAgeMs
 }
 
 async function pathExists(p: string): Promise<boolean> {

@@ -36,20 +36,40 @@ type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; b
 type FixStore = SliceStore & { body: string }
 type MutableStore = { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[]; closedAt: string | null }
 type StateFilter = { state: 'open' | 'closed' | 'all' }
+type SliceHit = { prdId: string; slice: Slice }
 
 function applyMutablePatch(store: MutableStore, patch: SlicePatch | FixPatch): void {
-	if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
-	if (patch.needsRevision !== undefined) store.needsRevision = patch.needsRevision
-	if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
-	if (patch.state === 'CLOSED' && store.closedAt === null) store.closedAt = new Date().toISOString()
-	if (patch.state === 'OPEN') store.closedAt = null
+	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
+	applyOptionalPatchValue(store, 'needsRevision', patch.needsRevision)
+	applyBlockedByPatch(store, patch.blockedBy)
+	applyStatePatch(store, patch.state)
+}
+
+function applyOptionalPatchValue<K extends 'readyForAgent' | 'needsRevision'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
+	if (value !== undefined) store[key] = value
+}
+
+function applyBlockedByPatch(store: MutableStore, blockedBy: string[] | undefined): void {
+	if (blockedBy !== undefined) store.blockedBy = [...blockedBy]
+}
+
+function applyStatePatch(store: MutableStore, state: SlicePatch['state'] | FixPatch['state']): void {
+	if (state === 'CLOSED') closeMutableStore(store)
+	if (state === 'OPEN') store.closedAt = null
+}
+
+function closeMutableStore(store: MutableStore): void {
+	if (store.closedAt === null) store.closedAt = new Date().toISOString()
+}
+
+const STATE_FILTERS: Record<StateFilter['state'], (store: { closedAt: string | null }) => boolean> = {
+	all: () => true,
+	open: (store) => store.closedAt === null,
+	closed: (store) => store.closedAt !== null,
 }
 
 function acceptsState(store: { closedAt: string | null }, opts: StateFilter): boolean {
-	const isClosed = store.closedAt !== null
-	if (opts.state === 'open' && isClosed) return false
-	if (opts.state === 'closed' && !isClosed) return false
-	return true
+	return STATE_FILTERS[opts.state](store)
 }
 
 function jsonWithNewline(value: unknown): string {
@@ -61,29 +81,30 @@ function baseStore(id: string, slug: string, title: string): PrdStore {
 }
 
 async function listStoreSummaries<T extends PrdStore>(root: string, opts: StateFilter, branchFor: (store: T) => string): Promise<Array<{ id: string; title: string; branch: string; createdAt: string }>> {
-	let entries: string[]
+	const summaries: Array<{ id: string; title: string; branch: string; createdAt: string }> = []
+	for (const entry of await readdirOrEmpty(root)) {
+		const summary = await readStoreSummary(path.join(root, entry, 'store.json'), opts, branchFor)
+		if (summary) summaries.push(summary)
+	}
+	return summaries
+}
+
+async function readStoreSummary<T extends PrdStore>(storePath: string, opts: StateFilter, branchFor: (store: T) => string): Promise<{ id: string; title: string; branch: string; createdAt: string } | null> {
 	try {
-		entries = await readdir(root)
+		const store: T = JSON.parse(await readFile(storePath, 'utf8'))
+		if (!acceptsState(store, opts)) return null
+		return { id: store.id, title: store.title, branch: branchFor(store), createdAt: store.createdAt }
+	} catch {
+		return null
+	}
+}
+
+async function readdirOrEmpty(dir: string): Promise<string[]> {
+	try {
+		return await readdir(dir)
 	} catch {
 		return []
 	}
-	const summaries: Array<{ id: string; title: string; branch: string; createdAt: string }> = []
-	for (const entry of entries) {
-		const storePath = path.join(root, entry, 'store.json')
-		try {
-			const store: T = JSON.parse(await readFile(storePath, 'utf8'))
-			if (!acceptsState(store, opts)) continue
-			summaries.push({
-				id: store.id,
-				title: store.title,
-				branch: branchFor(store),
-				createdAt: store.createdAt,
-			})
-		} catch {
-			continue
-		}
-	}
-	return summaries
 }
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
@@ -191,30 +212,32 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function findSlices(prdId: string): Promise<Slice[]> {
-		let slicesPath: string
-		try {
-			slicesPath = await slicesDir(prdId)
-		} catch {
-			return []
-		}
-		let entries: string[]
-		try {
-			entries = await readdir(slicesPath)
-		} catch {
-			return []
-		}
+		const slicesPath = await slicesDirOrNull(prdId)
+		if (!slicesPath) return []
 		const result: Slice[] = []
-		for (const entry of entries) {
-			const dir = path.join(slicesPath, entry)
-			try {
-				const store: SliceStore = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
-				const body = await readFile(path.join(dir, 'README.md'), 'utf8')
-				result.push(sliceFromStore(store, body))
-			} catch {
-				continue
-			}
+		for (const entry of await readdirOrEmpty(slicesPath)) {
+			const slice = await readSliceFromDir(path.join(slicesPath, entry))
+			if (slice) result.push(slice)
 		}
 		return result
+	}
+
+	async function slicesDirOrNull(prdId: string): Promise<string | null> {
+		try {
+			return await slicesDir(prdId)
+		} catch {
+			return null
+		}
+	}
+
+	async function readSliceFromDir(dir: string): Promise<Slice | null> {
+		try {
+			const store: SliceStore = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
+			const body = await readFile(path.join(dir, 'README.md'), 'utf8')
+			return sliceFromStore(store, body) as Slice
+		} catch {
+			return null
+		}
 	}
 
 	async function updateStore<T extends MutableStore>(dir: string, patch: SlicePatch | FixPatch): Promise<void> {
@@ -241,36 +264,30 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 	}
 
-	async function findSlice(sliceId: string): Promise<{ prdId: string; slice: Slice } | null> {
-		let prdEntries: string[]
-		try {
-			prdEntries = await readdir(deps.prdsDir)
-		} catch {
-			return null
-		}
-		for (const prdEntry of prdEntries) {
-			const prdIdMatch = /^([^-]+)-/.exec(prdEntry)
-			if (!prdIdMatch) continue
-			const prdId = prdIdMatch[1]!
-			const slicesPath = path.join(deps.prdsDir, prdEntry, 'slices')
-			let sliceEntries: string[]
-			try {
-				sliceEntries = await readdir(slicesPath)
-			} catch {
-				continue
-			}
-			const match = sliceEntries.find((e) => e.startsWith(`${sliceId}-`))
-			if (!match) continue
-			const dir = path.join(slicesPath, match)
-			try {
-				const store: SliceStore = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
-				const body = await readFile(path.join(dir, 'README.md'), 'utf8')
-				return { prdId, slice: sliceFromStore(store, body) as Slice }
-			} catch {
-				return null
-			}
+	async function findSlice(sliceId: string): Promise<SliceHit | null> {
+		for (const prdEntry of await readdirOrEmpty(deps.prdsDir)) {
+			const hit = await findSliceInPrdEntry(sliceId, prdEntry)
+			if (hit !== undefined) return hit
 		}
 		return null
+	}
+
+	async function findSliceInPrdEntry(sliceId: string, prdEntry: string): Promise<SliceHit | null | undefined> {
+		const prdId = prdIdFromDirName(prdEntry)
+		if (!prdId) return undefined
+		const slicesPath = path.join(deps.prdsDir, prdEntry, 'slices')
+		const match = (await readdirOrEmpty(slicesPath)).find((e) => e.startsWith(`${sliceId}-`))
+		if (!match) return undefined
+		return readSliceHit(prdId, path.join(slicesPath, match))
+	}
+
+	function prdIdFromDirName(prdEntry: string): string | null {
+		return /^([^-]+)-/.exec(prdEntry)?.[1] ?? null
+	}
+
+	async function readSliceHit(prdId: string, dir: string): Promise<SliceHit | null> {
+		const slice = await readSliceFromDir(dir)
+		return slice ? { prdId, slice } : null
 	}
 
 	async function findPrd(id: string): Promise<PrdRecord | null> {

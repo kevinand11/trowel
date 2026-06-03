@@ -165,16 +165,18 @@ export function mergePartial(base: Config, partial: DeepPartial<Config> | undefi
 
 function deepMerge<T extends Record<string, unknown>>(a: T, b: DeepPartial<T>): T {
 	const out = { ...a } as Record<string, unknown>
-	for (const [k, v] of Object.entries(b)) {
-		if (v === undefined) continue
-		const av = (a as Record<string, unknown>)[k]
-		if (isPlainObject(av) && isPlainObject(v)) {
-			out[k] = deepMerge(av as Record<string, unknown>, v as DeepPartial<Record<string, unknown>>)
-		} else {
-			out[k] = v
-		}
-	}
+	for (const [k, v] of Object.entries(b)) assignMergedValue(out, a, k, v)
 	return out as T
+}
+
+function assignMergedValue(out: Record<string, unknown>, base: Record<string, unknown>, key: string, value: unknown): void {
+	if (value === undefined) return
+	out[key] = mergedValue(base[key], value)
+}
+
+function mergedValue(baseValue: unknown, nextValue: unknown): unknown {
+	if (isPlainObject(baseValue) && isPlainObject(nextValue)) return deepMerge(baseValue, nextValue as DeepPartial<Record<string, unknown>>)
+	return nextValue
 }
 
 function isPlainObject(x: unknown): x is Record<string, unknown> {

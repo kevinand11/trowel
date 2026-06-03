@@ -31,85 +31,130 @@ type RunInitOptions = {
 }
 
 type RunInitResult = { wrote: boolean; path: string }
+type InitRuntimeContext = { cwd: string; home: string; stdout: (s: string) => void; resolveRoot: (cwd: string) => Promise<string | null> }
+type InitTarget = { projectRoot: string | null; filePath: string }
 
 async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
-	const cwd = opts.cwd ?? process.cwd()
-	const home = opts.home ?? homedir()
-	const stdout = opts.stdout ?? ((s) => process.stdout.write(s))
-	const resolveRoot = opts.resolveRoot ?? resolveProjectRoot
+	const ctx = initRuntimeContext(opts)
+	const target = await resolveInitTarget(opts, ctx)
+	const existing = await readExisting(target.filePath)
+	await emitSchemaFile(target.filePath, ctx.stdout)
+	const merged = await buildInitConfig(opts, existing)
+	const json = JSON.stringify(merged, null, 2) + '\n'
+	return confirmAndWriteInitConfig(opts, target.filePath, json, ctx.stdout)
+}
 
-	const projectRoot = await resolveRoot(cwd)
-	if ((opts.layer === 'project' || opts.layer === 'private') && projectRoot === null) {
-		throw new Error(
-			`no project root found (no .git/ or .trowel/ walking up from ${cwd}). Run 'git init' first, or cd into a git repo.`,
-		)
+function initRuntimeContext(opts: RunInitOptions): InitRuntimeContext {
+	return {
+		cwd: valueOrDefault(opts.cwd, process.cwd()),
+		home: valueOrDefault(opts.home, homedir()),
+		stdout: valueOrDefault(opts.stdout, (s) => process.stdout.write(s)),
+		resolveRoot: valueOrDefault(opts.resolveRoot, resolveProjectRoot),
 	}
+}
 
-	const filePath = pathForLayer(opts.layer, projectRoot, home)
-	if (filePath === null) {
-		// Shouldn't reach here given the guard above, but be explicit.
-		throw new Error(`cannot resolve config path for layer '${opts.layer}'`)
+function valueOrDefault<T>(value: T | undefined, fallback: T): T {
+	return value === undefined ? fallback : value
+}
+
+async function resolveInitTarget(opts: RunInitOptions, ctx: InitRuntimeContext): Promise<InitTarget> {
+	const projectRoot = await ctx.resolveRoot(ctx.cwd)
+	if (requiresProjectRoot(opts.layer) && projectRoot === null) {
+		throw new Error(`no project root found (no .git/ or .trowel/ walking up from ${ctx.cwd}). Run 'git init' first, or cd into a git repo.`)
 	}
+	const filePath = pathForLayer(opts.layer, projectRoot, ctx.home)
+	if (filePath === null) throw new Error(`cannot resolve config path for layer '${opts.layer}'`)
+	return { projectRoot, filePath }
+}
 
-	const existing = await readExisting(filePath)
+function requiresProjectRoot(layer: InitableLayer): boolean {
+	return layer === 'project' || layer === 'private'
+}
 
-	// Always (re)emit the JSON Schema next to the config file so editors can
-	// drive autocomplete via the `$schema` key we write below. Idempotent — a
-	// re-run after a trowel upgrade refreshes the schema in place.
+async function emitSchemaFile(filePath: string, stdout: (s: string) => void): Promise<void> {
 	const schemaPath = path.join(path.dirname(filePath), 'schema.json')
 	await mkdir(path.dirname(schemaPath), { recursive: true })
 	await writeFile(schemaPath, JSON.stringify(emitJsonSchema(), null, 2) + '\n', 'utf8')
 	stdout(`Wrote ${schemaPath}\n`)
+}
 
-	const currentStorage = existing?.storage ?? 'file'
-	const storageAnswer = await opts.prompts.storage(currentStorage)
+async function buildInitConfig(opts: RunInitOptions, existing: PartialConfig | null): Promise<Record<string, unknown>> {
+	const storageAnswer = await opts.prompts.storage(currentStorage(existing))
+	const merged = baseInitConfig(existing, storageAnswer)
+	if (storageAnswer === 'file') await addFileStorageConfig(opts, existing, merged)
+	await addAgentConfig(opts, existing, merged)
+	await addWorkConfig(opts, existing, merged)
+	return merged
+}
 
-	// Drop the existing `$schema` so we can re-insert it as the first key
-	// pointing at the freshly-emitted file. JSON property order isn't speced
-	// but Node + every editor preserves insertion order — keeping $schema
-	// first matches how npm/gh/Renovate scaffold their own configs.
+function baseInitConfig(existing: PartialConfig | null, storage: string): Record<string, unknown> {
 	const { $schema: _existingSchema, ...rest } = existing ?? {}
-	const merged: Record<string, unknown> = { $schema: './schema.json', ...rest, storage: storageAnswer }
+	return { $schema: './schema.json', ...rest, storage }
+}
 
-	if (storageAnswer === 'file') {
-		const currentPrdsDir = existing?.docs?.prdsDir ?? defaultConfig.docs.prdsDir
-		const prdsDirAnswer = await opts.prompts.prdsDir(currentPrdsDir)
-		merged.docs = { ...(existing?.docs ?? {}), prdsDir: prdsDirAnswer }
-	}
+function currentStorage(existing: PartialConfig | null): string {
+	return valueOrDefault(existing?.storage, 'file')
+}
 
-	const currentHarness = existing?.agent?.harness ?? defaultConfig.agent.harness
-	const harnessAnswer = await opts.prompts.agentHarness(currentHarness)
+async function addFileStorageConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
+	const prdsDirAnswer = await opts.prompts.prdsDir(currentPrdsDir(existing))
+	merged.docs = { ...docsConfig(existing), prdsDir: prdsDirAnswer }
+}
+
+function docsConfig(existing: PartialConfig | null): Partial<NonNullable<PartialConfig['docs']>> {
+	return existing?.docs ?? {}
+}
+
+function currentPrdsDir(existing: PartialConfig | null): string {
+	return valueOrDefault(docsConfig(existing).prdsDir, defaultConfig.docs.prdsDir)
+}
+
+async function addAgentConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
+	const harnessAnswer = await opts.prompts.agentHarness(currentHarness(existing))
 	const harness = harnessFactories[harnessAnswer as keyof typeof harnessFactories]
 	if (!harness) throw new Error(`unknown harness '${harnessAnswer}'`)
+	const modelAnswer = await opts.prompts.agentModel(modelDefaultForHarness(existing, harnessAnswer, harness.defaultModel))
+	merged.agent = { ...agentConfig(existing), harness: harnessAnswer, model: modelAnswer }
+}
 
-	// Preserve the existing model only when the harness is unchanged; otherwise reset to the
-	// new harness's defaultModel (the old model string is almost certainly wrong cross-harness).
-	const existingHarness = existing?.agent?.harness ?? defaultConfig.agent.harness
-	const modelDefault =
-		existingHarness === harnessAnswer
-			? (existing?.agent?.model ?? harness.defaultModel)
-			: harness.defaultModel
-	const modelAnswer = await opts.prompts.agentModel(modelDefault)
-	merged.agent = { ...(existing?.agent ?? {}), harness: harnessAnswer, model: modelAnswer }
+function agentConfig(existing: PartialConfig | null): Partial<NonNullable<PartialConfig['agent']>> {
+	return existing?.agent ?? {}
+}
 
-	const currentUsePrs = existing?.work?.usePrs ?? defaultConfig.work.usePrs
-	const usePrsAnswer = await opts.prompts.usePrs(currentUsePrs)
-	const workOut: Record<string, unknown> = { ...(existing?.work ?? {}), usePrs: usePrsAnswer }
+function currentHarness(existing: PartialConfig | null): string {
+	return valueOrDefault(agentConfig(existing).harness, defaultConfig.agent.harness)
+}
 
-	if (usePrsAnswer) {
-		const currentReview = existing?.work?.review ?? defaultConfig.work.review
-		const reviewAnswer = await opts.prompts.review(currentReview)
-		workOut.review = reviewAnswer
-	}
+function modelDefaultForHarness(existing: PartialConfig | null, harnessAnswer: string, defaultModel: string): string {
+	if (currentHarness(existing) !== harnessAnswer) return defaultModel
+	return valueOrDefault(agentConfig(existing).model, defaultModel)
+}
+
+async function addWorkConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
+	const usePrsAnswer = await opts.prompts.usePrs(currentUsePrs(existing))
+	const workOut: Record<string, unknown> = { ...workConfig(existing), usePrs: usePrsAnswer }
+	if (usePrsAnswer) workOut.review = await opts.prompts.review(currentReview(existing))
 	merged.work = workOut
+}
 
-	const json = JSON.stringify(merged, null, 2) + '\n'
+function workConfig(existing: PartialConfig | null): Partial<NonNullable<PartialConfig['work']>> {
+	return existing?.work ?? {}
+}
+
+function currentUsePrs(existing: PartialConfig | null): boolean {
+	return valueOrDefault(workConfig(existing).usePrs, defaultConfig.work.usePrs)
+}
+
+function currentReview(existing: PartialConfig | null): boolean {
+	return valueOrDefault(workConfig(existing).review, defaultConfig.work.review)
+}
+
+async function confirmAndWriteInitConfig(opts: RunInitOptions, filePath: string, json: string, stdout: (s: string) => void): Promise<RunInitResult> {
 	const ok = await opts.prompts.confirm(`About to write to ${filePath}:\n\n${json}\nWrite?`)
 	if (!ok) {
 		stdout(`Aborted; nothing written.\n`)
 		return { wrote: false, path: filePath }
 	}
-
 	await mkdir(path.dirname(filePath), { recursive: true })
 	await writeFile(filePath, json, 'utf8')
 	stdout(`Wrote ${filePath}\n`)

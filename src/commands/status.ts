@@ -12,36 +12,43 @@ import { reconcileEntity } from '../work/reconcile.ts'
 import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
 function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
+	const counts = bucketCountsFor(slices)
+	const summary = slices.length === 0 ? '(no slices)' : `(${formatBucketCounts(counts)})`
+	const lines = [
+		`PRD ${prd.id}  ${prd.title}`,
+		`Branch:  ${prd.branch}`,
+		`State:   ${prd.state}          ${summary}`,
+		'',
+		...renderBucketSections(slices),
+	]
+	return lines.join('\n')
+}
+
+function bucketCountsFor(slices: ClassifiedSlice[]): Record<Bucket, number> {
 	const counts: Record<Bucket, number> = emptyBucketCounts()
 	for (const s of slices) counts[s.bucket]++
+	return counts
+}
 
-	const summary = slices.length === 0 ? '(no slices)' : `(${formatBucketCounts(counts)})`
-
+function renderBucketSections(slices: ClassifiedSlice[]): string[] {
 	const lines: string[] = []
-	lines.push(`PRD ${prd.id}  ${prd.title}`)
-	lines.push(`Branch:  ${prd.branch}`)
-	lines.push(`State:   ${prd.state}          ${summary}`)
-	lines.push('')
-
 	const sliceById = bySliceId(slices)
+	for (const bucket of BUCKET_ORDER) appendBucketSection(lines, bucket, slices, sliceById)
+	return lines
+}
 
-	for (const bucket of BUCKET_ORDER) {
-		const inBucket = slices.filter((s) => s.bucket === bucket)
-		if (inBucket.length === 0) continue
-		lines.push(`  ${bucket}`)
-		for (const s of inBucket) {
-			const right = rightColumn(s, sliceById)
-			const idCol = s.id.padEnd(8)
-			if (right) {
-				lines.push(`    ${idCol}  ${s.title.padEnd(48)}  ${right}`)
-			} else {
-				lines.push(`    ${idCol}  ${s.title}`)
-			}
-		}
-		lines.push('')
-	}
+function appendBucketSection(lines: string[], bucket: Bucket, slices: ClassifiedSlice[], sliceById: Map<string, ClassifiedSlice>): void {
+	const inBucket = slices.filter((s) => s.bucket === bucket)
+	if (inBucket.length === 0) return
+	lines.push(`  ${bucket}`)
+	for (const s of inBucket) lines.push(renderSliceSummaryLine(s, sliceById))
+	lines.push('')
+}
 
-	return lines.join('\n')
+function renderSliceSummaryLine(s: ClassifiedSlice, sliceById: Map<string, ClassifiedSlice>): string {
+	const right = rightColumn(s, sliceById)
+	const idCol = s.id.padEnd(8)
+	return right ? `    ${idCol}  ${s.title.padEnd(48)}  ${right}` : `    ${idCol}  ${s.title}`
 }
 
 function bySliceId(slices: ClassifiedSlice[]): Map<string, ClassifiedSlice> {
@@ -164,16 +171,41 @@ type StatusSliceRuntime = {
 	stdout: (s: string) => void
 }
 
+type StatusSliceContext = { prd: PrdRecord; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
+
 async function runStatusSlice(sliceId: string, rt: StatusSliceRuntime): Promise<void> {
+	const context = await statusSliceContext(sliceId, rt)
+	writeStatusText(rt.stdout, renderStatusSlice(context.prd, context.target, context.siblings))
+}
+
+async function statusSliceContext(sliceId: string, rt: StatusSliceRuntime): Promise<StatusSliceContext> {
+	const hit = await findSliceForStatus(sliceId, rt)
+	const prd = await findPrdForStatusSlice(sliceId, hit.prdId, rt)
+	const siblings = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId: hit.prdId, usePrs: rt.usePrs })
+	return { prd, target: targetStatusSlice(sliceId, siblings), siblings }
+}
+
+async function findSliceForStatus(sliceId: string, rt: StatusSliceRuntime): Promise<{ prdId: string; slice: Slice }> {
 	const hit = await rt.storage.findSlice(sliceId)
 	if (!hit) throw new Error(`slice '${sliceId}' not found`)
-	const prd = await rt.storage.findPrd(hit.prdId)
-	if (!prd) throw new Error(`slice '${sliceId}' references missing PRD '${hit.prdId}'`)
-	const siblings = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId: hit.prdId, usePrs: rt.usePrs })
+	return hit
+}
+
+async function findPrdForStatusSlice(sliceId: string, prdId: string, rt: StatusSliceRuntime): Promise<PrdRecord> {
+	const prd = await rt.storage.findPrd(prdId)
+	if (!prd) throw new Error(`slice '${sliceId}' references missing PRD '${prdId}'`)
+	return prd
+}
+
+function targetStatusSlice(sliceId: string, siblings: ClassifiedSlice[]): ClassifiedSlice {
 	const target = siblings.find((s) => s.id === sliceId)
 	if (!target) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
-	rt.stdout(renderStatusSlice(prd, target, siblings))
-	if (!renderStatusSlice(prd, target, siblings).endsWith('\n')) rt.stdout('\n')
+	return target
+}
+
+function writeStatusText(stdout: (s: string) => void, text: string): void {
+	stdout(text)
+	if (!text.endsWith('\n')) stdout('\n')
 }
 
 function renderStatusSlice(prd: PrdRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {

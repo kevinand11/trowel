@@ -30,13 +30,21 @@ type ClassifyContext = {
  *   ready            OPEN + readyForAgent (none of the above)
  *   draft            OPEN (catch-all)
  */
+type BucketRule = {
+	bucket: Bucket
+	matches: (s: ClassifyInput, ctx: ClassifyContext) => boolean
+}
+
+const BUCKET_RULES: BucketRule[] = [
+	{ bucket: 'done', matches: (s) => s.state === 'CLOSED' },
+	{ bucket: 'needs-revision', matches: (s) => s.needsRevision },
+	{ bucket: 'in-flight', matches: (_s, ctx) => ctx.hasOpenPr },
+	{ bucket: 'blocked', matches: (_s, ctx) => ctx.unmetDepIds.length > 0 },
+	{ bucket: 'ready', matches: (s) => s.readyForAgent },
+]
+
 function classify(s: ClassifyInput, ctx: ClassifyContext): Bucket {
-	if (s.state === 'CLOSED') return 'done'
-	if (s.needsRevision) return 'needs-revision'
-	if (ctx.hasOpenPr) return 'in-flight'
-	if (ctx.unmetDepIds.length > 0) return 'blocked'
-	if (s.readyForAgent) return 'ready'
-	return 'draft'
+	return BUCKET_RULES.find((rule) => rule.matches(s, ctx))?.bucket ?? 'draft'
 }
 
 /**

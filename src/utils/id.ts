@@ -13,26 +13,36 @@ import path from 'node:path'
  * `2026-05-17-fix-entity-unified-close-out.md`.
  */
 export async function allocateNextId(prdsDir: string, fixesDir?: string): Promise<string> {
-	const seen: number[] = []
-	const prdEntries = await readdirSafe(prdsDir)
-	for (const prdEntry of prdEntries) {
-		const n = parseIntPrefix(prdEntry)
-		if (n !== null) seen.push(n)
-		const sliceEntries = await readdirSafe(path.join(prdsDir, prdEntry, 'slices'))
-		for (const sliceEntry of sliceEntries) {
-			const m = parseIntPrefix(sliceEntry)
-			if (m !== null) seen.push(m)
-		}
+	const seen = await collectUsedIds(prdsDir, fixesDir)
+	return String(nextIdAfter(seen))
+}
+
+async function collectUsedIds(prdsDir: string, fixesDir?: string): Promise<number[]> {
+	const prdIds = await collectPrdAndSliceIds(prdsDir)
+	const fixIds = fixesDir ? await collectDirectoryIds(fixesDir) : []
+	return [...prdIds, ...fixIds]
+}
+
+async function collectPrdAndSliceIds(prdsDir: string): Promise<number[]> {
+	const ids: number[] = []
+	for (const prdEntry of await readdirSafe(prdsDir)) {
+		ids.push(...idFromName(prdEntry))
+		ids.push(...(await collectDirectoryIds(path.join(prdsDir, prdEntry, 'slices'))))
 	}
-	if (fixesDir) {
-		const fixEntries = await readdirSafe(fixesDir)
-		for (const fixEntry of fixEntries) {
-			const n = parseIntPrefix(fixEntry)
-			if (n !== null) seen.push(n)
-		}
-	}
-	const next = seen.length === 0 ? 1 : Math.max(...seen) + 1
-	return String(next)
+	return ids
+}
+
+async function collectDirectoryIds(dir: string): Promise<number[]> {
+	return (await readdirSafe(dir)).flatMap(idFromName)
+}
+
+function idFromName(name: string): number[] {
+	const id = parseIntPrefix(name)
+	return id === null ? [] : [id]
+}
+
+function nextIdAfter(ids: number[]): number {
+	return ids.length === 0 ? 1 : Math.max(...ids) + 1
 }
 
 async function readdirSafe(dir: string): Promise<string[]> {

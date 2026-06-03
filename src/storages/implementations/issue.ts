@@ -5,6 +5,7 @@ import { landAddress, landImplement, landReview, prepareAddress, prepareImplemen
 import type { ClassifiedSlice, FixPatch, FixRecord, FixSpec, FixSummary, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean; needsRevision?: boolean }
+type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function closeIssueIfOpen(id: string): Promise<void> {
@@ -15,14 +16,17 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function applyLabelPatch(id: string, patch: LabelPatch): Promise<void> {
-		if (patch.readyForAgent !== undefined) {
-			const opts = patch.readyForAgent ? { add: [deps.labels.readyForAgent] } : { remove: [deps.labels.readyForAgent] }
-			await deps.gh.editIssueLabels(id, opts)
-		}
-		if (patch.needsRevision !== undefined) {
-			const opts = patch.needsRevision ? { add: [deps.labels.needsRevision] } : { remove: [deps.labels.needsRevision] }
-			await deps.gh.editIssueLabels(id, opts)
-		}
+		await applyBooleanLabelPatch(id, deps.labels.readyForAgent, patch.readyForAgent)
+		await applyBooleanLabelPatch(id, deps.labels.needsRevision, patch.needsRevision)
+	}
+
+	async function applyBooleanLabelPatch(id: string, label: string, value: boolean | undefined): Promise<void> {
+		if (value === undefined) return
+		await deps.gh.editIssueLabels(id, labelPatchOptions(label, value))
+	}
+
+	function labelPatchOptions(label: string, value: boolean): { add: string[] } | { remove: string[] } {
+		return value ? { add: [label] } : { remove: [label] }
 	}
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
 		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
@@ -44,22 +48,32 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		// Storage emits raw slices with `prState: null` for everyone. The loop
 		// calls `enrichSlicePrStates` (and, eventually, branch-ahead detection) before classification.
 		// See ADR `storage-behavior-separation` step 4.
-		return Promise.all(
-			rawIssues.map(async (s): Promise<Slice> => {
-				const totalBlockedBy = s.issue_dependencies_summary?.total_blocked_by ?? 0
-				const blockedBy = totalBlockedBy > 0 ? await fetchBlockedBy(s.number) : []
-				return {
-					id: String(s.number),
-					title: s.title,
-					body: s.body,
-					state: (s.state === 'open' ? 'OPEN' : 'CLOSED') as Slice['state'],
-					readyForAgent: s.labels.some((l) => l.name === deps.labels.readyForAgent),
-					needsRevision: s.labels.some((l) => l.name === deps.labels.needsRevision),
-					blockedBy,
-					prState: null,
-				}
-			}),
-		)
+		return Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue)))
+	}
+
+	async function sliceFromSubIssue(issue: GhSubIssue): Promise<Slice> {
+		return {
+			id: String(issue.number),
+			title: issue.title,
+			body: issue.body,
+			state: issueState(issue.state),
+			readyForAgent: hasIssueLabel(issue, deps.labels.readyForAgent),
+			needsRevision: hasIssueLabel(issue, deps.labels.needsRevision),
+			blockedBy: await blockedByForIssue(issue),
+			prState: null,
+		}
+	}
+
+	function issueState(state: string): Slice['state'] {
+		return state === 'open' ? 'OPEN' : 'CLOSED'
+	}
+
+	function hasIssueLabel(issue: GhSubIssue, label: string): boolean {
+		return issue.labels.some((l) => l.name === label)
+	}
+
+	async function blockedByForIssue(issue: GhSubIssue): Promise<string[]> {
+		return (issue.issue_dependencies_summary?.total_blocked_by ?? 0) > 0 ? fetchBlockedBy(issue.number) : []
 	}
 
 	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
@@ -141,13 +155,23 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	function targetBranchFromBody(body: string | null | undefined): string | undefined {
 		const raw = trowelMetadataFromBody(body)
-		if (!raw) return undefined
+		return raw ? targetBranchFromMetadataJson(raw) : undefined
+	}
+
+	function targetBranchFromMetadataJson(raw: string): string | undefined {
 		try {
-			const parsed = JSON.parse(raw) as { targetBranch?: unknown }
-			return typeof parsed.targetBranch === 'string' && parsed.targetBranch.length > 0 ? parsed.targetBranch : undefined
+			return targetBranchFromMetadata(JSON.parse(raw) as { targetBranch?: unknown })
 		} catch {
 			return undefined
 		}
+	}
+
+	function targetBranchFromMetadata(parsed: { targetBranch?: unknown }): string | undefined {
+		return isTargetBranch(parsed.targetBranch) ? parsed.targetBranch : undefined
+	}
+
+	function isTargetBranch(value: unknown): value is string {
+		return typeof value === 'string' && value.length > 0
 	}
 
 	function bodyWithoutTrowelMetadata(body: string | null | undefined): string {
@@ -218,26 +242,39 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	async function updateSlice(_prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
 		await applyLabelPatch(sliceId, patch)
-		if (patch.blockedBy !== undefined) {
-			const current = await deps.gh.listBlockedBy(sliceId)
-			const currentByNumber = new Map(current.map((b) => [String(b.number), b.id]))
-			const target = new Set(patch.blockedBy)
-			for (const [number, internalId] of currentByNumber) {
-				if (!target.has(number)) {
-					await deps.gh.removeBlockedBy(sliceId, String(internalId))
-				}
-			}
-			for (const number of patch.blockedBy) {
-				if (currentByNumber.has(number)) continue
-				const blockerInternalId = await deps.gh.getIssueInternalId(number)
-				await deps.gh.addBlockedBy(sliceId, blockerInternalId)
-			}
+		if (patch.blockedBy !== undefined) await replaceBlockedBy(sliceId, patch.blockedBy)
+		await applyIssueStatePatch(sliceId, patch.state)
+	}
+
+	async function replaceBlockedBy(sliceId: string, blockedBy: string[]): Promise<void> {
+		const currentByNumber = await currentBlockersByNumber(sliceId)
+		const target = new Set(blockedBy)
+		await removeStaleBlockers(sliceId, currentByNumber, target)
+		await addNewBlockers(sliceId, blockedBy, currentByNumber)
+	}
+
+	async function currentBlockersByNumber(sliceId: string): Promise<Map<string, string | number>> {
+		const current = await deps.gh.listBlockedBy(sliceId)
+		return new Map(current.map((b) => [String(b.number), b.id]))
+	}
+
+	async function removeStaleBlockers(sliceId: string, currentByNumber: Map<string, string | number>, target: Set<string>): Promise<void> {
+		for (const [number, internalId] of currentByNumber) {
+			if (!target.has(number)) await deps.gh.removeBlockedBy(sliceId, String(internalId))
 		}
-		if (patch.state === 'CLOSED') {
-			await deps.gh.closeIssue(sliceId)
-		} else if (patch.state === 'OPEN') {
-			await deps.gh.reopenIssue(sliceId)
+	}
+
+	async function addNewBlockers(sliceId: string, blockedBy: string[], currentByNumber: Map<string, string | number>): Promise<void> {
+		for (const number of blockedBy) {
+			if (currentByNumber.has(number)) continue
+			const blockerInternalId = await deps.gh.getIssueInternalId(number)
+			await deps.gh.addBlockedBy(sliceId, blockerInternalId)
 		}
+	}
+
+	async function applyIssueStatePatch(sliceId: string, state: SlicePatch['state']): Promise<void> {
+		if (state === 'CLOSED') await deps.gh.closeIssue(sliceId)
+		else if (state === 'OPEN') await deps.gh.reopenIssue(sliceId)
 	}
 }
 

@@ -41,28 +41,15 @@ type SetupTestRepoOptions = {
  * resolves through `/private/var/...`. Tests must call `cleanup()` from `afterEach`.
  */
 export async function setupTestRepo(options: SetupTestRepoOptions = {}): Promise<TestRepo> {
-	const prefix = options.prefix ?? 'trowel-test-'
-	const initialCommit = options.initialCommit ?? 'readme'
-	const branches = options.branches ?? []
-
-	const raw = await mkdtemp(path.join(tmpdir(), prefix))
+	const normalized = normalizeSetupTestRepoOptions(options)
+	const raw = await mkdtemp(path.join(tmpdir(), normalized.prefix))
 	const root = await realpath(raw)
 
 	await exec('git', ['-C', root, 'init', '-q', '-b', 'main'])
 	await exec('git', ['-C', root, 'config', 'user.email', 't@t.t'])
 	await exec('git', ['-C', root, 'config', 'user.name', 'T'])
-
-	if (initialCommit === 'readme') {
-		await writeFile(path.join(root, 'README.md'), 'x\n')
-		await exec('git', ['-C', root, 'add', '.'])
-		await exec('git', ['-C', root, 'commit', '-q', '-m', 'init'])
-	} else {
-		await exec('git', ['-C', root, 'commit', '-q', '--allow-empty', '-m', 'init'])
-	}
-
-	for (const branch of branches) {
-		await exec('git', ['-C', root, 'branch', branch])
-	}
+	await createInitialCommit(root, normalized.initialCommit)
+	await createBranches(root, normalized.branches)
 
 	return {
 		root,
@@ -70,6 +57,34 @@ export async function setupTestRepo(options: SetupTestRepoOptions = {}): Promise
 			await rm(root, { recursive: true, force: true })
 		},
 	}
+}
+
+type NormalizedSetupTestRepoOptions = Required<SetupTestRepoOptions>
+
+function normalizeSetupTestRepoOptions(options: SetupTestRepoOptions): NormalizedSetupTestRepoOptions {
+	return {
+		prefix: valueOrDefault(options.prefix, 'trowel-test-'),
+		initialCommit: valueOrDefault(options.initialCommit, 'readme'),
+		branches: valueOrDefault(options.branches, []),
+	}
+}
+
+function valueOrDefault<T>(value: T | undefined, fallback: T): T {
+	return value === undefined ? fallback : value
+}
+
+async function createInitialCommit(root: string, initialCommit: SetupTestRepoOptions['initialCommit']): Promise<void> {
+	if (initialCommit === 'readme') {
+		await writeFile(path.join(root, 'README.md'), 'x\n')
+		await exec('git', ['-C', root, 'add', '.'])
+		await exec('git', ['-C', root, 'commit', '-q', '-m', 'init'])
+		return
+	}
+	await exec('git', ['-C', root, 'commit', '-q', '--allow-empty', '-m', 'init'])
+}
+
+async function createBranches(root: string, branches: string[]): Promise<void> {
+	for (const branch of branches) await exec('git', ['-C', root, 'branch', branch])
 }
 
 type SetupTestRepoWithBareOptions = {

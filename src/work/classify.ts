@@ -20,15 +20,24 @@ import type { ClassifiedSlice, ClassifySliceConfig, ResumeState } from '../stora
  *   review     prState === 'draft'
  *   implement  (catch-all)
  */
+type ResumeRule = {
+	state: ResumeState
+	matches: (slice: ClassifiedSlice, config: ClassifySliceConfig) => boolean
+}
+
+const RESUME_RULES: ResumeRule[] = [
+	{ state: 'done', matches: (slice) => slice.state === 'CLOSED' },
+	{ state: 'done', matches: (slice) => !slice.readyForAgent },
+	{ state: 'done', matches: (slice) => slice.prState === 'merged' },
+	{ state: 'done', matches: (slice) => slice.prState === 'ready' },
+	{ state: 'done', matches: (slice, config) => slice.prState === 'draft' && !config.review },
+	{ state: 'blocked', matches: (slice) => slice.bucket === 'blocked' },
+	{ state: 'address', matches: (slice) => slice.needsRevision },
+	{ state: 'review', matches: (slice) => slice.prState === 'draft' },
+]
+
 export function classify(slice: ClassifiedSlice, config: ClassifySliceConfig): ResumeState {
-	if (slice.state === 'CLOSED') return 'done'
-	if (!slice.readyForAgent) return 'done'
-	if (slice.prState === 'merged' || slice.prState === 'ready') return 'done'
-	if (slice.prState === 'draft' && !config.review) return 'done'
-	if (slice.bucket === 'blocked') return 'blocked'
-	if (slice.needsRevision) return 'address'
-	if (slice.prState === 'draft') return 'review'
-	return 'implement'
+	return RESUME_RULES.find((rule) => rule.matches(slice, config))?.state ?? 'implement'
 }
 
 if (import.meta.vitest) {

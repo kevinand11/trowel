@@ -33,14 +33,24 @@ export type FixPhaseDeps = {
 
 export type FixResume = 'done' | 'implement' | 'review' | 'address'
 
+type FixClassifyRule = {
+	state: FixResume
+	matches: (fix: FixRecord, config: { usePrs: boolean; review: boolean }) => boolean
+}
+
+const FIX_CLASSIFY_RULES: FixClassifyRule[] = [
+	{ state: 'done', matches: (fix) => fix.state === 'CLOSED' },
+	{ state: 'address', matches: (fix, config) => fixReviewEnabled(config) && fix.needsRevision },
+	{ state: 'review', matches: (fix, config) => fixReviewEnabled(config) && fix.prState === 'draft' && fix.readyForAgent },
+	{ state: 'implement', matches: (fix) => fix.readyForAgent },
+]
+
 export function classifyFix(fix: FixRecord, config: { usePrs: boolean; review: boolean }): FixResume {
-	if (fix.state === 'CLOSED') return 'done'
-	if (config.usePrs && config.review) {
-		if (fix.needsRevision) return 'address'
-		if (fix.prState === 'draft' && fix.readyForAgent) return 'review'
-	}
-	if (fix.readyForAgent) return 'implement'
-	return 'done'
+	return FIX_CLASSIFY_RULES.find((rule) => rule.matches(fix, config))?.state ?? 'done'
+}
+
+function fixReviewEnabled(config: { usePrs: boolean; review: boolean }): boolean {
+	return config.usePrs && config.review
 }
 
 function withLock<T>(deps: FixPhaseDeps, fn: () => Promise<T>): Promise<T> {
@@ -146,33 +156,51 @@ async function landFixAddress(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnO
 	return withLock(deps, () => landFixReviewOrAddress('address', deps, fix, verdict))
 }
 
-async function landFixReviewOrAddress(kind: 'review' | 'address', deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
+type FixReviewAddressKind = 'review' | 'address'
+type FixReviewAddressLandRule = {
+	matches: (kind: FixReviewAddressKind, verdict: TurnOut) => boolean
+	land: (kind: FixReviewAddressKind, deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut, tag: string) => Promise<FixOutcome>
+}
+
+const FIX_REVIEW_ADDRESS_LAND_RULES: FixReviewAddressLandRule[] = [
+	{ matches: (_kind, verdict) => verdict.verdict === 'partial', land: async () => 'partial' },
+	{ matches: (_kind, verdict) => verdict.verdict === 'ready', land: landFixReadyReviewOrAddress },
+	{ matches: (kind, verdict) => kind === 'review' && verdict.verdict === 'needs-revision', land: landFixReviewNeedsRevision },
+	{ matches: (kind, verdict) => kind === 'address' && verdict.verdict === 'no-work-needed', land: landFixAddressNoWorkNeeded },
+]
+
+async function landFixReviewOrAddress(kind: FixReviewAddressKind, deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
 	const tag = `[work fix-${fix.id}]`
-	if (verdict.verdict === 'partial') return 'partial'
-	if (verdict.verdict === 'ready') {
-		await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
-		if (kind === 'review') {
-			const prNumber = await deps.gh.findPrNumberByHead(fix.branch)
-			await deps.gh.markPrReady(prNumber)
-			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
-		} else {
-			await deps.storage.updateFix(fix.id, { needsRevision: false })
-			deps.log(`${tag} cleared needsRevision`)
-		}
-		return 'progress'
-	}
-	if (kind === 'review' && verdict.verdict === 'needs-revision') {
-		await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
-		await deps.storage.updateFix(fix.id, { needsRevision: true })
-		deps.log(`${tag} flagged needsRevision`)
-		return 'progress'
-	}
-	if (kind === 'address' && verdict.verdict === 'no-work-needed') {
-		await deps.storage.updateFix(fix.id, { needsRevision: false })
-		deps.log(`${tag} no-work-needed: cleared needsRevision`)
-		return 'no-work'
-	}
-	return 'partial'
+	const rule = FIX_REVIEW_ADDRESS_LAND_RULES.find((r) => r.matches(kind, verdict))
+	return rule?.land(kind, deps, fix, verdict, tag) ?? 'partial'
+}
+
+async function landFixReadyReviewOrAddress(kind: FixReviewAddressKind, deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut, tag: string): Promise<FixOutcome> {
+	await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
+	if (kind === 'review') return markFixPrReady(deps, fix, tag)
+	await deps.storage.updateFix(fix.id, { needsRevision: false })
+	deps.log(`${tag} cleared needsRevision`)
+	return 'progress'
+}
+
+async function markFixPrReady(deps: FixPhaseDeps, fix: FixRecord, tag: string): Promise<FixOutcome> {
+	const prNumber = await deps.gh.findPrNumberByHead(fix.branch)
+	await deps.gh.markPrReady(prNumber)
+	deps.log(`${tag} marked PR #${prNumber} ready for merge`)
+	return 'progress'
+}
+
+async function landFixReviewNeedsRevision(_kind: FixReviewAddressKind, deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut, tag: string): Promise<FixOutcome> {
+	await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
+	await deps.storage.updateFix(fix.id, { needsRevision: true })
+	deps.log(`${tag} flagged needsRevision`)
+	return 'progress'
+}
+
+async function landFixAddressNoWorkNeeded(_kind: FixReviewAddressKind, deps: FixPhaseDeps, fix: FixRecord, _verdict: TurnOut, tag: string): Promise<FixOutcome> {
+	await deps.storage.updateFix(fix.id, { needsRevision: false })
+	deps.log(`${tag} no-work-needed: cleared needsRevision`)
+	return 'no-work'
 }
 
 async function pushFixBranchIfNeeded(deps: FixPhaseDeps, fix: FixRecord, commits: number, tag: string): Promise<void> {

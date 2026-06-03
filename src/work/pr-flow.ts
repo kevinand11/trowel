@@ -45,15 +45,27 @@ export async function enrichSlicePrStates(gh: GhOps, prdId: string, slices: Slic
  * non-draft PR. For branches with no open PR, the map value is `null`.
  */
 async function getPrStates(gh: GhOps, branches: string[]): Promise<Map<string, SlicePrState>> {
-	const result = new Map<string, SlicePrState>()
-	for (const b of branches) result.set(b, null)
+	const result = initialPrStateMap(branches)
 	if (branches.length === 0) return result
 	const requested = new Set(branches)
-	const prs = await gh.listOpenPrs()
-	for (const pr of prs) {
-		if (requested.has(pr.headRefName)) result.set(pr.headRefName, pr.isDraft ? 'draft' : 'ready')
-	}
+	for (const pr of await gh.listOpenPrs()) applyOpenPrState(result, requested, pr)
 	return result
+}
+
+function initialPrStateMap(branches: string[]): Map<string, SlicePrState> {
+	const result = new Map<string, SlicePrState>()
+	for (const b of branches) result.set(b, null)
+	return result
+}
+
+type OpenPrForState = Awaited<ReturnType<GhOps['listOpenPrs']>>[number]
+
+function applyOpenPrState(result: Map<string, SlicePrState>, requested: Set<string>, pr: OpenPrForState): void {
+	if (requested.has(pr.headRefName)) result.set(pr.headRefName, prStateForOpenPr(pr))
+}
+
+function prStateForOpenPr(pr: OpenPrForState): SlicePrState {
+	return pr.isDraft ? 'draft' : 'ready'
 }
 
 /**
