@@ -55,11 +55,14 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 		}
 	}
 
-	const failures = await rt.preflight()
-	if (failures.length > 0) {
-		throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
+	const needsFreshGrill = resumedSpec === null
+	if (needsFreshGrill) {
+		const failures = await rt.preflight()
+		if (failures.length > 0) {
+			throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
+		}
+		if (discardExistingStartOut) await unlinkSwallowEnoent(startOutPath)
 	}
-	if (discardExistingStartOut) await unlinkSwallowEnoent(startOutPath)
 
 	const targetBranch = await rt.git.currentBranch()
 	const backTo = targetBranch
@@ -420,7 +423,7 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('valid existing spec + user confirms continue + preflight fails → start-out.json persists for another resume', async () => {
+		test('valid existing spec + user confirms continue + preflight would fail → skips preflight and materialises', async () => {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
@@ -431,19 +434,24 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeFakes({
 					startOut: null,
+					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createSliceIds: ['s1'],
 					currentBranch: 'main',
 					preflightFailures: ['working tree dirty'],
 				})
 				rt.projectRoot = tmp.projectRoot
+				let interactiveCalled = false
+				rt.runInteractive = async () => { interactiveCalled = true }
 				rt.readStartOut = async () => {
 					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
 				}
 				rt.confirm = async () => true // continue
 
-				await expect(runStart(rt)).rejects.toThrow(/preflight failed/i)
+				await runStart(rt)
 
-				expect(calls.createPrd).toEqual([])
-				expect(await fileExists(tmp.startOutPath)).toBe(true)
+				expect(interactiveCalled).toBe(false)
+				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run', targetBranch: 'main' }])
+				expect(await fileExists(tmp.startOutPath)).toBe(false)
 			} finally {
 				await tmp.cleanup()
 			}

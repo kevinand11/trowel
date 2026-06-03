@@ -1,4 +1,4 @@
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
@@ -20,45 +20,96 @@ export type FixRuntime = {
 	readFixOut: () => Promise<string | null>
 	preflight: () => Promise<string[]>
 	stdout: (s: string) => void
+	confirm: (msg: string) => Promise<boolean>
 }
 
 export async function runFix(rt: FixRuntime): Promise<void> {
 	const fixOutPath = path.join(rt.projectRoot, '.trowel', 'fix-out.json')
 
-	const failures = await rt.preflight()
-	if (failures.length > 0) {
-		throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
+	let resumedSpec: ReturnType<typeof parseFixOut> | null = null
+	let discardExistingFixOut = false
+	const existingRaw = await rt.readFixOut()
+	if (existingRaw !== null) {
+		let parsed: ReturnType<typeof parseFixOut> | null = null
+		let parseError: Error | null = null
+		try {
+			parsed = parseFixOut(existingRaw)
+		} catch (e) {
+			parseError = e as Error
+		}
+		if (parsed) {
+			printResumePreview(rt, parsed)
+			const cont = await rt.confirm('Continue with the fix above? (no → discard and start a fresh grill)')
+			if (cont) resumedSpec = parsed
+			else discardExistingFixOut = true
+		} else {
+			rt.stdout(`\nExisting .trowel/fix-out.json is invalid:\n${parseError!.message}\n\n`)
+			const wipe = await rt.confirm('Discard the invalid file and start a fresh grill? (no → abort)')
+			if (!wipe) throw parseError!
+			discardExistingFixOut = true
+		}
 	}
 
-	// Wipe any stale fix-out.json from a prior aborted run so the read after the grill can only see
-	// what the agent just wrote. Mirrors the start-flow's pre-grill discipline.
-	await unlinkSwallowEnoent(fixOutPath)
+	const needsFreshGrill = resumedSpec === null
+	if (needsFreshGrill) {
+		const failures = await rt.preflight()
+		if (failures.length > 0) {
+			throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
+		}
+		if (discardExistingFixOut) await unlinkSwallowEnoent(fixOutPath)
+	}
 
 	const targetBranch = await rt.git.currentBranch()
 	const backTo = targetBranch
+	let stashed = false
+	let materialised = false
 
 	try {
-		await rt.runInteractive({ promptText: rt.fixPromptText, cwd: rt.projectRoot })
+		let spec: ReturnType<typeof parseFixOut>
+		if (resumedSpec) {
+			spec = resumedSpec
+		} else {
+			await rt.runInteractive({ promptText: rt.fixPromptText, cwd: rt.projectRoot })
 
-		const raw = await rt.readFixOut()
-		if (raw === null) {
-			rt.stdout('Fix not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n')
-			throw new Error('fix-out.json missing — grill aborted')
+			const raw = await rt.readFixOut()
+			if (raw === null) {
+				rt.stdout('Fix not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n')
+				throw new Error('fix-out.json missing — grill aborted')
+			}
+			spec = parseFixOut(raw)
 		}
-		const spec = parseFixOut(raw)
+
+		if (!(await rt.git.isWorkingTreeClean())) {
+			await rt.git.stashPush({ includeUntracked: true })
+			stashed = true
+		}
 
 		const { id, branch } = await rt.storage.createFix({ title: spec.title, body: spec.body, targetBranch })
+		materialised = true
+		if (backTo && (await rt.git.currentBranch()) !== backTo) await rt.git.checkout(backTo)
+		if (stashed) {
+			await rt.git.stashPop()
+			stashed = false
+		}
 
 		rt.stdout(`\nCreated Fix ${id}\n`)
 		rt.stdout(`Branch: ${branch}\n`)
+		rt.stdout('\nReview `git status` for uncommitted files from the grill. Commit at your discretion.\n')
 		rt.stdout(`\nNext: trowel work fix ${id}\n`)
 
 		await unlinkSwallowEnoent(fixOutPath)
-	} finally {
-		if (backTo && (await rt.git.currentBranch()) !== backTo) {
-			if (await rt.git.branchExists(backTo)) await rt.git.checkout(backTo)
+	} catch (e) {
+		if (!materialised) {
+			if (backTo && (await rt.git.currentBranch()) !== backTo) await rt.git.checkout(backTo)
+			if (stashed) await rt.git.stashPop()
 		}
+		throw e
 	}
+}
+
+function printResumePreview(rt: FixRuntime, spec: ReturnType<typeof parseFixOut>): void {
+	rt.stdout('\nFound existing .trowel/fix-out.json from a prior run:\n')
+	rt.stdout(`\n# ${spec.title}\n\n${spec.body}\n`)
 }
 
 async function unlinkSwallowEnoent(p: string): Promise<void> {
@@ -126,6 +177,10 @@ export async function fix(opts: { storage?: string; harness?: string }): Promise
 			return failures
 		},
 		stdout: (s) => process.stdout.write(s),
+		confirm: async (msg) => {
+			const { confirm } = await import('@inquirer/prompts')
+			return confirm({ message: msg, default: false })
+		},
 	}
 
 	try {
@@ -138,69 +193,157 @@ export async function fix(opts: { storage?: string; harness?: string }): Promise
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { mkdtemp, mkdir, writeFile, readFile: fsReadFile, rm } = await import('node:fs/promises')
+	const { tmpdir } = await import('node:os')
+
+	async function setupTmp(): Promise<{ projectRoot: string; fixOutPath: string; cleanup: () => Promise<void> }> {
+		const projectRoot = await mkdtemp(path.join(tmpdir(), 'trowel-fix-cleanup-'))
+		await mkdir(path.join(projectRoot, '.trowel'), { recursive: true })
+		const fixOutPath = path.join(projectRoot, '.trowel', 'fix-out.json')
+		return { projectRoot, fixOutPath, cleanup: () => rm(projectRoot, { recursive: true, force: true }) }
+	}
+
+	async function fileExists(p: string): Promise<boolean> {
+		try {
+			await stat(p)
+			return true
+		} catch {
+			return false
+		}
+	}
+
+	function makeFixFakes(opts: { fixOut: string | null; currentBranch?: string; cleanTree?: boolean; preflightFailures?: string[] }) {
+		const created: Array<{ title: string; body: string; targetBranch?: string }> = []
+		const calls = { git: [] as string[], stdout: [] as string[], created }
+		let current = opts.currentBranch ?? 'main'
+		let clean = opts.cleanTree ?? true
+		const storage: Storage = {
+			createPrd: async () => ({ id: 'p', branch: 'p' }),
+			findPrd: async () => null,
+			listPrds: async () => [],
+			closePrd: async () => {},
+			createSlice: async () => { throw new Error('not used') },
+			findSlices: async () => [],
+			findSlice: async () => null,
+			updateSlice: async () => {},
+			createFix: async (spec) => {
+				created.push(spec)
+				current = 'fix/5-tabs'
+				return { id: '5', branch: 'fix/5-tabs' }
+			},
+			findFix: async () => null,
+			listFixes: async () => [],
+			updateFix: async () => {},
+			closeFix: async () => {},
+		}
+		const git: GitOps = {
+			currentBranch: async () => current,
+			branchExists: async () => true,
+			checkout: async (b) => { calls.git.push(`checkout(${b})`); current = b },
+			baseBranch: async () => 'main',
+			isWorkingTreeClean: async () => clean,
+			stashPush: async () => { calls.git.push('stashPush'); clean = true },
+			stashPop: async () => { calls.git.push('stashPop') },
+			fetch: async () => {},
+			push: async () => {},
+			mergeNoFf: async () => {},
+			mergeAbort: async () => {},
+			deleteRemoteBranch: async () => {},
+			createRemoteBranch: async () => {},
+			createLocalBranch: async () => {},
+			pushSetUpstream: async () => {},
+			isMerged: async () => false,
+			deleteBranch: async () => {},
+			worktreeAdd: async () => {},
+			worktreeRemove: async () => {},
+			worktreeList: async () => [],
+			restoreAll: async () => {},
+			cleanUntracked: async () => {},
+			commitsAhead: async () => 0,
+			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
+		}
+		const rt: FixRuntime = {
+			projectRoot: '/fake/proj',
+			storage,
+			git,
+			fixPromptText: '<prompt>',
+			runInteractive: async () => {},
+			readFixOut: async () => opts.fixOut,
+			preflight: async () => opts.preflightFailures ?? [],
+			stdout: (s) => calls.stdout.push(s),
+			confirm: async () => false,
+		}
+		return { rt, calls, getCurrent: () => current }
+	}
 
 	describe('runFix', () => {
 		test('passes the invocation branch as the Fix target branch', async () => {
-			const created: Array<{ title: string; body: string; targetBranch?: string }> = []
-			const storage: Storage = {
-				createPrd: async () => ({ id: 'p', branch: 'p' }),
-				findPrd: async () => null,
-				listPrds: async () => [],
-				closePrd: async () => {},
-				createSlice: async () => { throw new Error('not used') },
-				findSlices: async () => [],
-				findSlice: async () => null,
-				updateSlice: async () => {},
-				createFix: async (spec) => {
-					created.push(spec)
-					return { id: '5', branch: 'fix/5-tabs' }
-				},
-				findFix: async () => null,
-				listFixes: async () => [],
-				updateFix: async () => {},
-				closeFix: async () => {},
-			}
-			let current = 'release/1.2'
-			const git: GitOps = {
-				currentBranch: async () => current,
-				branchExists: async () => true,
-				checkout: async (b) => { current = b },
-				baseBranch: async () => 'main',
-				isWorkingTreeClean: async () => true,
-				stashPush: async () => {},
-				stashPop: async () => {},
-				fetch: async () => {},
-				push: async () => {},
-				mergeNoFf: async () => {},
-				mergeAbort: async () => {},
-				deleteRemoteBranch: async () => {},
-				createRemoteBranch: async () => {},
-				createLocalBranch: async () => {},
-				pushSetUpstream: async () => {},
-				isMerged: async () => false,
-				deleteBranch: async () => {},
-				worktreeAdd: async () => {},
-				worktreeRemove: async () => {},
-				worktreeList: async () => [],
-				restoreAll: async () => {},
-				cleanUntracked: async () => {},
-				commitsAhead: async () => 0,
-				detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-			}
-			const rt: FixRuntime = {
-				projectRoot: '/fake/proj',
-				storage,
-				git,
-				fixPromptText: '<prompt>',
-				runInteractive: async () => {},
-				readFixOut: async () => JSON.stringify({ title: 'Fix Tabs', body: 'body' }),
-				preflight: async () => [],
-				stdout: () => {},
-			}
+			const { rt, calls } = makeFixFakes({
+				fixOut: JSON.stringify({ title: 'Fix Tabs', body: 'body' }),
+				currentBranch: 'release/1.2',
+			})
 
 			await runFix(rt)
 
-			expect(created).toEqual([{ title: 'Fix Tabs', body: 'body', targetBranch: 'release/1.2' }])
+			expect(calls.created).toEqual([{ title: 'Fix Tabs', body: 'body', targetBranch: 'release/1.2' }])
+		})
+
+		test('valid existing fix-out + user confirms continue + preflight would fail → skips preflight and materialises', async () => {
+			const tmp = await setupTmp()
+			try {
+				await writeFile(tmp.fixOutPath, JSON.stringify({ title: 'Resume Fix', body: 'body from prior grill' }))
+				const { rt, calls } = makeFixFakes({ fixOut: null, preflightFailures: ['working tree dirty'] })
+				rt.projectRoot = tmp.projectRoot
+				let interactiveCalled = false
+				rt.runInteractive = async () => { interactiveCalled = true }
+				rt.readFixOut = async () => {
+					try { return await fsReadFile(tmp.fixOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => true
+
+				await runFix(rt)
+
+				expect(interactiveCalled).toBe(false)
+				expect(calls.created).toEqual([{ title: 'Resume Fix', body: 'body from prior grill', targetBranch: 'main' }])
+				expect(await fileExists(tmp.fixOutPath)).toBe(false)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('valid existing fix-out + user starts fresh + preflight fails → stale fix-out.json persists', async () => {
+			const tmp = await setupTmp()
+			try {
+				await writeFile(tmp.fixOutPath, JSON.stringify({ title: 'Stale Fix', body: 'old' }))
+				const { rt, calls } = makeFixFakes({ fixOut: null, preflightFailures: ['working tree dirty'] })
+				rt.projectRoot = tmp.projectRoot
+				let interactiveCalled = false
+				rt.runInteractive = async () => { interactiveCalled = true }
+				rt.readFixOut = async () => {
+					try { return await fsReadFile(tmp.fixOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => false
+
+				await expect(runFix(rt)).rejects.toThrow(/preflight failed/i)
+
+				expect(interactiveCalled).toBe(false)
+				expect(calls.created).toEqual([])
+				expect(await fileExists(tmp.fixOutPath)).toBe(true)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('dirty tree after grill is stashed while creating the Fix branch, then restored on the invocation branch', async () => {
+			const { rt, calls, getCurrent } = makeFixFakes({
+				fixOut: JSON.stringify({ title: 'Fix Tabs', body: 'body' }),
+				cleanTree: false,
+			})
+
+			await runFix(rt)
+
+			expect(calls.git).toEqual(['stashPush', 'checkout(main)', 'stashPop'])
+			expect(getCurrent()).toBe('main')
 		})
 	})
 }

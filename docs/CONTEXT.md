@@ -161,7 +161,7 @@ Settled decisions that cross every part of the codebase. Don't reopen without a 
 - **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
 - **Doc-change branch.** Edits to `CONTEXT.md` and `docs/adr/` land on the **Integration branch**, not on `main`.
 - **Failure recovery.** `trowel work <id>` is idempotent — re-run after any abort. `trowel start` is one-shot; aborted runs leave an orphan PRD closeable via `trowel close <id>`. No atomic rollback.
-- **Working-tree precondition.** Strict clean tree at command start; `try/finally` restores the captured **BACK_TO branch** on exit.
+- **Working-tree precondition.** `trowel start` and `trowel fix` require a clean working tree only before launching a fresh grill session. Resuming from an existing `.trowel/start-out.json` or `.trowel/fix-out.json` skips that clean-tree preflight because grill edits are expected; materialisation uses stash/pop around branch creation as needed. Commands that switch branches still capture and restore the **BACK_TO branch** where that command's lifecycle requires it.
 - **Style.** Tabs, single quotes, kebab-case filenames, `@k11/configs` for tsconfig/eslint/prettier. Mirrors equipped's conventions.
 - **No eager exports.** Never add `export` to a symbol (function, type, const) unless there is already a consumer outside its defining file. If the only callers are inside the same module — including `import.meta.vitest` blocks — keep it `function`/`type`/`const`, not `export function`/`export type`/`export const`. The rule applies symmetrically to deletion: when the last external caller goes away, the `export` keyword goes away with it. Visibility is a property of the call graph, not a default.
 
