@@ -1,3 +1,4 @@
+import { DEFAULT_GH_OPS } from './gh-ops-defaults.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 
 /**
@@ -15,41 +16,20 @@ export type RecordedCall = [keyof GhOps, ...unknown[]]
 
 export function recordingGhOps(overrides: Partial<GhOps> = {}): { gh: GhOps; calls: RecordedCall[] } {
 	const calls: RecordedCall[] = []
-	const wrap = <K extends keyof GhOps>(name: K, fallback: GhOps[K]): GhOps[K] => {
-		const impl = (overrides[name] ?? fallback) as GhOps[K]
-		return (async (...args: unknown[]) => {
-			calls.push([name, ...args])
-			return (impl as (...a: unknown[]) => unknown)(...args)
-		}) as GhOps[K]
-	}
-
-	const gh: GhOps = {
-		detectVersion: wrap('detectVersion', async () => ({ installed: true, version: '0.0.0' })),
-		isAuthenticated: wrap('isAuthenticated', async () => true),
-		createIssue: wrap('createIssue', async () => 'https://github.com/o/r/issues/0\n'),
-		viewIssue: wrap('viewIssue', async () => null),
-		getIssueState: wrap('getIssueState', async () => null),
-		listIssues: wrap('listIssues', async () => []),
-		closeIssue: wrap('closeIssue', async () => undefined),
-		reopenIssue: wrap('reopenIssue', async () => undefined),
-		editIssueLabels: wrap('editIssueLabels', async () => undefined),
-		listSubIssues: wrap('listSubIssues', async () => []),
-		getIssueInternalId: wrap('getIssueInternalId', async () => '0'),
-		addSubIssue: wrap('addSubIssue', async () => undefined),
-		listBlockedBy: wrap('listBlockedBy', async () => []),
-		addBlockedBy: wrap('addBlockedBy', async () => undefined),
-		removeBlockedBy: wrap('removeBlockedBy', async () => undefined),
-		createDraftPr: wrap('createDraftPr', async () => undefined),
-		markPrReady: wrap('markPrReady', async () => undefined),
-		findPrNumberByHead: wrap('findPrNumberByHead', async () => 0),
-		listOpenPrs: wrap('listOpenPrs', async () => []),
-		findAnyPrByHead: wrap('findAnyPrByHead', async () => null),
-		fetchPrLineComments: wrap('fetchPrLineComments', async () => []),
-		fetchPrReviews: wrap('fetchPrReviews', async () => []),
-		fetchPrThread: wrap('fetchPrThread', async () => []),
-	}
-
+	const gh = Object.fromEntries(ghOpNames().map((name) => [name, recordedGhMethod(name, calls, overrides)])) as GhOps
 	return { gh, calls }
+}
+
+function ghOpNames(): Array<keyof GhOps> {
+	return Object.keys(DEFAULT_GH_OPS) as Array<keyof GhOps>
+}
+
+function recordedGhMethod<K extends keyof GhOps>(name: K, calls: RecordedCall[], overrides: Partial<GhOps>): GhOps[K] {
+	const impl = (overrides[name] ?? DEFAULT_GH_OPS[name]) as GhOps[K]
+	return (async (...args: unknown[]) => {
+		calls.push([name, ...args])
+		return (impl as (...a: unknown[]) => unknown)(...args)
+	}) as GhOps[K]
 }
 
 if (import.meta.vitest) {
