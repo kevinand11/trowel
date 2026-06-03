@@ -424,6 +424,30 @@ if (import.meta.vitest) {
 	})
 
 	describe('processSlice', () => {
+		test('review ready stops after markPrReady makes the open PR non-draft', async () => {
+			const raw = makeSlice({ id: 's1', prState: null })
+			const initial = makeSlice({ id: 's1', prState: 'draft', bucket: 'in-flight' })
+			const storage = makeStorage({ slices: [raw] })
+			const roles: Role[] = []
+			const { gh } = recordingGhOps({
+				findPrNumberByHead: async () => 130,
+				markPrReady: async () => {},
+				listOpenPrs: async () => [{ number: 130, headRefName: 'prd-p1/slice-s1-a', isDraft: false }],
+			})
+
+			const outcome = await processSlice('p1', initial, makeDeps(storage, {
+				spawnTurn: async ({ role }) => {
+					roles.push(role)
+					return { verdict: 'ready', commits: 0 }
+				},
+				gh,
+				config: { usePrs: true, review: true, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null, mergeNoVerify: false },
+			}))
+
+			expect(outcome).toBe('done')
+			expect(roles).toEqual(['review'])
+		})
+
 		test('progress outcome refetches slice, continues inner step-cap loop, sees updated classification', async () => {
 			// On usePrs=true, landImplement returns 'progress' after opening the draft PR. The gh stub
 			// mutates the slice to CLOSED on that pr-create call so the loop's refetch classifies as

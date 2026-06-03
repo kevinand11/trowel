@@ -43,6 +43,7 @@ export type BlockerEntry = { id: number; number: number }
 export type PrSummary = {
 	number: number
 	headRefName: string
+	isDraft: boolean
 	url?: string
 }
 
@@ -217,7 +218,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return { number: parsed.number, state }
 		},
 		async listOpenPrs(opts) {
-			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,url']
+			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url']
 			if (opts?.base !== undefined) {
 				args.splice(2, 0, '--base', opts.base)
 			}
@@ -426,16 +427,16 @@ if (import.meta.vitest) {
 		})
 
 		test('listOpenPrs without base lists all open PRs', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a' }])) }])
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a', isDraft: false }])) }])
 			const out = await createGh(runner).listOpenPrs()
-			expect(out).toEqual([{ number: 1, headRefName: 'a' }])
-			expect(calls[0]).toEqual(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,url'])
+			expect(out).toEqual([{ number: 1, headRefName: 'a', isDraft: false }])
+			expect(calls[0]).toEqual(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url'])
 		})
 
 		test('listOpenPrs with base filters by --base', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('[]') }])
 			await createGh(runner).listOpenPrs({ base: 'feature' })
-			expect(calls[0]).toEqual(['pr', 'list', '--base', 'feature', '--state', 'open', '--json', 'number,headRefName,url'])
+			expect(calls[0]).toEqual(['pr', 'list', '--base', 'feature', '--state', 'open', '--json', 'number,headRefName,isDraft,url'])
 		})
 	})
 

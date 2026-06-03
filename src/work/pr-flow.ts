@@ -41,18 +41,17 @@ export async function enrichSlicePrStates(gh: GhOps, prdId: string, slices: Slic
  * regardless of branch count — preserves the call-efficiency the issue storage previously had
  * inline in `findSlices`.
  *
- * Returns `'draft'` for branches with an open PR (the only case the issue storage detected
- * historically). `'ready'` and `'merged'` will need their own queries; we'll add them when the
- * loop needs to distinguish them. For branches with no open PR, the map value is `null`.
+ * Returns `'draft'` for branches with an open draft PR and `'ready'` for branches with an open
+ * non-draft PR. For branches with no open PR, the map value is `null`.
  */
 async function getPrStates(gh: GhOps, branches: string[]): Promise<Map<string, SlicePrState>> {
 	const result = new Map<string, SlicePrState>()
 	for (const b of branches) result.set(b, null)
 	if (branches.length === 0) return result
+	const requested = new Set(branches)
 	const prs = await gh.listOpenPrs()
-	const openBranches = new Set(prs.map((p) => p.headRefName))
-	for (const b of branches) {
-		if (openBranches.has(b)) result.set(b, 'draft')
+	for (const pr of prs) {
+		if (requested.has(pr.headRefName)) result.set(pr.headRefName, pr.isDraft ? 'draft' : 'ready')
 	}
 	return result
 }
@@ -108,14 +107,23 @@ if (import.meta.vitest) {
 			...overrides,
 		})
 
-		test('populates prState=draft for slices whose slice branch has an open PR; leaves others null', async () => {
+		test('populates prState=draft for slices whose slice branch has an open draft PR; leaves others null', async () => {
 			const { gh } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-42/slice-57-implement-parser' }],
+				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-42/slice-57-implement-parser', isDraft: true }],
 			})
 			const slices = [makeSlice({ id: '57', title: 'Implement Parser' }), makeSlice({ id: '58', title: 'Wire CLI' })]
 			const out = await enrichSlicePrStates(gh, '42', slices)
 			expect(out[0]!.prState).toBe('draft')
 			expect(out[1]!.prState).toBeNull()
+		})
+
+		test('populates prState=ready for slices whose slice branch has an open non-draft PR', async () => {
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-42/slice-57-implement-parser', isDraft: false }],
+			})
+			const slices = [makeSlice({ id: '57', title: 'Implement Parser' })]
+			const out = await enrichSlicePrStates(gh, '42', slices)
+			expect(out[0]!.prState).toBe('ready')
 		})
 
 		test('skips the gh call when no OPEN slices exist (CLOSED slices alone → no enrichment)', async () => {
@@ -135,13 +143,17 @@ if (import.meta.vitest) {
 	})
 
 	describe('getPrStates', () => {
-		test('batches one listOpenPrs call and maps each branch to draft/null', async () => {
+		test('batches one listOpenPrs call and maps each branch to draft/ready/null', async () => {
 			const { gh, calls } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-142/slice-145-session-middleware' }],
+				listOpenPrs: async () => [
+					{ number: 1, headRefName: 'prd-142/slice-145-session-middleware', isDraft: true },
+					{ number: 2, headRefName: 'prd-142/slice-146-other', isDraft: false },
+				],
 			})
-			const out = await getPrStates(gh, ['prd-142/slice-145-session-middleware', 'prd-142/slice-146-other'])
+			const out = await getPrStates(gh, ['prd-142/slice-145-session-middleware', 'prd-142/slice-146-other', 'prd-142/slice-147-missing'])
 			expect(out.get('prd-142/slice-145-session-middleware')).toBe('draft')
-			expect(out.get('prd-142/slice-146-other')).toBeNull()
+			expect(out.get('prd-142/slice-146-other')).toBe('ready')
+			expect(out.get('prd-142/slice-147-missing')).toBeNull()
 			expect(calls.filter((c) => c[0] === 'listOpenPrs')).toHaveLength(1)
 		})
 
