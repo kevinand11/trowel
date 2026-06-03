@@ -1,14 +1,10 @@
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
 
-import { readOptionalFile, resolveGrillSpec } from './grill-flow.ts'
-import { buildStorage, exitOnCommandError, loadCommandBase } from './runtime.ts'
-import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
-import { loadPrompt } from '../prompts/load.ts'
-import type { StorageKind } from '../storages/registry.ts'
+import { resolveGrillSpec } from './grill-flow.ts'
+import { buildGrillCommandRuntime, exitOnCommandError } from './runtime.ts'
 import type { Storage } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import { tryExec } from '../utils/shell.ts'
 import { parseFixOut } from '../work/fix-out.ts'
 
 type FixRuntime = {
@@ -65,46 +61,18 @@ function printResumePreview(rt: FixRuntime, spec: ReturnType<typeof parseFixOut>
 }
 
 export async function fix(opts: { storage?: string; harness?: string }): Promise<void> {
-	const base = await loadCommandBase('fix')
-	const { config, projectRoot, git } = base
-	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage
-	const harnessKind = (opts.harness as HarnessKind | undefined) ?? config.agent.harness
-	const harness = getHarness(harnessKind)
-	const storage = buildStorage(base, storageKind)
-	const fixOutPath = path.resolve(projectRoot, '.trowel', 'fix-out.json')
-
-	const rt: FixRuntime = {
-		projectRoot,
-		storage,
-		git,
-		fixPromptText: await loadPrompt('fix'),
-		runInteractive: async ({ promptText, cwd }) => {
-			const { waitForExit } = await harness.spawnInteractive({
-				model: config.agent.model,
-				systemPrompt: promptText,
-				cwd,
-			})
-			const code = await waitForExit
-			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
-		},
-		readFixOut: () => readOptionalFile(fixOutPath),
-		preflight: async () => {
-			const failures: string[] = []
-			if (!(await git.isWorkingTreeClean())) failures.push('working tree is not clean — commit or stash before running trowel fix')
-			const harnessV = await harness.detectVersion()
-			if (!harnessV.installed) failures.push(`${harness.kind} CLI not found on PATH (required for trowel fix with agent.harness=${harness.kind})`)
-			const ghR = await tryExec('gh', ['auth', 'status'])
-			if (!ghR.ok) failures.push('gh not authenticated or not on PATH (run `gh auth login`)')
-			return failures
-		},
-		stdout: (s) => process.stdout.write(s),
-		confirm: async (msg) => {
-			const { confirm } = await import('@inquirer/prompts')
-			return confirm({ message: msg, default: false })
-		},
-	}
-
-	await exitOnCommandError('fix', () => runFix(rt))
+	const rtBase = await buildGrillCommandRuntime('fix', opts, 'fix-out.json')
+	await exitOnCommandError('fix', () => runFix({
+		projectRoot: rtBase.projectRoot,
+		storage: rtBase.storage,
+		git: rtBase.git,
+		fixPromptText: rtBase.promptText,
+		runInteractive: rtBase.runInteractive,
+		readFixOut: rtBase.readOut,
+		preflight: rtBase.preflight,
+		stdout: rtBase.stdout,
+		confirm: rtBase.confirm,
+	}))
 }
 
 if (import.meta.vitest) {

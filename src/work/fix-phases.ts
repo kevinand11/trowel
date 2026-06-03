@@ -205,52 +205,18 @@ export function callFixLand(role: Role, deps: FixPhaseDeps, fix: FixRecord, verd
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
+	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function fakeStorage(): Storage {
-		return {
-			createPrd: async () => ({ id: 'p', branch: 'p' }),
-			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async () => {},
-			createSlice: async () => { throw new Error('not used') },
-			findSlices: async () => [],
-			findSlice: async () => null,
-			updateSlice: async () => {},
-			createFix: async () => ({ id: 'f', branch: 'f' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
-		}
+		return fakeSliceStorage([], null, { findPrd: async () => null })
 	}
 
 	function fakeGit(): GitOps {
-		return {
+		return noopGitOps({
 			currentBranch: async () => 'work',
 			baseBranch: async () => { throw new Error('baseBranch should not be used when Fix has targetBranch') },
-			branchExists: async () => true,
-			isMerged: async () => false,
-			checkout: async () => {},
-			deleteBranch: async () => {},
-			deleteRemoteBranch: async () => {},
-			fetch: async () => {},
-			push: async () => {},
-			mergeNoFf: async () => {},
-			mergeAbort: async () => {},
-			createRemoteBranch: async () => {},
-			createLocalBranch: async () => {},
-			pushSetUpstream: async () => {},
-			worktreeAdd: async () => {},
-			worktreeRemove: async () => {},
-			worktreeList: async () => [],
-			restoreAll: async () => {},
-			cleanUntracked: async () => {},
-			isWorkingTreeClean: async () => true,
-			stashPush: async () => {},
-			stashPop: async () => {},
-			commitsAhead: async () => 0,
-			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-		}
+		})
 	}
 
 	describe('landFixImplement', () => {

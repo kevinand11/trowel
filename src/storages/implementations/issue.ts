@@ -103,14 +103,21 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		}
 	}
 
+	async function listIssueSummaries(label: string, opts: { state: 'open' | 'closed' | 'all' }, branchFor: (id: string, title: string) => string): Promise<Array<{ id: string; title: string; branch: string; createdAt: string }>> {
+		const issues = await deps.gh.listIssues({ label, state: opts.state })
+		return issues.map((issue) => {
+			const id = String(issue.number)
+			return {
+				id,
+				title: issue.title,
+				branch: branchFor(id, issue.title),
+				createdAt: issue.createdAt,
+			}
+		})
+	}
+
 	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
-		const issues = await deps.gh.listIssues({ label: deps.labels.prd, state: opts.state })
-		return issues.map((issue) => ({
-			id: String(issue.number),
-			title: issue.title,
-			branch: `${issue.number}-${slugify(issue.title)}`,
-			createdAt: issue.createdAt,
-		}))
+		return listIssueSummaries(deps.labels.prd, opts, (id, title) => `${id}-${slugify(title)}`)
 	}
 
 	async function findSlice(sliceId: string): Promise<{ prdId: string; slice: Slice } | null> {
@@ -180,13 +187,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]> {
-		const issues = await deps.gh.listIssues({ label: deps.labels.fix, state: opts.state })
-		return issues.map((issue) => ({
-			id: String(issue.number),
-			title: issue.title,
-			branch: fixBranchFor(String(issue.number), issue.title),
-			createdAt: issue.createdAt,
-		}))
+		return listIssueSummaries(deps.labels.fix, opts, fixBranchFor)
 	}
 
 	async function updateFix(id: string, patch: FixPatch): Promise<void> {
@@ -243,6 +244,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 	const { GhOps } = {} as unknown as { GhOps: import('../../utils/gh-ops.ts').GhOps }
 	void GhOps
 
@@ -267,7 +269,7 @@ if (import.meta.vitest) {
 			labels: { prd: 'prd', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
-			git: {
+			git: noopGitOps({
 				fetch: async (b) => { gitCalls.push(['fetch', b]) },
 				push: async (b) => { gitCalls.push(['push', b]) },
 				checkout: async (b) => { gitCalls.push(['checkout', b]) },
@@ -279,20 +281,7 @@ if (import.meta.vitest) {
 				currentBranch: async () => '',
 				baseBranch: async () => 'develop',
 				branchExists: async () => false,
-				isMerged: async () => false,
-				deleteBranch: async () => {},
-				worktreeAdd: async () => {},
-				worktreeRemove: async () => {},
-				worktreeList: async () => [],
-				restoreAll: async () => {},
-				cleanUntracked: async () => {},
-				isWorkingTreeClean: async () => true,
-				stashPush: async () => {},
-				stashPop: async () => {},
-				mergeAbort: async () => {},
-				commitsAhead: async () => 0,
-				detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-			},
+			}),
 			log: (m) => { logCalls.push(m) },
 		}
 		return { deps, calls, gitCalls, logCalls }
@@ -318,14 +307,34 @@ if (import.meta.vitest) {
 			return { storage, git: deps.git!, gh: deps.gh, log: deps.log!, mergeNoVerify: false }
 		}
 
+		function makeIssueFixture(overrides: GhOverrides = {}): ReturnType<typeof makeDeps> & { storage: Storage; phase: PhaseDeps } {
+			const fixture = makeDeps(overrides)
+			const storage = createIssueStorage(fixture.deps)
+			return { ...fixture, storage, phase: phaseDeps(fixture.deps, storage) }
+		}
+
+		function phaseContext(config = { usePrs: true, review: false, perSliceBranches: true }) {
+			return { prdId: '142', integrationBranch: 'prds-issue-142', config }
+		}
+
+		function reviewContext() {
+			return phaseContext({ usePrs: true, review: true, perSliceBranches: true })
+		}
+
+		function expectClosedWithoutDraftPr(calls: Array<[string, ...unknown[]]>): void {
+			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
+			expect(calls).toContainEqual(['closeIssue', '145'])
+		}
+
+		function expectNoPhaseSideEffects(outcome: string, gitCalls: GitCall[], calls: Array<[string, ...unknown[]]>): void {
+			expect(outcome).toBe('partial')
+			expect(gitCalls).toEqual([])
+			expect(calls).toEqual([])
+		}
+
 		test('prepareImplement: creates slice branch via git, returns {branch, turnIn}', async () => {
-			const { deps, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const prep = await prepareImplement(phaseDeps(deps, storage), makeOpenSlice(), {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: false, perSliceBranches: true },
-			})
+			const { phase, gitCalls } = makeIssueFixture()
+			const prep = await prepareImplement(phase, makeOpenSlice(), phaseContext())
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
 			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
 			expect(gitCalls).toContainEqual(['createRemoteBranch', 'prd-142/slice-145-session-middleware', 'prds-issue-142'])
@@ -333,14 +342,8 @@ if (import.meta.vitest) {
 		})
 
 		test('landImplement + usePrs=true + ready: pushes slice branch and opens a draft PR; returns progress', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landImplement(
-				phaseDeps(deps, storage),
-				makeOpenSlice(),
-				{ verdict: 'ready', commits: 1 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext())
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
 			expect(calls).toContainEqual([
@@ -355,14 +358,8 @@ if (import.meta.vitest) {
 		})
 
 		test('landImplement + usePrs=false + ready: pushes slice, checks out integration, merges --no-ff, pushes integration, deletes slice branch, closes sub-issue; returns done', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landImplement(
-				phaseDeps(deps, storage),
-				makeOpenSlice(),
-				{ verdict: 'ready', commits: 1 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: true }))
 			expect(outcome).toBe('done')
 			expect(gitCalls).toEqual([
 				['push', 'prd-142/slice-145-session-middleware'],
@@ -371,72 +368,40 @@ if (import.meta.vitest) {
 				['push', 'prds-issue-142'],
 				['deleteRemoteBranch', 'prd-142/slice-145-session-middleware'],
 			])
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
-			expect(calls).toContainEqual(['closeIssue', '145'])
+			expectClosedWithoutDraftPr(calls)
 		})
 
 		test('landImplement + perSliceBranches:false + ready: pushes integration directly, closes sub-issue via updateSlice; returns done', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landImplement(
-				phaseDeps(deps, storage),
-				makeOpenSlice(),
-				{ verdict: 'ready', commits: 1 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: false, review: false, perSliceBranches: false } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
 			expect(outcome).toBe('done')
 			expect(gitCalls).toEqual([['push', 'prds-issue-142']])
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
-			expect(calls).toContainEqual(['closeIssue', '145'])
+			expectClosedWithoutDraftPr(calls)
 		})
 
 		test('prepareImplement + perSliceBranches:false: runs on the integration branch; no git ops', async () => {
-			const { deps, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const prep = await prepareImplement(phaseDeps(deps, storage), makeOpenSlice(), {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: false, review: false, perSliceBranches: false },
-			})
+			const { phase, gitCalls } = makeIssueFixture()
+			const prep = await prepareImplement(phase, makeOpenSlice(), phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
 			expect(prep.branch).toBe('prds-issue-142')
 			expect(gitCalls).toEqual([])
 		})
 
 		test('landImplement + no-work-needed: clears readyForAgent via gh label edit, returns no-work', async () => {
-			const { deps, calls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landImplement(
-				phaseDeps(deps, storage),
-				makeOpenSlice(),
-				{ verdict: 'no-work-needed', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false, perSliceBranches: true } },
-			)
+			const { phase, calls } = makeIssueFixture()
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'no-work-needed', commits: 0 }, phaseContext())
 			expect(outcome).toBe('no-work')
 			expect(calls).toContainEqual(['editIssueLabels', '145', { remove: ['ready-for-agent'] }])
 		})
 
 		test('landImplement + partial: returns partial, no side effects', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landImplement(
-				phaseDeps(deps, storage),
-				makeOpenSlice(),
-				{ verdict: 'partial', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: false, perSliceBranches: true } },
-			)
-			expect(outcome).toBe('partial')
-			expect(gitCalls).toEqual([])
-			expect(calls).toEqual([])
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'partial', commits: 0 }, phaseContext())
+			expectNoPhaseSideEffects(outcome, gitCalls, calls)
 		})
 
 		test('prepareReview: looks up PR number for the slice branch, builds turnIn with {pr, slice}', async () => {
-			const { deps, calls } = makeDeps({ findPrNumberByHead: async () => 168 })
-			const storage = createIssueStorage(deps)
-			const prep = await prepareReview(phaseDeps(deps, storage), makeOpenSlice(), {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: true, perSliceBranches: true },
-			})
+			const { phase, calls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
+			const prep = await prepareReview(phase, makeOpenSlice(), reviewContext())
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
 			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
 			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
@@ -444,42 +409,24 @@ if (import.meta.vitest) {
 		})
 
 		test('landReview + ready (commits > 0): pushes slice branch, then runs markPrReady; returns progress', async () => {
-			const { deps, calls, gitCalls } = makeDeps({ findPrNumberByHead: async () => 168 })
-			const storage = createIssueStorage(deps)
-			const outcome = await landReview(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft' }),
-				{ verdict: 'ready', commits: 2 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'ready', commits: 2 }, reviewContext())
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
 			expect(calls).toContainEqual(['markPrReady', 168])
 		})
 
 		test('landReview + ready (commits === 0): skips push, runs markPrReady', async () => {
-			const { deps, calls, gitCalls } = makeDeps({ findPrNumberByHead: async () => 168 })
-			const storage = createIssueStorage(deps)
-			const outcome = await landReview(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft' }),
-				{ verdict: 'ready', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'ready', commits: 0 }, reviewContext())
 			expect(outcome).toBe('progress')
 			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
 			expect(calls).toContainEqual(['markPrReady', 168])
 		})
 
 		test('landReview + needs-revision: flips slice.needsRevision via gh label edit; does NOT mark PR ready', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landReview(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft' }),
-				{ verdict: 'needs-revision', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'needs-revision', commits: 0 }, reviewContext())
 			expect(outcome).toBe('progress')
 			expect(calls).toContainEqual(['editIssueLabels', '145', { add: ['needs-revision'] }])
 			expect(calls.find((c) => c[0] === 'markPrReady')).toBeUndefined()
@@ -487,72 +434,39 @@ if (import.meta.vitest) {
 		})
 
 		test('landReview + partial: returns partial, no side effects', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landReview(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft' }),
-				{ verdict: 'partial', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
-			expect(outcome).toBe('partial')
-			expect(gitCalls).toEqual([])
-			expect(calls).toEqual([])
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'partial', commits: 0 }, reviewContext())
+			expectNoPhaseSideEffects(outcome, gitCalls, calls)
 		})
 
 		test('prepareAddress: finds PR, fetches feedback, packs both into turnIn', async () => {
-			const { deps } = makeDeps({ findPrNumberByHead: async () => 168 })
-			const storage = createIssueStorage(deps)
-			const prep = await prepareAddress(phaseDeps(deps, storage), makeOpenSlice({ prState: 'draft', needsRevision: true }), {
-				prdId: '142',
-				integrationBranch: 'prds-issue-142',
-				config: { usePrs: true, review: true, perSliceBranches: true },
-			})
+			const { phase } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
+			const prep = await prepareAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), reviewContext())
 			expect(prep.branch).toBe('prd-142/slice-145-session-middleware')
 			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'prd-142/slice-145-session-middleware' })
 			expect(prep.turnIn.feedback).toEqual([])
 		})
 
 		test('landAddress + ready (commits > 0): pushes slice branch, clears needsRevision, returns progress', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landAddress(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft', needsRevision: true }),
-				{ verdict: 'ready', commits: 3 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), { verdict: 'ready', commits: 3 }, reviewContext())
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'prd-142/slice-145-session-middleware'])
 			expect(calls).toContainEqual(['editIssueLabels', '145', { remove: ['needs-revision'] }])
 		})
 
 		test('landAddress + no-work-needed: clears needsRevision, returns no-work, no push', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landAddress(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft', needsRevision: true }),
-				{ verdict: 'no-work-needed', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), { verdict: 'no-work-needed', commits: 0 }, reviewContext())
 			expect(outcome).toBe('no-work')
 			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
 			expect(calls).toContainEqual(['editIssueLabels', '145', { remove: ['needs-revision'] }])
 		})
 
 		test('landAddress + partial: returns partial, no side effects', async () => {
-			const { deps, calls, gitCalls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			const outcome = await landAddress(
-				phaseDeps(deps, storage),
-				makeOpenSlice({ prState: 'draft', needsRevision: true }),
-				{ verdict: 'partial', commits: 0 },
-				{ prdId: '142', integrationBranch: 'prds-issue-142', config: { usePrs: true, review: true, perSliceBranches: true } },
-			)
-			expect(outcome).toBe('partial')
-			expect(gitCalls).toEqual([])
-			expect(calls).toEqual([])
+			const { phase, calls, gitCalls } = makeIssueFixture()
+			const outcome = await landAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), { verdict: 'partial', commits: 0 }, reviewContext())
+			expectNoPhaseSideEffects(outcome, gitCalls, calls)
 		})
 	})
 

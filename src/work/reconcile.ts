@@ -44,24 +44,10 @@ export async function reconcileEntity(entity: LoopEntityRef, deps: ReconcileDeps
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function fakeStorage(overrides: Partial<Storage>): Storage {
-		return {
-			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async () => {},
-			createSlice: async () => { throw new Error('nyi') },
-			findSlices: async () => [],
-			findSlice: async () => null,
-			updateSlice: async () => {},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
-			...overrides,
-		}
+		return fakeSliceStorage([], null, { findPrd: async () => null, ...overrides })
 	}
 
 	describe('reconcileEntity', () => {

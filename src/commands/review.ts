@@ -17,9 +17,7 @@ export async function review(sliceId: string, opts: { storage?: StorageKind; har
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
-	const { runSlicePhaseCommand } = await import('./slice-phase-command.ts')
-	const { fakeClassifiedSlice, fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
+	const { recordingGhOps, runSlicePhaseCommand, fakeClassifiedSlice, fakeSliceStorage } = await import('../test-utils/slice-phase-command-fixtures.ts')
 
 	describe('runReview', () => {
 		const runReview = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime']) =>

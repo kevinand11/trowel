@@ -117,6 +117,7 @@ function withLock<T>(deps: CloseOutDeps, fn: () => Promise<T>): Promise<T> {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
 	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { prd: string[]; fix: string[] } } {
 		const closed = { prd: [] as string[], fix: [] as string[] }
@@ -141,32 +142,15 @@ if (import.meta.vitest) {
 
 	function fakeGit(): { git: GitOps; calls: string[] } {
 		const calls: string[] = []
-		const git: GitOps = {
+		const git = noopGitOps({
 			currentBranch: async () => 'work',
 			baseBranch: async () => 'main',
-			branchExists: async () => true,
-			isMerged: async () => false,
 			checkout: async (b) => { calls.push(`checkout(${b})`) },
 			deleteBranch: async (b) => { calls.push(`deleteBranch(${b})`) },
-			deleteRemoteBranch: async () => {},
-			fetch: async () => {},
 			push: async (b) => { calls.push(`push(${b})`) },
 			mergeNoFf: async (b) => { calls.push(`mergeNoFf(${b})`) },
 			mergeAbort: async () => { calls.push('mergeAbort') },
-			createRemoteBranch: async () => {},
-			createLocalBranch: async () => {},
-			pushSetUpstream: async () => {},
-			worktreeAdd: async () => {},
-			worktreeRemove: async () => {},
-			worktreeList: async () => [],
-			restoreAll: async () => {},
-			cleanUntracked: async () => {},
-			isWorkingTreeClean: async () => true,
-			stashPush: async () => {},
-			stashPop: async () => {},
-			commitsAhead: async () => 0,
-			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-		}
+		})
 		return { git, calls }
 	}
 

@@ -60,6 +60,32 @@ function baseStore(id: string, slug: string, title: string): PrdStore {
 	return { id, slug, title, createdAt: new Date().toISOString(), closedAt: null }
 }
 
+async function listStoreSummaries<T extends PrdStore>(root: string, opts: StateFilter, branchFor: (store: T) => string): Promise<Array<{ id: string; title: string; branch: string; createdAt: string }>> {
+	let entries: string[]
+	try {
+		entries = await readdir(root)
+	} catch {
+		return []
+	}
+	const summaries: Array<{ id: string; title: string; branch: string; createdAt: string }> = []
+	for (const entry of entries) {
+		const storePath = path.join(root, entry, 'store.json')
+		try {
+			const store: T = JSON.parse(await readFile(storePath, 'utf8'))
+			if (!acceptsState(store, opts)) continue
+			summaries.push({
+				id: store.id,
+				title: store.title,
+				branch: branchFor(store),
+				createdAt: store.createdAt,
+			})
+		} catch {
+			continue
+		}
+	}
+	return summaries
+}
+
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function findEntityDir(root: string, kind: 'PRD' | 'fix', id: string): Promise<string> {
 		let entries: string[]
@@ -124,29 +150,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]> {
-		let entries: string[]
-		try {
-			entries = await readdir(deps.prdsDir)
-		} catch {
-			return []
-		}
-		const summaries: PrdSummary[] = []
-		for (const entry of entries) {
-			const storePath = path.join(deps.prdsDir, entry, 'store.json')
-			try {
-				const store: PrdStore = JSON.parse(await readFile(storePath, 'utf8'))
-				if (!acceptsState(store, opts)) continue
-				summaries.push({
-					id: store.id,
-					title: store.title,
-					branch: `${store.id}-${store.slug}`,
-					createdAt: store.createdAt,
-				})
-			} catch {
-				continue
-			}
-		}
-		return summaries
+		return listStoreSummaries<PrdStore>(deps.prdsDir, opts, (store) => `${store.id}-${store.slug}`)
 	}
 
 	async function closeStore(dir: string): Promise<void> {
@@ -337,29 +341,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]> {
-		let entries: string[]
-		try {
-			entries = await readdir(deps.fixesDir)
-		} catch {
-			return []
-		}
-		const summaries: FixSummary[] = []
-		for (const entry of entries) {
-			const storePath = path.join(deps.fixesDir, entry, 'store.json')
-			try {
-				const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
-				if (!acceptsState(store, opts)) continue
-				summaries.push({
-					id: store.id,
-					title: store.title,
-					branch: fixBranchFor(store.id, store.slug),
-					createdAt: store.createdAt,
-				})
-			} catch {
-				continue
-			}
-		}
-		return summaries
+		return listStoreSummaries<FixStore>(deps.fixesDir, opts, (store) => fixBranchFor(store.id, store.slug))
 	}
 
 	async function updateFix(id: string, patch: FixPatch): Promise<void> {
@@ -394,6 +376,7 @@ if (import.meta.vitest) {
 	const { exec } = await import('../../utils/shell.ts')
 	const { setupTestRepoWithBare } = await import('../../test-utils/git-repo.ts')
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 
 	type Fixture = {
 		work: string
@@ -523,6 +506,36 @@ if (import.meta.vitest) {
 		}
 	}
 
+	async function writePrdStoreFixture(f: Fixture, entry: { id: string; slug: string; title: string; createdAt: string; closedAt: string | null }): Promise<void> {
+		const dir = path.join(f.prdsDir, `${entry.id}-${entry.slug}`)
+		await mkdir(dir, { recursive: true })
+		await writeFile(path.join(dir, 'store.json'), JSON.stringify(entry))
+	}
+
+	async function writeAlphaBetaPrdFixtures(f: Fixture): Promise<void> {
+		await writePrdStoreFixture(f, {
+			id: 'aaaaaa',
+			slug: 'alpha',
+			title: 'Alpha',
+			createdAt: '2026-05-11T00:00:00.000Z',
+			closedAt: '2026-05-11T01:00:00.000Z',
+		})
+		await writePrdStoreFixture(f, {
+			id: 'bbbbbb',
+			slug: 'beta',
+			title: 'Beta',
+			createdAt: '2026-05-11T00:00:00.000Z',
+			closedAt: null,
+		})
+	}
+
+	async function createPrdWithSlice(f: Fixture, spec: SliceSpec = { title: 'A', body: 'spec', blockedBy: [] }): Promise<{ storage: Storage; prdId: string; slice: Slice }> {
+		const storage = createFileStorage(f.deps)
+		const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
+		const slice = await storage.createSlice(prdId, spec)
+		return { storage, prdId, slice }
+	}
+
 	describe('file storage: phase primitives', () => {
 		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 			return {
@@ -541,6 +554,31 @@ if (import.meta.vitest) {
 
 		function makePhaseDeps(f: Fixture, storage: Storage): PhaseDeps {
 			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
+		}
+
+		async function createReadySlice(f: Fixture, storage: Storage, title = 'A'): Promise<{ result: { id: string; branch: string }; slice: Slice }> {
+			const result = await storage.createPrd({ title: 'X', body: 'b' })
+			const slice = await storage.createSlice(result.id, { title, body: 'spec', blockedBy: [] })
+			await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
+			f.calls.git.length = 0
+			return { result, slice }
+		}
+
+		function makeRecordingGit(currentBranch: string, baseBranch: string): { git: PhaseDeps['git']; calls: Array<[string, ...string[]]> } {
+			const calls: Array<[string, ...string[]]> = []
+			return {
+				calls,
+				git: noopGitOps({
+					fetch: async (b: string) => { calls.push(['fetch', b]) },
+					push: async (b: string) => { calls.push(['push', b]) },
+					checkout: async (b: string) => { calls.push(['checkout', b]) },
+					mergeNoFf: async (b: string) => { calls.push(['mergeNoFf', b]) },
+					deleteRemoteBranch: async (b: string) => { calls.push(['deleteRemoteBranch', b]) },
+					createRemoteBranch: async (n: string, b: string) => { calls.push(['createRemoteBranch', n, b]) },
+					currentBranch: async () => currentBranch,
+					baseBranch: async () => baseBranch,
+				}),
+			}
 		}
 
 		test('prepareImplement: branch is the integration branch; turnIn carries the slice', async () => {
@@ -563,10 +601,7 @@ if (import.meta.vitest) {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const result = await storage.createPrd({ title: 'X', body: 'b' })
-				const slice = await storage.createSlice(result.id, { title: 'Implement A', body: 'spec', blockedBy: [] })
-				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
-				f.calls.git.length = 0
+				const { result, slice } = await createReadySlice(f, storage, 'Implement A')
 
 				const outcome = await landImplement(
 					makePhaseDeps(f, storage),
@@ -592,10 +627,7 @@ if (import.meta.vitest) {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const result = await storage.createPrd({ title: 'X', body: 'b' })
-				const slice = await storage.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
-				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
-				f.calls.git.length = 0
+				const { result, slice } = await createReadySlice(f, storage)
 
 				const outcome = await landImplement(
 					makePhaseDeps(f, storage),
@@ -622,10 +654,7 @@ if (import.meta.vitest) {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const result = await storage.createPrd({ title: 'X', body: 'b' })
-				const slice = await storage.createSlice(result.id, { title: 'A', body: 'spec', blockedBy: [] })
-				await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
-				f.calls.git.length = 0
+				const { result, slice } = await createReadySlice(f, storage)
 
 				const outcome = await landImplement(
 					makePhaseDeps(f, storage),
@@ -673,51 +702,11 @@ if (import.meta.vitest) {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const { id: prdId, branch: integration } = await storage.createPrd({ title: 'X', body: 'b' })
-				const slice = await storage.createSlice(prdId, { title: 'Implement A', body: 'spec', blockedBy: [] })
-				await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
+				const { result: { id: prdId, branch: integration }, slice } = await createReadySlice(f, storage, 'Implement A')
 				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
 				// Replace the spy git with a recording no-op for this matrix cell — we want to assert the
 				// call sequence, not exercise real git state on a synthetic slice branch.
-				const calls: Array<[string, ...string[]]> = []
-				const recordingGit = {
-					fetch: async (b: string) => {
-						calls.push(['fetch', b])
-					},
-					push: async (b: string) => {
-						calls.push(['push', b])
-					},
-					checkout: async (b: string) => {
-						calls.push(['checkout', b])
-					},
-					mergeNoFf: async (b: string) => {
-						calls.push(['mergeNoFf', b])
-					},
-					deleteRemoteBranch: async (b: string) => {
-						calls.push(['deleteRemoteBranch', b])
-					},
-					createRemoteBranch: async (n: string, b: string) => {
-						calls.push(['createRemoteBranch', n, b])
-					},
-					createLocalBranch: async () => {},
-					pushSetUpstream: async () => {},
-					currentBranch: async () => integration,
-					baseBranch: async () => 'main',
-					branchExists: async () => true,
-					isMerged: async () => false,
-					deleteBranch: async () => {},
-					worktreeAdd: async () => {},
-					worktreeRemove: async () => {},
-					worktreeList: async () => [],
-					restoreAll: async () => {},
-					cleanUntracked: async () => {},
-					isWorkingTreeClean: async () => true,
-					stashPush: async () => {},
-					stashPop: async () => {},
-					mergeAbort: async () => {},
-					commitsAhead: async () => 0,
-					detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-				}
+				const { git: recordingGit, calls } = makeRecordingGit(integration, 'main')
 				const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 
 				const outcome = await landImplement(
@@ -744,49 +733,9 @@ if (import.meta.vitest) {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const { id: prdId, branch: integration } = await storage.createPrd({ title: 'X', body: 'b' })
-				const slice = await storage.createSlice(prdId, { title: 'Implement A', body: 'spec', blockedBy: [] })
-				await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
+				const { result: { id: prdId, branch: integration }, slice } = await createReadySlice(f, storage, 'Implement A')
 				const sliceBranch = `prd-${prdId}/slice-${slice.id}-implement-a`
-				const gitCalls: Array<[string, ...string[]]> = []
-				const recordingGit = {
-					fetch: async (b: string) => {
-						gitCalls.push(['fetch', b])
-					},
-					push: async (b: string) => {
-						gitCalls.push(['push', b])
-					},
-					checkout: async (b: string) => {
-						gitCalls.push(['checkout', b])
-					},
-					mergeNoFf: async (b: string) => {
-						gitCalls.push(['mergeNoFf', b])
-					},
-					deleteRemoteBranch: async (b: string) => {
-						gitCalls.push(['deleteRemoteBranch', b])
-					},
-					createRemoteBranch: async (n: string, b: string) => {
-						gitCalls.push(['createRemoteBranch', n, b])
-					},
-					createLocalBranch: async () => {},
-					pushSetUpstream: async () => {},
-					currentBranch: async () => integration,
-					baseBranch: async () => 'develop',
-					branchExists: async () => true,
-					isMerged: async () => false,
-					deleteBranch: async () => {},
-					worktreeAdd: async () => {},
-					worktreeRemove: async () => {},
-					worktreeList: async () => [],
-					restoreAll: async () => {},
-					cleanUntracked: async () => {},
-					isWorkingTreeClean: async () => true,
-					stashPush: async () => {},
-					stashPop: async () => {},
-					mergeAbort: async () => {},
-					commitsAhead: async () => 0,
-					detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-				}
+				const { git: recordingGit, calls: gitCalls } = makeRecordingGit(integration, 'develop')
 				const { gh, calls: ghCalls } = recordingGhOps()
 				const deps: PhaseDeps = { storage, git: recordingGit, gh, log: f.deps.log!, mergeNoVerify: false }
 
@@ -923,30 +872,7 @@ if (import.meta.vitest) {
 		})
 
 		test('returns one summary per PRD with closedAt === null, skipping closed ones', async () => {
-			const alphaDir = path.join(f.prdsDir, 'aaaaaa-alpha')
-			const betaDir = path.join(f.prdsDir, 'bbbbbb-beta')
-			await mkdir(alphaDir, { recursive: true })
-			await mkdir(betaDir, { recursive: true })
-			await writeFile(
-				path.join(alphaDir, 'store.json'),
-				JSON.stringify({
-					id: 'aaaaaa',
-					slug: 'alpha',
-					title: 'Alpha',
-					createdAt: '2026-05-11T00:00:00.000Z',
-					closedAt: '2026-05-11T01:00:00.000Z',
-				}),
-			)
-			await writeFile(
-				path.join(betaDir, 'store.json'),
-				JSON.stringify({
-					id: 'bbbbbb',
-					slug: 'beta',
-					title: 'Beta',
-					createdAt: '2026-05-11T00:00:00.000Z',
-					closedAt: null,
-				}),
-			)
+			await writeAlphaBetaPrdFixtures(f)
 
 			const storage = createFileStorage(f.deps)
 			const open = await storage.listPrds({ state: 'open' })
@@ -955,30 +881,7 @@ if (import.meta.vitest) {
 		})
 
 		test('returns both open and closed PRDs when called with { state: "all" }', async () => {
-			const alphaDir = path.join(f.prdsDir, 'aaaaaa-alpha')
-			const betaDir = path.join(f.prdsDir, 'bbbbbb-beta')
-			await mkdir(alphaDir, { recursive: true })
-			await mkdir(betaDir, { recursive: true })
-			await writeFile(
-				path.join(alphaDir, 'store.json'),
-				JSON.stringify({
-					id: 'aaaaaa',
-					slug: 'alpha',
-					title: 'Alpha',
-					createdAt: '2026-05-11T00:00:00.000Z',
-					closedAt: '2026-05-11T01:00:00.000Z',
-				}),
-			)
-			await writeFile(
-				path.join(betaDir, 'store.json'),
-				JSON.stringify({
-					id: 'bbbbbb',
-					slug: 'beta',
-					title: 'Beta',
-					createdAt: '2026-05-11T00:00:00.000Z',
-					closedAt: null,
-				}),
-			)
+			await writeAlphaBetaPrdFixtures(f)
 
 			const storage = createFileStorage(f.deps)
 			const all = await storage.listPrds({ state: 'all' })
@@ -1007,30 +910,7 @@ if (import.meta.vitest) {
 		})
 
 		test('returns only closed PRDs when called with { state: "closed" }', async () => {
-			const alphaDir = path.join(f.prdsDir, 'aaaaaa-alpha')
-			const betaDir = path.join(f.prdsDir, 'bbbbbb-beta')
-			await mkdir(alphaDir, { recursive: true })
-			await mkdir(betaDir, { recursive: true })
-			await writeFile(
-				path.join(alphaDir, 'store.json'),
-				JSON.stringify({
-					id: 'aaaaaa',
-					slug: 'alpha',
-					title: 'Alpha',
-					createdAt: '2026-05-11T00:00:00.000Z',
-					closedAt: '2026-05-11T01:00:00.000Z',
-				}),
-			)
-			await writeFile(
-				path.join(betaDir, 'store.json'),
-				JSON.stringify({
-					id: 'bbbbbb',
-					slug: 'beta',
-					title: 'Beta',
-					createdAt: '2026-05-11T00:00:00.000Z',
-					closedAt: null,
-				}),
-			)
+			await writeAlphaBetaPrdFixtures(f)
 
 			const storage = createFileStorage(f.deps)
 			const closed = await storage.listPrds({ state: 'closed' })
@@ -1122,9 +1002,7 @@ if (import.meta.vitest) {
 		})
 
 		test('returned slices have prState=null (file storage has no PR concept)', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const { storage, prdId } = await createPrdWithSlice(f)
 			const [s] = classifySlices(await storage.findSlices(prdId))
 			expect(s!.prState).toBeNull()
 		})
@@ -1179,36 +1057,28 @@ if (import.meta.vitest) {
 		})
 
 		test('OPEN slice with no readiness flags → draft', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
+			const { storage, prdId } = await createPrdWithSlice(f)
 			const [s] = classifySlices(await storage.findSlices(prdId))
 			expect(s!.bucket).toBe('draft')
 		})
 
 		test('readyForAgent and no deps → ready', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await storage.updateSlice(prdId, s.id, { readyForAgent: true })
+			const { storage, prdId, slice } = await createPrdWithSlice(f)
+			await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
 			const [updated] = classifySlices(await storage.findSlices(prdId))
 			expect(updated!.bucket).toBe('ready')
 		})
 
 		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await storage.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: true })
+			const { storage, prdId, slice } = await createPrdWithSlice(f)
+			await storage.updateSlice(prdId, slice.id, { needsRevision: true, readyForAgent: true })
 			const [updated] = classifySlices(await storage.findSlices(prdId))
 			expect(updated!.bucket).toBe('needs-revision')
 		})
 
 		test('CLOSED → done', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
+			const { storage, prdId, slice } = await createPrdWithSlice(f)
+			await storage.updateSlice(prdId, slice.id, { state: 'CLOSED' })
 			const [updated] = classifySlices(await storage.findSlices(prdId))
 			expect(updated!.bucket).toBe('done')
 		})
@@ -1237,10 +1107,8 @@ if (import.meta.vitest) {
 		})
 
 		test('file storage never returns in-flight (no PR concept)', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const s = await storage.createSlice(prdId, { title: 'A', body: 'spec', blockedBy: [] })
-			await storage.updateSlice(prdId, s.id, { readyForAgent: true })
+			const { storage, prdId, slice } = await createPrdWithSlice(f)
+			await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
 			const slices = classifySlices(await storage.findSlices(prdId))
 			expect(slices.every((x) => x.bucket !== 'in-flight')).toBe(true)
 		})
@@ -1398,32 +1266,28 @@ if (import.meta.vitest) {
 		})
 
 		test('flips readyForAgent and needsRevision', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const s = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
+			const { storage, prdId, slice } = await createPrdWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await storage.updateSlice(prdId, s.id, { readyForAgent: true })
-			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
+			await storage.updateSlice(prdId, slice.id, { readyForAgent: true })
+			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(true)
 			expect(store.needsRevision).toBe(false)
 
-			await storage.updateSlice(prdId, s.id, { needsRevision: true, readyForAgent: false })
-			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
+			await storage.updateSlice(prdId, slice.id, { needsRevision: true, readyForAgent: false })
+			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(false)
 			expect(store.needsRevision).toBe(true)
 		})
 
 		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: prdId } = await storage.createPrd({ title: 'P', body: 'b' })
-			const s = await storage.createSlice(prdId, { title: 'Foo', body: 'b', blockedBy: [] })
+			const { storage, prdId, slice } = await createPrdWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await storage.updateSlice(prdId, s.id, { state: 'CLOSED' })
-			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
+			await storage.updateSlice(prdId, slice.id, { state: 'CLOSED' })
+			let store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 
-			await storage.updateSlice(prdId, s.id, { state: 'OPEN' })
-			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${s.id}-foo`, 'store.json'), 'utf8'))
+			await storage.updateSlice(prdId, slice.id, { state: 'OPEN' })
+			store = JSON.parse(await readFile(path.join(f.prdsDir, `${prdId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toBeNull()
 		})
 

@@ -241,6 +241,24 @@ if (import.meta.vitest) {
 		return fixedPrompts('issue', true, { usePrs: async () => false, review: async () => false, ...overrides })
 	}
 
+	async function modelDefaultForExistingAgent(f: Fixture, agent: Record<string, string>, harness = 'claude'): Promise<string | undefined> {
+		const configPath = path.join(f.project, '.trowel', 'config.json')
+		await mk(path.dirname(configPath), { recursive: true })
+		await write(configPath, JSON.stringify({ agent }), 'utf8')
+		let seenModelDefault: string | undefined
+		await runProjectInit(
+			f,
+			promptsForFile({
+				agentHarness: async () => harness,
+				agentModel: async (current) => {
+					seenModelDefault = current
+					return current
+				},
+			}),
+		)
+		return seenModelDefault
+	}
+
 	describe('validatePrdsDir', () => {
 		test('accepts a normal project-relative path', () => {
 			expect(validatePrdsDir('docs/prds')).toBe(true)
@@ -320,21 +338,7 @@ if (import.meta.vitest) {
 		})
 
 		test('on file storage, prompts for prdsDir and writes the answer to docs.prdsDir', async () => {
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async () => 'custom/prds-here',
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+			await runProjectInit(f, promptsForFile({ prdsDir: async () => 'custom/prds-here' }))
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written.docs).toEqual({ prdsDir: 'custom/prds-here' })
 		})
@@ -454,24 +458,15 @@ if (import.meta.vitest) {
 
 		test('fresh project → harness default is "claude" and gets written', async () => {
 			let seenHarnessDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
+			await runProjectInit(
+				f,
+				promptsForFile({
 					agentHarness: async (current) => {
 						seenHarnessDefault = current
 						return current
 					},
-					agentModel: async (current) => current,
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(seenHarnessDefault).toBe('claude')
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written.agent.harness).toBe('claude')
@@ -483,80 +478,28 @@ if (import.meta.vitest) {
 			await write(configPath, JSON.stringify({ agent: { harness: 'claude', model: 'claude-opus-4-6' } }), 'utf8')
 
 			let seenModelDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
+			await runProjectInit(
+				f,
+				promptsForFile({
 					agentHarness: async () => 'pi',
 					agentModel: async (current) => {
 						seenModelDefault = current
 						return current
 					},
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			// pi's defaultModel is 'anthropic/claude-sonnet-4-5'; the old 'claude-opus-4-6' must not be reused.
 			expect(seenModelDefault).not.toBe('claude-opus-4-6')
 			expect(seenModelDefault?.startsWith('anthropic/')).toBe(true)
 		})
 
 		test('keeping the same harness preserves the existing model as the prompt default', async () => {
-			const configPath = path.join(f.project, '.trowel', 'config.json')
-			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ agent: { harness: 'claude', model: 'claude-sonnet-4-6' } }), 'utf8')
-
-			let seenModelDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
-					agentHarness: async () => 'claude',
-					agentModel: async (current) => {
-						seenModelDefault = current
-						return current
-					},
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+			const seenModelDefault = await modelDefaultForExistingAgent(f, { harness: 'claude', model: 'claude-sonnet-4-6' })
 			expect(seenModelDefault).toBe('claude-sonnet-4-6')
 		})
 
 		test('legacy config with bare agent.model and no agent.harness → treated as claude (model preserved)', async () => {
-			const configPath = path.join(f.project, '.trowel', 'config.json')
-			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ agent: { model: 'claude-sonnet-4-6' } }), 'utf8')
-
-			let seenModelDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
-					agentHarness: async () => 'claude',
-					agentModel: async (current) => {
-						seenModelDefault = current
-						return current
-					},
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+			const seenModelDefault = await modelDefaultForExistingAgent(f, { model: 'claude-sonnet-4-6' })
 			expect(seenModelDefault).toBe('claude-sonnet-4-6')
 		})
 	})
@@ -571,45 +514,23 @@ if (import.meta.vitest) {
 		})
 
 		test('prompts for work.usePrs unconditionally; writes the answer', async () => {
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async () => true,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+			await runProjectInit(f, promptsForFile({ usePrs: async () => true }))
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written.work.usePrs).toBe(true)
 		})
 
 		test('work.review prompt is NOT called when usePrs is false; no review key in output', async () => {
 			let reviewCalls = 0
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
+			await runProjectInit(
+				f,
+				promptsForFile({
 					usePrs: async () => false,
 					review: async () => {
 						reviewCalls++
 						return true
 					},
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(reviewCalls).toBe(0)
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written.work).not.toHaveProperty('review')
@@ -617,24 +538,16 @@ if (import.meta.vitest) {
 
 		test('work.review prompt IS called when usePrs is true; value stored', async () => {
 			let reviewCalls = 0
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
+			await runProjectInit(
+				f,
+				promptsForFile({
 					usePrs: async () => true,
 					review: async () => {
 						reviewCalls++
 						return true
 					},
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(reviewCalls).toBe(1)
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written.work).toMatchObject({ usePrs: true, review: true })

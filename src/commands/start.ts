@@ -1,15 +1,9 @@
 import path from 'node:path'
 
-import { confirm as inqConfirm } from '@inquirer/prompts'
-
-import { readOptionalFile, resolveGrillSpec } from './grill-flow.ts'
-import { buildStorage, exitOnCommandError, loadCommandBase } from './runtime.ts'
-import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
-import { loadPrompt } from '../prompts/load.ts'
-import type { StorageKind } from '../storages/registry.ts'
+import { resolveGrillSpec } from './grill-flow.ts'
+import { buildGrillCommandRuntime, exitOnCommandError } from './runtime.ts'
 import type { Storage } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import { tryExec } from '../utils/shell.ts'
 import { parseStartOut } from '../work/start-out.ts'
 
 export type StartRuntime = {
@@ -93,43 +87,18 @@ function printResumePreview(rt: StartRuntime, spec: ReturnType<typeof parseStart
 }
 
 export async function start(opts: { storage?: string; harness?: string }): Promise<void> {
-	const base = await loadCommandBase('start')
-	const { config, projectRoot, git } = base
-	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage
-	const harnessKind = (opts.harness as HarnessKind | undefined) ?? config.agent.harness
-	const harness = getHarness(harnessKind)
-	const storage = buildStorage(base, storageKind)
-	const startOutPath = path.resolve(projectRoot, '.trowel', 'start-out.json')
-
-	const rt: StartRuntime = {
-		projectRoot,
-		storage,
-		git,
-		startPromptText: await loadPrompt('start'),
-		runInteractive: async ({ promptText, cwd }) => {
-			const { waitForExit } = await harness.spawnInteractive({
-				model: config.agent.model,
-				systemPrompt: promptText,
-				cwd,
-			})
-			const code = await waitForExit
-			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
-		},
-		readStartOut: () => readOptionalFile(startOutPath),
-		preflight: async () => {
-			const failures: string[] = []
-			if (!(await git.isWorkingTreeClean())) failures.push('working tree is not clean — commit or stash before running trowel start')
-			const harnessV = await harness.detectVersion()
-			if (!harnessV.installed) failures.push(`${harness.kind} CLI not found on PATH (required for trowel start with agent.harness=${harness.kind})`)
-			const ghR = await tryExec('gh', ['auth', 'status'])
-			if (!ghR.ok) failures.push('gh not authenticated or not on PATH (run `gh auth login`)')
-			return failures
-		},
-		stdout: (s) => process.stdout.write(s),
-		confirm: (msg) => inqConfirm({ message: msg, default: false }),
-	}
-
-	await exitOnCommandError('start', () => runStart(rt))
+	const rtBase = await buildGrillCommandRuntime('start', opts, 'start-out.json')
+	await exitOnCommandError('start', () => runStart({
+		projectRoot: rtBase.projectRoot,
+		storage: rtBase.storage,
+		git: rtBase.git,
+		startPromptText: rtBase.promptText,
+		runInteractive: rtBase.runInteractive,
+		readStartOut: rtBase.readOut,
+		preflight: rtBase.preflight,
+		stdout: rtBase.stdout,
+		confirm: rtBase.confirm,
+	}))
 }
 
 if (import.meta.vitest) {
@@ -155,6 +124,33 @@ if (import.meta.vitest) {
 		}
 	}
 
+	async function readStartOutFile(startOutPath: string): Promise<string | null> {
+		try {
+			return await readFile(startOutPath, 'utf8')
+		} catch {
+			return null
+		}
+	}
+
+	function attachStartOutFile(rt: StartRuntime, tmp: { projectRoot: string; startOutPath: string }): void {
+		rt.projectRoot = tmp.projectRoot
+		rt.readStartOut = () => readStartOutFile(tmp.startOutPath)
+	}
+
+	function resumeSpec() {
+		return {
+			prd: { title: 'Resume Me', body: 'body from prior run' },
+			slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
+		}
+	}
+
+	function minimalStartOutJson(): string {
+		return JSON.stringify({
+			prd: { title: 't', body: 'b' },
+			slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
+		})
+	}
+
 	describe('runStart: existing start-out.json offers resume', () => {
 		test('valid existing spec + user picks skip → stale file wiped, claude runs fresh grill, new spec materialised', async () => {
 			const tmp = await setupTmp()
@@ -176,14 +172,11 @@ if (import.meta.vitest) {
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let stalePresentAtRunInteractive: boolean | null = null
 				rt.runInteractive = async () => {
 					stalePresentAtRunInteractive = await fileExists(tmp.startOutPath)
 					await writeFile(tmp.startOutPath, JSON.stringify(freshSpec))
-				}
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
 				}
 				rt.confirm = async () => false // skip
 
@@ -212,14 +205,11 @@ if (import.meta.vitest) {
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let interactiveCalled = false
 				rt.runInteractive = async () => {
 					interactiveCalled = true
 					await writeFile(tmp.startOutPath, JSON.stringify(freshSpec))
-				}
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
 				}
 				rt.confirm = async () => true // wipe and start fresh
 
@@ -242,12 +232,9 @@ if (import.meta.vitest) {
 					startOut: null,
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let interactiveCalled = false
 				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
-				}
 				rt.confirm = async () => false // abort
 
 				await expect(runStart(rt)).rejects.toThrow(/Invalid start-out\.json/)
@@ -275,10 +262,7 @@ if (import.meta.vitest) {
 					startOut: null,
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
-				}
+				attachStartOutFile(rt, tmp)
 				let stdoutAtConfirm = ''
 				rt.confirm = async () => {
 					stdoutAtConfirm = calls.stdout.join('')
@@ -303,10 +287,7 @@ if (import.meta.vitest) {
 		test('valid existing spec + user confirms continue → claude is skipped, materialisation runs from in-memory spec, file is gone after', async () => {
 			const tmp = await setupTmp()
 			try {
-				const spec = {
-					prd: { title: 'Resume Me', body: 'body from prior run' },
-					slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
-				}
+				const spec = resumeSpec()
 				await writeFile(tmp.startOutPath, JSON.stringify(spec))
 
 				const { rt, calls } = makeFakes({
@@ -315,12 +296,9 @@ if (import.meta.vitest) {
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let interactiveCalls = 0
 				rt.runInteractive = async () => { interactiveCalls++ }
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
-				}
 				rt.confirm = async () => true // continue
 
 				await runStart(rt)
@@ -337,10 +315,7 @@ if (import.meta.vitest) {
 		test('valid existing spec + user confirms continue + preflight would fail → skips preflight and materialises', async () => {
 			const tmp = await setupTmp()
 			try {
-				const spec = {
-					prd: { title: 'Resume Me', body: 'body from prior run' },
-					slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
-				}
+				const spec = resumeSpec()
 				await writeFile(tmp.startOutPath, JSON.stringify(spec))
 
 				const { rt, calls } = makeFakes({
@@ -350,12 +325,9 @@ if (import.meta.vitest) {
 					currentBranch: 'main',
 					preflightFailures: ['working tree dirty'],
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let interactiveCalled = false
 				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
-				}
 				rt.confirm = async () => true // continue
 
 				await runStart(rt)
@@ -382,12 +354,9 @@ if (import.meta.vitest) {
 					currentBranch: 'main',
 					preflightFailures: ['working tree dirty'],
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let interactiveCalled = false
 				rt.runInteractive = async () => { interactiveCalled = true }
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
-				}
 				rt.confirm = async () => false // discard and start fresh, but preflight stops first
 
 				await expect(runStart(rt)).rejects.toThrow(/preflight failed/i)
@@ -415,14 +384,11 @@ if (import.meta.vitest) {
 					startOut: null,
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				let stalePresentAtRunInteractive: boolean | null = null
 				rt.runInteractive = async () => {
 					stalePresentAtRunInteractive = await fileExists(tmp.startOutPath)
 					// Claude aborts: doesn't write a new file
-				}
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
 				}
 
 				await expect(runStart(rt)).rejects.toThrow(/start-out.json missing/i)
@@ -439,12 +405,9 @@ if (import.meta.vitest) {
 			try {
 				const invalid = JSON.stringify({ slices: [] }) // missing prd
 				const { rt } = makeFakes({ startOut: invalid, currentBranch: 'main' })
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				rt.runInteractive = async () => {
 					await writeFile(tmp.startOutPath, invalid)
-				}
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
 				}
 				await expect(runStart(rt)).rejects.toThrow(/Invalid start-out\.json/)
 				expect(await fileExists(tmp.startOutPath)).toBe(true)
@@ -466,12 +429,9 @@ if (import.meta.vitest) {
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
-				rt.projectRoot = tmp.projectRoot
+				attachStartOutFile(rt, tmp)
 				rt.runInteractive = async () => {
 					await writeFile(tmp.startOutPath, JSON.stringify(spec))
-				}
-				rt.readStartOut = async () => {
-					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
 				}
 				await runStart(rt)
 				expect(await fileExists(tmp.startOutPath)).toBe(false)
@@ -529,10 +489,7 @@ if (import.meta.vitest) {
 
 	describe('runStart: stash dance', () => {
 		test('dirty tree → stashPush before createPrd, then checkout integration, then stashPop (in that order)', async () => {
-			const startOut = JSON.stringify({
-				prd: { title: 't', body: 'b' },
-				slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
-			})
+			const startOut = minimalStartOutJson()
 			const { rt, calls } = makeFakes({
 				startOut,
 				createPrdResult: { id: 'pid', branch: 'pid-branch' },
@@ -545,10 +502,7 @@ if (import.meta.vitest) {
 		})
 
 		test('clean tree → no stashPush/stashPop, just checkout', async () => {
-			const startOut = JSON.stringify({
-				prd: { title: 't', body: 'b' },
-				slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
-			})
+			const startOut = minimalStartOutJson()
 			const { rt, calls } = makeFakes({
 				startOut,
 				createPrdResult: { id: 'pid', branch: 'pid-branch' },
@@ -563,10 +517,7 @@ if (import.meta.vitest) {
 
 	describe('runStart: stash-pop conflict', () => {
 		test('stashPop throws → user stays on integration branch (no restore), error surfaces', async () => {
-			const startOut = JSON.stringify({
-				prd: { title: 't', body: 'b' },
-				slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
-			})
+			const startOut = minimalStartOutJson()
 			const { rt, gitState } = makeFakes({
 				startOut,
 				createPrdResult: { id: 'pid', branch: 'pid-branch' },
@@ -582,10 +533,7 @@ if (import.meta.vitest) {
 
 	describe('runStart: createPrd fails after stash', () => {
 		test('storage.createPrd throws while stashed → stash popped on BACK_TO, BACK_TO restored, error re-raised', async () => {
-			const startOut = JSON.stringify({
-				prd: { title: 't', body: 'b' },
-				slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
-			})
+			const startOut = minimalStartOutJson()
 			const { rt, calls, gitState } = makeFakes({
 				startOut,
 				currentBranch: 'main',

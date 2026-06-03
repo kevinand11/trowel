@@ -96,40 +96,33 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, usePrs: config.work.usePrs }
 }
 
-export async function statusPrd(prdId: string, opts: { storage?: string }): Promise<void> {
-	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
+function statusRuntime(storage: Storage, gh: GhOps, usePrs: boolean): StatusRuntime {
+	return { storage, gh, usePrs, stdout: (s) => process.stdout.write(s) }
+}
+
+async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
 	try {
-		await withMutationLock(projectRoot, async () => {
-			const found = await storage.findPrd(prdId)
-			if (found) await reconcileEntity({ kind: 'prd', id: prdId, branch: found.branch }, { storage, gh })
-			await runStatus(prdId, {
-				storage,
-				gh,
-				usePrs,
-				stdout: (s) => process.stdout.write(s),
-			})
-		})
+		await fn()
 	} catch (error) {
 		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
 		process.exit(1)
 	}
 }
 
+export async function statusPrd(prdId: string, opts: { storage?: string }): Promise<void> {
+	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
+	await exitOnStatusError(() =>
+		withMutationLock(projectRoot, async () => {
+			const found = await storage.findPrd(prdId)
+			if (found) await reconcileEntity({ kind: 'prd', id: prdId, branch: found.branch }, { storage, gh })
+			await runStatus(prdId, statusRuntime(storage, gh, usePrs))
+		}),
+	)
+}
+
 export async function statusSlice(sliceId: string, opts: { storage?: string }): Promise<void> {
 	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
-	try {
-		await withMutationLock(projectRoot, async () =>
-			runStatusSlice(sliceId, {
-				storage,
-				gh,
-				usePrs,
-				stdout: (s) => process.stdout.write(s),
-			}),
-		)
-	} catch (error) {
-		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+	await exitOnStatusError(() => withMutationLock(projectRoot, () => runStatusSlice(sliceId, statusRuntime(storage, gh, usePrs))))
 }
 
 function renderStatusFix(fix: FixRecord): string {
@@ -155,21 +148,13 @@ async function runStatusFix(fixId: string, rt: StatusRuntime): Promise<void> {
 
 export async function statusFix(fixId: string, opts: { storage?: string }): Promise<void> {
 	const { storage, projectRoot, gh } = await buildStatusStorage(opts)
-	try {
-		await withMutationLock(projectRoot, async () => {
+	await exitOnStatusError(() =>
+		withMutationLock(projectRoot, async () => {
 			const found = await storage.findFix(fixId)
 			if (found) await reconcileEntity({ kind: 'fix', id: fixId, branch: found.branch }, { storage, gh })
-			await runStatusFix(fixId, {
-				storage,
-				gh,
-				usePrs: false,
-				stdout: (s) => process.stdout.write(s),
-			})
-		})
-	} catch (error) {
-		process.stderr.write(`trowel status: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+			await runStatusFix(fixId, statusRuntime(storage, gh, false))
+		}),
+	)
 }
 
 type StatusSliceRuntime = {

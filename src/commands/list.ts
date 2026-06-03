@@ -40,10 +40,13 @@ type ListRuntime = {
 	stdout: (s: string) => void
 }
 
-async function runListPrds(filter: ListState, rt: ListRuntime): Promise<void> {
-	const summaries = await rt.storage.listPrds({ state: filter })
+function newestFirst<T extends { createdAt: string }>(summaries: T[]): T[] {
 	// Storages return unsorted; sort newest-first here. See ADR `storage-behavior-separation` step 4.
-	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+	return [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+async function runListPrds(filter: ListState, rt: ListRuntime): Promise<void> {
+	const sorted = newestFirst(await rt.storage.listPrds({ state: filter }))
 	const rows: PrdListRow[] = await Promise.all(
 		sorted.map(async (summary) => {
 			const slices = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId: summary.id, usePrs: rt.usePrs })
@@ -74,8 +77,7 @@ function renderFixList(rows: FixListRow[], filter: ListState): string {
 }
 
 async function runListFixes(filter: ListState, rt: ListRuntime): Promise<void> {
-	const summaries = await rt.storage.listFixes({ state: filter })
-	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+	const sorted = newestFirst(await rt.storage.listFixes({ state: filter }))
 	const rows: FixListRow[] = await Promise.all(
 		sorted.map(async (summary) => {
 			const found = await rt.storage.findFix(summary.id)
@@ -96,32 +98,31 @@ async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListR
 	}
 }
 
-export async function list(filter: ListState, opts: { storage?: string }): Promise<void> {
+async function reconcileListedEntities(kind: 'prd' | 'fix', filter: ListState, storage: Storage, gh: ReturnType<typeof createGh>): Promise<void> {
+	// Reconciliation may write CLOSED on entities whose Close-out PR merged on GitHub. Best-effort
+	// per entity; failures are swallowed by reconcileEntity itself.
+	const summaries = kind === 'prd' ? await storage.listPrds({ state: filter }) : await storage.listFixes({ state: filter })
+	for (const s of summaries) {
+		await reconcileEntity({ kind, id: s.id, branch: s.branch }, { storage, gh })
+	}
+}
+
+async function runListedCommand(kind: 'prd' | 'fix', filter: ListState, opts: { storage?: string }): Promise<void> {
 	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
 	await exitOnCommandError('list', () =>
 		withMutationLock(projectRoot, async () => {
-			// Reconciliation may write CLOSED on PRDs whose Close-out PR merged on GitHub. Best-effort
-			// per entity; failures are swallowed by reconcileEntity itself.
-			const summaries = await storage.listPrds({ state: filter })
-			for (const s of summaries) {
-				await reconcileEntity({ kind: 'prd', id: s.id, branch: s.branch }, { storage, gh })
-			}
-			await runListPrds(filter, rt)
+			await reconcileListedEntities(kind, filter, storage, gh)
+			await (kind === 'prd' ? runListPrds(filter, rt) : runListFixes(filter, rt))
 		}),
 	)
 }
 
+export async function list(filter: ListState, opts: { storage?: string }): Promise<void> {
+	await runListedCommand('prd', filter, opts)
+}
+
 export async function listFix(filter: ListState, opts: { storage?: string }): Promise<void> {
-	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
-	await exitOnCommandError('list', () =>
-		withMutationLock(projectRoot, async () => {
-			const summaries = await storage.listFixes({ state: filter })
-			for (const s of summaries) {
-				await reconcileEntity({ kind: 'fix', id: s.id, branch: s.branch }, { storage, gh })
-			}
-			await runListFixes(filter, rt)
-		}),
-	)
+	await runListedCommand('fix', filter, opts)
 }
 
 if (import.meta.vitest) {

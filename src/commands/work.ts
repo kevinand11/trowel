@@ -40,23 +40,13 @@ export async function work(scope: WorkScope, id: string, opts: { storage?: Stora
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function makeStorage(state: { prd?: { id: string; branch: string; targetBranch?: string; title: string }; fix?: { id: string; branch: string; targetBranch?: string; title: string } }): Storage {
-		return {
-			createPrd: async () => ({ id: 'x', branch: 'x' }),
+		return fakeSliceStorage([], null, {
 			findPrd: async (id) => (state.prd && state.prd.id === id ? { id, branch: state.prd.branch, targetBranch: state.prd.targetBranch, title: state.prd.title, state: 'OPEN' } : null),
-			listPrds: async () => [],
-			closePrd: async () => {},
-			createSlice: async () => { throw new Error('not used') },
-			findSlices: async () => [],
-			findSlice: async () => null,
-			updateSlice: async () => {},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
 			findFix: async (id) => (state.fix && state.fix.id === id ? { id, branch: state.fix.branch, targetBranch: state.fix.targetBranch, title: state.fix.title, body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null } : null),
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
-		}
+		})
 	}
 
 	describe('runWork', () => {

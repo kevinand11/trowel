@@ -176,53 +176,15 @@ function fixPhaseConfig(c: LoopConfig): FixPhaseConfig {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
+	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function makeStorage(overrides: Partial<Storage>): Storage {
-		return {
-			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async () => {},
-			createSlice: async () => { throw new Error('nyi') },
-			findSlices: async () => [],
-			findSlice: async () => null,
-			updateSlice: async () => {},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
-			...overrides,
-		}
+		return fakeSliceStorage([], null, { findPrd: async () => null, ...overrides })
 	}
 
 	function noopGit(): GitOps {
-		return {
-			currentBranch: async () => 'main',
-			baseBranch: async () => 'main',
-			branchExists: async () => true,
-			isMerged: async () => false,
-			checkout: async () => {},
-			deleteBranch: async () => {},
-			deleteRemoteBranch: async () => {},
-			fetch: async () => {},
-			push: async () => {},
-			mergeNoFf: async () => {},
-			mergeAbort: async () => {},
-			createRemoteBranch: async () => {},
-			createLocalBranch: async () => {},
-			pushSetUpstream: async () => {},
-			worktreeAdd: async () => {},
-			worktreeRemove: async () => {},
-			worktreeList: async () => [],
-			restoreAll: async () => {},
-			cleanUntracked: async () => {},
-			isWorkingTreeClean: async () => true,
-			stashPush: async () => {},
-			stashPop: async () => {},
-			commitsAhead: async () => 0,
-			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-		}
+		return noopGitOps({ currentBranch: async () => 'main', baseBranch: async () => 'main' })
 	}
 
 	const baseConfig: LoopConfig = {
