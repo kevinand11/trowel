@@ -37,6 +37,12 @@ function sliceBranchFor(prdId: string, slice: Slice): string {
 	return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
 }
 
+async function pushSliceBranchIfNeeded(deps: PhaseDeps, branch: string, commits: number, tag: string): Promise<void> {
+	if (commits <= 0) return
+	await deps.git.push(branch)
+	deps.log(`${tag} pushed ${branch}`)
+}
+
 /**
  * Prepare the implementer sandbox.
  *
@@ -186,20 +192,14 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut
 		const branch = sliceBranchFor(ctx.prdId, slice)
 
 		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) {
-				await deps.git.push(branch)
-				deps.log(`${tag} pushed ${branch}`)
-			}
+			await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
 			const prNumber = await deps.gh.findPrNumberByHead(branch)
 			await deps.gh.markPrReady(prNumber)
 			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
 			return 'progress'
 		}
 		if (verdict.verdict === 'needs-revision') {
-			if (verdict.commits > 0) {
-				await deps.git.push(branch)
-				deps.log(`${tag} pushed ${branch}`)
-			}
+			await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
 			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
 			deps.log(`${tag} flagged needsRevision`)
 			return 'progress'
@@ -243,10 +243,7 @@ export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOu
 		const branch = sliceBranchFor(ctx.prdId, slice)
 
 		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) {
-				await deps.git.push(branch)
-				deps.log(`${tag} pushed ${branch}`)
-			}
+			await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
 			await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
 			deps.log(`${tag} cleared needsRevision`)
 			return 'progress'

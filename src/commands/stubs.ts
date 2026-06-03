@@ -12,7 +12,3 @@ function notImplemented(commandName: string, reason: string): never {
 export async function diagnose(desc: string): Promise<void> {
 	notImplemented('diagnose', `Diagnostic workflow pending. Description: ${desc}`)
 }
-
-export async function fix(desc: string): Promise<void> {
-	notImplemented('fix', `Fix flow pending (always creates an issue + PR linked to issue, no PRD). Description: ${desc}`)
-}

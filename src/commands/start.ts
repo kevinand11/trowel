@@ -1,15 +1,14 @@
-import { readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
 
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
-import { loadConfig } from '../config.ts'
+import { readOptionalFile, resolveGrillSpec } from './grill-flow.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase } from './runtime.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt } from '../prompts/load.ts'
-import { getStorage, type StorageKind } from '../storages/registry.ts'
-import type { Storage, StorageDeps } from '../storages/types.ts'
-import { createGh } from '../utils/gh-ops.ts'
-import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
+import type { StorageKind } from '../storages/registry.ts'
+import type { Storage } from '../storages/types.ts'
+import type { GitOps } from '../utils/git-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { parseStartOut } from '../work/start-out.ts'
 
@@ -26,84 +25,35 @@ export type StartRuntime = {
 }
 
 export async function runStart(rt: StartRuntime): Promise<void> {
-	const startOutPath = path.join(rt.projectRoot, '.trowel', 'start-out.json')
-
-	// Resume detection: if a prior run left a start-out.json on disk, offer to
-	// continue from it or discard and start a fresh grill. Happens BEFORE
-	// preflight because the file is host-owned ephemeral state.
-	let resumedSpec: ReturnType<typeof parseStartOut> | null = null
-	let discardExistingStartOut = false
-	const existingRaw = await rt.readStartOut()
-	if (existingRaw !== null) {
-		let parsed: ReturnType<typeof parseStartOut> | null = null
-		let parseError: Error | null = null
-		try {
-			parsed = parseStartOut(existingRaw)
-		} catch (e) {
-			parseError = e as Error
-		}
-		if (parsed) {
-			printResumePreview(rt, parsed)
-			const cont = await rt.confirm('Continue with the spec above? (no → discard and start a fresh grill)')
-			if (cont) resumedSpec = parsed
-			else discardExistingStartOut = true
-		} else {
-			rt.stdout(`\nExisting .trowel/start-out.json is invalid:\n${parseError!.message}\n\n`)
-			const wipe = await rt.confirm('Discard the invalid file and start a fresh grill? (no → abort)')
-			if (!wipe) throw parseError!
-			discardExistingStartOut = true
-		}
-	}
-
-	const needsFreshGrill = resumedSpec === null
-	if (needsFreshGrill) {
-		const failures = await rt.preflight()
-		if (failures.length > 0) {
-			throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
-		}
-		if (discardExistingStartOut) await unlinkSwallowEnoent(startOutPath)
-	}
-
-	const targetBranch = await rt.git.currentBranch()
-	const backTo = targetBranch
-	let stashed = false
-	let materialised = false
+	const result = await resolveGrillSpec({
+		projectRoot: rt.projectRoot,
+		git: rt.git,
+		readOut: rt.readStartOut,
+		preflight: rt.preflight,
+		stdout: rt.stdout,
+		confirm: rt.confirm,
+		parseOut: parseStartOut,
+		printResumePreview: (spec) => printResumePreview(rt, spec),
+		runInteractive: () => rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot }),
+		missingOutMessage: 'PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n',
+		missingOutError: 'start-out.json missing — grill aborted',
+		resumePrompt: 'Continue with the spec above? (no → discard and start a fresh grill)',
+		invalidPrompt: 'Discard the invalid file and start a fresh grill? (no → abort)',
+		outFileName: 'start-out.json',
+	})
 
 	try {
-		let spec: ReturnType<typeof parseStartOut>
-		if (resumedSpec) {
-			spec = resumedSpec
-		} else {
-			await rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot })
-
-			const raw = await rt.readStartOut()
-			if (raw === null) {
-				rt.stdout('PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n')
-				throw new Error('start-out.json missing — grill aborted')
-			}
-
-			spec = parseStartOut(raw)
-		}
-
-		if (!(await rt.git.isWorkingTreeClean())) {
-			await rt.git.stashPush({ includeUntracked: true })
-			stashed = true
-		}
-
-		const { id: prdId, branch } = await rt.storage.createPrd({ ...spec.prd, targetBranch })
-		materialised = true
+		const { id: prdId, branch } = await rt.storage.createPrd({ ...result.spec.prd, targetBranch: result.targetBranch })
+		result.markMaterialised()
 		await rt.git.checkout(branch)
-		if (stashed) {
-			await rt.git.stashPop()
-			stashed = false
-		}
+		if (result.stashed) await rt.git.stashPop()
 
 		const realIds: string[] = []
-		for (const slice of spec.slices) {
+		for (const slice of result.spec.slices) {
 			const created = await rt.storage.createSlice(prdId, { title: slice.title, body: slice.body, blockedBy: [] })
 			realIds.push(created.id)
 		}
-		for (const [i, slice] of spec.slices.entries()) {
+		for (const [i, slice] of result.spec.slices.entries()) {
 			await rt.storage.updateSlice(prdId, realIds[i]!, {
 				blockedBy: slice.blockedBy.map((idx) => realIds[idx]!),
 				readyForAgent: slice.readyForAgent,
@@ -114,19 +64,16 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 		rt.stdout(`Branch: ${branch} (you are now on it)\n`)
 		if (realIds.length > 0) {
 			rt.stdout('Slices:\n')
-			for (const [i, slice] of spec.slices.entries()) {
+			for (const [i, slice] of result.spec.slices.entries()) {
 				rt.stdout(`  - ${realIds[i]} ${slice.title}\n`)
 			}
 		}
 		rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the PRD/slice artifacts). Commit at your discretion.\n')
 		rt.stdout(`\nNext: trowel work ${prdId}\n`)
 
-		await unlinkSwallowEnoent(startOutPath)
+		await result.clearOut()
 	} catch (e) {
-		if (!materialised) {
-			if (backTo && (await rt.git.currentBranch()) !== backTo) await rt.git.checkout(backTo)
-			if (stashed) await rt.git.stashPop()
-		}
+		await result.recover()
 		throw e
 	}
 }
@@ -145,37 +92,13 @@ function printResumePreview(rt: StartRuntime, spec: ReturnType<typeof parseStart
 	rt.stdout('\n')
 }
 
-async function unlinkSwallowEnoent(p: string): Promise<void> {
-	try {
-		await unlink(p)
-	} catch (e) {
-		if ((e as { code?: string }).code !== 'ENOENT') throw e
-	}
-}
-
 export async function start(opts: { storage?: string; harness?: string }): Promise<void> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) {
-		process.stderr.write('trowel start: no project root found\n')
-		process.exit(1)
-	}
-
+	const base = await loadCommandBase('start')
+	const { config, projectRoot, git } = base
 	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage
 	const harnessKind = (opts.harness as HarnessKind | undefined) ?? config.agent.harness
 	const harness = getHarness(harnessKind)
-	const git = createRepoGit(projectRoot)
-	const gh = createGh()
-	const storageDeps: StorageDeps = {
-		gh,
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-		git,
-	}
-	const storage = getStorage(storageKind, storageDeps)
+	const storage = buildStorage(base, storageKind)
 	const startOutPath = path.resolve(projectRoot, '.trowel', 'start-out.json')
 
 	const rt: StartRuntime = {
@@ -192,14 +115,7 @@ export async function start(opts: { storage?: string; harness?: string }): Promi
 			const code = await waitForExit
 			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
 		},
-		readStartOut: async () => {
-			try {
-				return await readFile(startOutPath, 'utf8')
-			} catch (e) {
-				if ((e as { code?: string }).code === 'ENOENT') return null
-				throw e
-			}
-		},
+		readStartOut: () => readOptionalFile(startOutPath),
 		preflight: async () => {
 			const failures: string[] = []
 			if (!(await git.isWorkingTreeClean())) failures.push('working tree is not clean — commit or stash before running trowel start')
@@ -213,12 +129,7 @@ export async function start(opts: { storage?: string; harness?: string }): Promi
 		confirm: (msg) => inqConfirm({ message: msg, default: false }),
 	}
 
-	try {
-		await runStart(rt)
-	} catch (error) {
-		process.stderr.write(`trowel start: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+	await exitOnCommandError('start', () => runStart(rt))
 }
 
 if (import.meta.vitest) {

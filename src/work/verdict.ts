@@ -1,5 +1,6 @@
-import { v } from 'valleyed'
+import { v, type PipeOutput } from 'valleyed'
 
+import { validateJson } from './parse-json.ts'
 import type { Role } from '../prompts/load.ts'
 
 type VerdictKind = 'ready' | 'needs-revision' | 'no-work-needed' | 'partial'
@@ -51,19 +52,15 @@ export function parseVerdict(raw: string | null, role: Role, commits: number): T
 			throw new Error(`verdict file rejected: unknown verdict kind '${v}'`)
 		}
 	}
-	const result = v.validate(turnOutPipe(), parsed)
-	if (!result.valid) {
-		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
-		throw new Error(`verdict file rejected:\n${messages}`)
-	}
-	const kind = result.value.verdict as VerdictKind
+	const value = validateJson<PipeOutput<ReturnType<typeof turnOutPipe>>>(turnOutPipe(), parsed, 'verdict file rejected')
+	const kind = value.verdict as VerdictKind
 	if (!ROLE_VERDICTS[role].includes(kind)) {
 		throw new Error(`verdict '${kind}' is not valid for role '${role}'`)
 	}
 	if (role === 'implement' && kind === 'ready' && commits === 0) {
 		throw new Error('implementer reported ready but made no commits')
 	}
-	const notes = result.value.notes
+	const notes = value.notes
 	return notes === undefined ? { verdict: kind, commits } : { verdict: kind, notes, commits }
 }
 

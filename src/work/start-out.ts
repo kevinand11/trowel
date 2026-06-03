@@ -1,5 +1,7 @@
 import { v, type PipeOutput } from 'valleyed'
 
+import { parseJson, validateJson } from './parse-json.ts'
+
 const startOutPipe = () =>
 	v.object({
 		prd: v.object({
@@ -19,18 +21,8 @@ const startOutPipe = () =>
 export type StartOut = PipeOutput<ReturnType<typeof startOutPipe>>
 
 export function parseStartOut(raw: string): StartOut {
-	let parsed: unknown
-	try {
-		parsed = JSON.parse(raw)
-	} catch (e) {
-		throw new Error(`Invalid start-out.json: ${(e as Error).message}`)
-	}
-	const result = v.validate(startOutPipe(), parsed)
-	if (!result.valid) {
-		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
-		throw new Error(`Invalid start-out.json:\n${messages}`)
-	}
-	const value = result.value as StartOut
+	const parsed = parseJson(raw, 'start-out.json')
+	const value = validateJson<StartOut>(startOutPipe(), parsed, 'Invalid start-out.json')
 	checkBlockedBy(value.slices)
 	return value
 }

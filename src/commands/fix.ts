@@ -1,17 +1,17 @@
-import { readFile, stat, unlink } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 
-import { loadConfig } from '../config.ts'
+import { readOptionalFile, resolveGrillSpec } from './grill-flow.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase } from './runtime.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt } from '../prompts/load.ts'
-import { getStorage, type StorageKind } from '../storages/registry.ts'
-import type { Storage, StorageDeps } from '../storages/types.ts'
-import { createGh } from '../utils/gh-ops.ts'
-import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
+import type { StorageKind } from '../storages/registry.ts'
+import type { Storage } from '../storages/types.ts'
+import type { GitOps } from '../utils/git-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { parseFixOut } from '../work/fix-out.ts'
 
-export type FixRuntime = {
+type FixRuntime = {
 	projectRoot: string
 	storage: Storage
 	git: GitOps
@@ -23,86 +23,38 @@ export type FixRuntime = {
 	confirm: (msg: string) => Promise<boolean>
 }
 
-export async function runFix(rt: FixRuntime): Promise<void> {
-	const fixOutPath = path.join(rt.projectRoot, '.trowel', 'fix-out.json')
-
-	let resumedSpec: ReturnType<typeof parseFixOut> | null = null
-	let discardExistingFixOut = false
-	const existingRaw = await rt.readFixOut()
-	if (existingRaw !== null) {
-		let parsed: ReturnType<typeof parseFixOut> | null = null
-		let parseError: Error | null = null
-		try {
-			parsed = parseFixOut(existingRaw)
-		} catch (e) {
-			parseError = e as Error
-		}
-		if (parsed) {
-			printResumePreview(rt, parsed)
-			const cont = await rt.confirm('Continue with the fix above? (no → discard and start a fresh grill)')
-			if (cont) resumedSpec = parsed
-			else discardExistingFixOut = true
-		} else {
-			rt.stdout(`\nExisting .trowel/fix-out.json is invalid:\n${parseError!.message}\n\n`)
-			const wipe = await rt.confirm('Discard the invalid file and start a fresh grill? (no → abort)')
-			if (!wipe) throw parseError!
-			discardExistingFixOut = true
-		}
-	}
-
-	const needsFreshGrill = resumedSpec === null
-	if (needsFreshGrill) {
-		const failures = await rt.preflight()
-		if (failures.length > 0) {
-			throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
-		}
-		if (discardExistingFixOut) await unlinkSwallowEnoent(fixOutPath)
-	}
-
-	const targetBranch = await rt.git.currentBranch()
-	const backTo = targetBranch
-	let stashed = false
-	let materialised = false
+async function runFix(rt: FixRuntime): Promise<void> {
+	const result = await resolveGrillSpec({
+		projectRoot: rt.projectRoot,
+		git: rt.git,
+		readOut: rt.readFixOut,
+		preflight: rt.preflight,
+		stdout: rt.stdout,
+		confirm: rt.confirm,
+		parseOut: parseFixOut,
+		printResumePreview: (spec) => printResumePreview(rt, spec),
+		runInteractive: () => rt.runInteractive({ promptText: rt.fixPromptText, cwd: rt.projectRoot }),
+		missingOutMessage: 'Fix not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n',
+		missingOutError: 'fix-out.json missing — grill aborted',
+		resumePrompt: 'Continue with the fix above? (no → discard and start a fresh grill)',
+		invalidPrompt: 'Discard the invalid file and start a fresh grill? (no → abort)',
+		outFileName: 'fix-out.json',
+	})
 
 	try {
-		let spec: ReturnType<typeof parseFixOut>
-		if (resumedSpec) {
-			spec = resumedSpec
-		} else {
-			await rt.runInteractive({ promptText: rt.fixPromptText, cwd: rt.projectRoot })
-
-			const raw = await rt.readFixOut()
-			if (raw === null) {
-				rt.stdout('Fix not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n')
-				throw new Error('fix-out.json missing — grill aborted')
-			}
-			spec = parseFixOut(raw)
-		}
-
-		if (!(await rt.git.isWorkingTreeClean())) {
-			await rt.git.stashPush({ includeUntracked: true })
-			stashed = true
-		}
-
-		const { id, branch } = await rt.storage.createFix({ title: spec.title, body: spec.body, targetBranch })
-		materialised = true
-		if (backTo && (await rt.git.currentBranch()) !== backTo) await rt.git.checkout(backTo)
-		if (stashed) {
-			await rt.git.stashPop()
-			stashed = false
-		}
+		const { id, branch } = await rt.storage.createFix({ title: result.spec.title, body: result.spec.body, targetBranch: result.targetBranch })
+		result.markMaterialised()
+		if ((await rt.git.currentBranch()) !== result.backTo) await rt.git.checkout(result.backTo)
+		if (result.stashed) await rt.git.stashPop()
 
 		rt.stdout(`\nCreated Fix ${id}\n`)
 		rt.stdout(`Branch: ${branch}\n`)
 		rt.stdout('\nReview `git status` for uncommitted files from the grill. Commit at your discretion.\n')
 		rt.stdout(`\nNext: trowel work fix ${id}\n`)
 
-		await unlinkSwallowEnoent(fixOutPath)
+		await result.clearOut()
 	} catch (e) {
-		if (!materialised) {
-			if (backTo && (await rt.git.currentBranch()) !== backTo) await rt.git.checkout(backTo)
-			if (stashed) await rt.git.stashPop()
-		}
+		await result.recover()
 		throw e
 	}
 }
@@ -112,37 +64,13 @@ function printResumePreview(rt: FixRuntime, spec: ReturnType<typeof parseFixOut>
 	rt.stdout(`\n# ${spec.title}\n\n${spec.body}\n`)
 }
 
-async function unlinkSwallowEnoent(p: string): Promise<void> {
-	try {
-		await unlink(p)
-	} catch (e) {
-		if ((e as { code?: string }).code !== 'ENOENT') throw e
-	}
-}
-
 export async function fix(opts: { storage?: string; harness?: string }): Promise<void> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) {
-		process.stderr.write('trowel fix: no project root found\n')
-		process.exit(1)
-	}
-
+	const base = await loadCommandBase('fix')
+	const { config, projectRoot, git } = base
 	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage
 	const harnessKind = (opts.harness as HarnessKind | undefined) ?? config.agent.harness
 	const harness = getHarness(harnessKind)
-	const git = createRepoGit(projectRoot)
-	const gh = createGh()
-	const storageDeps: StorageDeps = {
-		gh,
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-		git,
-	}
-	const storage = getStorage(storageKind, storageDeps)
+	const storage = buildStorage(base, storageKind)
 	const fixOutPath = path.resolve(projectRoot, '.trowel', 'fix-out.json')
 
 	const rt: FixRuntime = {
@@ -159,14 +87,7 @@ export async function fix(opts: { storage?: string; harness?: string }): Promise
 			const code = await waitForExit
 			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
 		},
-		readFixOut: async () => {
-			try {
-				return await readFile(fixOutPath, 'utf8')
-			} catch (e) {
-				if ((e as { code?: string }).code === 'ENOENT') return null
-				throw e
-			}
-		},
+		readFixOut: () => readOptionalFile(fixOutPath),
 		preflight: async () => {
 			const failures: string[] = []
 			if (!(await git.isWorkingTreeClean())) failures.push('working tree is not clean — commit or stash before running trowel fix')
@@ -183,12 +104,7 @@ export async function fix(opts: { storage?: string; harness?: string }): Promise
 		},
 	}
 
-	try {
-		await runFix(rt)
-	} catch (error) {
-		process.stderr.write(`trowel fix: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+	await exitOnCommandError('fix', () => runFix(rt))
 }
 
 if (import.meta.vitest) {

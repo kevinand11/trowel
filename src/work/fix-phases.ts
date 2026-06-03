@@ -48,7 +48,7 @@ function withLock<T>(deps: FixPhaseDeps, fn: () => Promise<T>): Promise<T> {
 	return withMutationLock(deps.projectRoot, fn)
 }
 
-export async function prepareFixImplement(_deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
+async function prepareFixImplement(_deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
 	// The fix branch is created at `createFix` time; nothing to do here beyond emitting it.
 	return {
 		branch: fix.branch,
@@ -56,7 +56,7 @@ export async function prepareFixImplement(_deps: FixPhaseDeps, fix: FixRecord): 
 	}
 }
 
-export async function prepareFixReview(deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
+async function prepareFixReview(deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
 	const prNumber = await deps.gh.findPrNumberByHead(fix.branch)
 	return {
 		branch: fix.branch,
@@ -64,7 +64,7 @@ export async function prepareFixReview(deps: FixPhaseDeps, fix: FixRecord): Prom
 	}
 }
 
-export async function prepareFixAddress(deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
+async function prepareFixAddress(deps: FixPhaseDeps, fix: FixRecord): Promise<{ branch: string; turnIn: TurnIn }> {
 	const prNumber = await deps.gh.findPrNumberByHead(fix.branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
 	return {
@@ -75,7 +75,7 @@ export async function prepareFixAddress(deps: FixPhaseDeps, fix: FixRecord): Pro
 
 export type FixOutcome = 'done' | 'progress' | 'partial' | 'no-work'
 
-export async function landFixImplement(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
+async function landFixImplement(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
 	const tag = `[work fix-${fix.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 	if (verdict.verdict === 'no-work-needed') {
@@ -138,26 +138,20 @@ export async function landFixImplement(deps: FixPhaseDeps, fix: FixRecord, verdi
 	})
 }
 
-export async function landFixReview(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
+async function landFixReview(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
 	const tag = `[work fix-${fix.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 
 	return withLock(deps, async () => {
 		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) {
-				await deps.git.push(fix.branch)
-				deps.log(`${tag} pushed ${fix.branch}`)
-			}
+			await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
 			const prNumber = await deps.gh.findPrNumberByHead(fix.branch)
 			await deps.gh.markPrReady(prNumber)
 			deps.log(`${tag} marked PR #${prNumber} ready for merge`)
 			return 'progress'
 		}
 		if (verdict.verdict === 'needs-revision') {
-			if (verdict.commits > 0) {
-				await deps.git.push(fix.branch)
-				deps.log(`${tag} pushed ${fix.branch}`)
-			}
+			await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
 			await deps.storage.updateFix(fix.id, { needsRevision: true })
 			deps.log(`${tag} flagged needsRevision`)
 			return 'progress'
@@ -166,16 +160,13 @@ export async function landFixReview(deps: FixPhaseDeps, fix: FixRecord, verdict:
 	})
 }
 
-export async function landFixAddress(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
+async function landFixAddress(deps: FixPhaseDeps, fix: FixRecord, verdict: TurnOut): Promise<FixOutcome> {
 	const tag = `[work fix-${fix.id}]`
 	if (verdict.verdict === 'partial') return 'partial'
 
 	return withLock(deps, async () => {
 		if (verdict.verdict === 'ready') {
-			if (verdict.commits > 0) {
-				await deps.git.push(fix.branch)
-				deps.log(`${tag} pushed ${fix.branch}`)
-			}
+			await pushFixBranchIfNeeded(deps, fix, verdict.commits, tag)
 			await deps.storage.updateFix(fix.id, { needsRevision: false })
 			deps.log(`${tag} cleared needsRevision`)
 			return 'progress'
@@ -187,6 +178,12 @@ export async function landFixAddress(deps: FixPhaseDeps, fix: FixRecord, verdict
 		}
 		return 'partial'
 	})
+}
+
+async function pushFixBranchIfNeeded(deps: FixPhaseDeps, fix: FixRecord, commits: number, tag: string): Promise<void> {
+	if (commits <= 0) return
+	await deps.git.push(fix.branch)
+	deps.log(`${tag} pushed ${fix.branch}`)
 }
 
 async function targetBranchForFix(deps: FixPhaseDeps, fix: FixRecord): Promise<string> {

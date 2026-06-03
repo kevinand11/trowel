@@ -198,34 +198,8 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function noopGit(): GitOps {
-		return {
-			currentBranch: async () => 'fake-current',
-			baseBranch: async () => 'fake-base',
-			branchExists: async () => true,
-			isMerged: async () => false,
-			checkout: async () => {},
-			deleteBranch: async () => {},
-			fetch: async () => {},
-			push: async () => {},
-			mergeNoFf: async () => {},
-			deleteRemoteBranch: async () => {},
-			createRemoteBranch: async () => {},
-			createLocalBranch: async () => {},
-			pushSetUpstream: async () => {},
-			worktreeAdd: async () => {},
-			worktreeRemove: async () => {},
-			worktreeList: async () => [],
-			restoreAll: async () => {},
-			cleanUntracked: async () => {},
-			isWorkingTreeClean: async () => true,
-			stashPush: async () => {},
-			stashPop: async () => {},
-			mergeAbort: async () => {},
-			commitsAhead: async () => 0,
-			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-		}
-	}
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
+	const noopGit = noopGitOps
 
 	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {

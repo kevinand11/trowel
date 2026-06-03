@@ -7,13 +7,13 @@ import type { ClassifiedSlice, Slice } from '../storages/types.ts'
  */
 export type Bucket = 'done' | 'needs-revision' | 'in-flight' | 'blocked' | 'ready' | 'draft'
 
-export type ClassifyInput = {
+type ClassifyInput = {
 	state: 'OPEN' | 'CLOSED'
 	readyForAgent: boolean
 	needsRevision: boolean
 }
 
-export type ClassifyContext = {
+type ClassifyContext = {
 	/** Storages without a PR concept (e.g. file) always pass false here. */
 	hasOpenPr: boolean
 	/** Ids of dep targets that are not in the `done` bucket. */
@@ -30,7 +30,7 @@ export type ClassifyContext = {
  *   ready            OPEN + readyForAgent (none of the above)
  *   draft            OPEN (catch-all)
  */
-export function classify(s: ClassifyInput, ctx: ClassifyContext): Bucket {
+function classify(s: ClassifyInput, ctx: ClassifyContext): Bucket {
 	if (s.state === 'CLOSED') return 'done'
 	if (s.needsRevision) return 'needs-revision'
 	if (ctx.hasOpenPr) return 'in-flight'

@@ -1,18 +1,14 @@
-import path from 'node:path'
-
-import { loadConfig } from '../config.ts'
-import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, FixSummary, PrdSummary, Storage, StorageDeps } from '../storages/types.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase } from './runtime.ts'
+import type { StorageKind } from '../storages/registry.ts'
+import type { ClassifiedSlice, FixSummary, PrdSummary, Storage } from '../storages/types.ts'
+import { emptyBucketCounts, formatBucketCounts } from '../utils/bucket-format.ts'
 import type { Bucket } from '../utils/bucket.ts'
 import { createGh } from '../utils/gh-ops.ts'
-import { createRepoGit } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { reconcileEntity } from '../work/reconcile.ts'
 import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
-const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
-
-export type PrdState = 'open' | 'closed' | 'all'
+export type ListState = 'open' | 'closed' | 'all'
 
 type PrdListRow = {
 	summary: PrdSummary
@@ -20,34 +16,21 @@ type PrdListRow = {
 	slices: ClassifiedSlice[]
 }
 
-function renderList(rows: PrdListRow[], filter: PrdState): string {
+function renderList(rows: PrdListRow[], filter: ListState): string {
 	if (rows.length === 0) {
 		return filter === 'all' ? 'No PRDs found.\n' : `No ${filter} PRDs.\n`
 	}
 	const lines: string[] = []
 	for (const row of rows) {
-		const counts: Record<Bucket, number> = {
-			done: 0,
-			'needs-revision': 0,
-			'in-flight': 0,
-			blocked: 0,
-			ready: 0,
-			draft: 0,
-		}
+		const counts: Record<Bucket, number> = emptyBucketCounts()
 		for (const s of row.slices) counts[s.bucket]++
-		const summary = row.slices.length === 0 ? '(no slices)' : formatCounts(counts)
+		const summary = row.slices.length === 0 ? '(no slices)' : formatBucketCounts(counts)
 		const idCol = row.summary.id.padEnd(8)
 		const stateCol = row.state.padEnd(8)
 		const titleCol = row.summary.title.padEnd(48)
 		lines.push(`${idCol}  ${stateCol}  ${titleCol}  ${summary}`)
 	}
 	return `${lines.join('\n')}\n`
-}
-
-function formatCounts(counts: Record<Bucket, number>): string {
-	return BUCKET_ORDER.filter((b) => counts[b] > 0)
-		.map((b) => `${counts[b]} ${b}`)
-		.join(' · ')
 }
 
 type ListRuntime = {
@@ -57,7 +40,7 @@ type ListRuntime = {
 	stdout: (s: string) => void
 }
 
-async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
+async function runListPrds(filter: ListState, rt: ListRuntime): Promise<void> {
 	const summaries = await rt.storage.listPrds({ state: filter })
 	// Storages return unsorted; sort newest-first here. See ADR `storage-behavior-separation` step 4.
 	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -77,7 +60,7 @@ type FixListRow = {
 	state: 'OPEN' | 'CLOSED'
 }
 
-function renderFixList(rows: FixListRow[], filter: PrdState): string {
+function renderFixList(rows: FixListRow[], filter: ListState): string {
 	if (rows.length === 0) {
 		return filter === 'all' ? 'No fixes found.\n' : `No ${filter} fixes.\n`
 	}
@@ -90,7 +73,7 @@ function renderFixList(rows: FixListRow[], filter: PrdState): string {
 	return `${lines.join('\n')}\n`
 }
 
-async function runListFixes(filter: PrdState, rt: ListRuntime): Promise<void> {
+async function runListFixes(filter: ListState, rt: ListRuntime): Promise<void> {
 	const summaries = await rt.storage.listFixes({ state: filter })
 	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 	const rows: FixListRow[] = await Promise.all(
@@ -103,36 +86,20 @@ async function runListFixes(filter: PrdState, rt: ListRuntime): Promise<void> {
 }
 
 async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListRuntime; projectRoot: string; storage: Storage; gh: ReturnType<typeof createGh> }> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) {
-		process.stderr.write('trowel list: no project root found\n')
-		process.exit(1)
-	}
-	const storageKind = opts.storage ?? config.storage
-	const gh = createGh()
-	const storageDeps: StorageDeps = {
-		gh,
-		git: createRepoGit(projectRoot),
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-	}
-	const storage = getStorage(storageKind, storageDeps)
+	const base = await loadCommandBase('list')
+	const storage = buildStorage(base, (opts.storage as StorageKind | undefined) ?? base.config.storage)
 	return {
-		rt: { storage, gh, usePrs: config.work.usePrs, stdout: (s) => process.stdout.write(s) },
-		projectRoot,
+		rt: { storage, gh: base.gh, usePrs: base.config.work.usePrs, stdout: (s) => process.stdout.write(s) },
+		projectRoot: base.projectRoot,
 		storage,
-		gh,
+		gh: base.gh,
 	}
 }
 
-export async function list(filter: PrdState, opts: { storage?: string }): Promise<void> {
+export async function list(filter: ListState, opts: { storage?: string }): Promise<void> {
 	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
-	try {
-		await withMutationLock(projectRoot, async () => {
+	await exitOnCommandError('list', () =>
+		withMutationLock(projectRoot, async () => {
 			// Reconciliation may write CLOSED on PRDs whose Close-out PR merged on GitHub. Best-effort
 			// per entity; failures are swallowed by reconcileEntity itself.
 			const summaries = await storage.listPrds({ state: filter })
@@ -140,27 +107,21 @@ export async function list(filter: PrdState, opts: { storage?: string }): Promis
 				await reconcileEntity({ kind: 'prd', id: s.id, branch: s.branch }, { storage, gh })
 			}
 			await runListPrds(filter, rt)
-		})
-	} catch (error) {
-		process.stderr.write(`trowel list: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+		}),
+	)
 }
 
-export async function listFix(filter: PrdState, opts: { storage?: string }): Promise<void> {
+export async function listFix(filter: ListState, opts: { storage?: string }): Promise<void> {
 	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
-	try {
-		await withMutationLock(projectRoot, async () => {
+	await exitOnCommandError('list', () =>
+		withMutationLock(projectRoot, async () => {
 			const summaries = await storage.listFixes({ state: filter })
 			for (const s of summaries) {
 				await reconcileEntity({ kind: 'fix', id: s.id, branch: s.branch }, { storage, gh })
 			}
 			await runListFixes(filter, rt)
-		})
-	} catch (error) {
-		process.stderr.write(`trowel list: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+		}),
+	)
 }
 
 if (import.meta.vitest) {
@@ -273,7 +234,7 @@ if (import.meta.vitest) {
 		}
 
 		test('passes the filter through to storage.listPrds', async () => {
-			let receivedState: PrdState | null = null
+			let receivedState: ListState | null = null
 			const storage = fakeStorage({
 				listPrds: async (opts) => {
 					receivedState = opts.state

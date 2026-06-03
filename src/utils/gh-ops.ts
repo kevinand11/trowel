@@ -10,8 +10,6 @@ type GhRunner = (args: string[]) => Promise<ShellResult>
 
 type VersionInfo = { installed: boolean; version?: string }
 
-export type IssueState = 'OPEN' | 'CLOSED'
-
 export type IssueSummary = {
 	number: number
 	title: string

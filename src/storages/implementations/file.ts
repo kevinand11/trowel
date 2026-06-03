@@ -34,18 +34,47 @@ import type {
 type PrdStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null; targetBranch?: string }
 type SliceStore = PrdStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
 type FixStore = SliceStore & { body: string }
+type MutableStore = { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[]; closedAt: string | null }
+type StateFilter = { state: 'open' | 'closed' | 'all' }
+
+function applyMutablePatch(store: MutableStore, patch: SlicePatch | FixPatch): void {
+	if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
+	if (patch.needsRevision !== undefined) store.needsRevision = patch.needsRevision
+	if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
+	if (patch.state === 'CLOSED' && store.closedAt === null) store.closedAt = new Date().toISOString()
+	if (patch.state === 'OPEN') store.closedAt = null
+}
+
+function acceptsState(store: { closedAt: string | null }, opts: StateFilter): boolean {
+	const isClosed = store.closedAt !== null
+	if (opts.state === 'open' && isClosed) return false
+	if (opts.state === 'closed' && !isClosed) return false
+	return true
+}
+
+function jsonWithNewline(value: unknown): string {
+	return `${JSON.stringify(value, null, 2)}\n`
+}
+
+function baseStore(id: string, slug: string, title: string): PrdStore {
+	return { id, slug, title, createdAt: new Date().toISOString(), closedAt: null }
+}
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	async function findPrdDir(id: string): Promise<string> {
+	async function findEntityDir(root: string, kind: 'PRD' | 'fix', id: string): Promise<string> {
 		let entries: string[]
 		try {
-			entries = await readdir(deps.prdsDir)
+			entries = await readdir(root)
 		} catch {
-			throw new Error(`no PRD directory found for id '${id}' (prdsDir does not exist)`)
+			throw new Error(`no ${kind} directory found for id '${id}' (${kind === 'PRD' ? 'prdsDir' : 'fixesDir'} does not exist)`)
 		}
 		const match = entries.find((e) => e.startsWith(`${id}-`))
-		if (!match) throw new Error(`no PRD directory found for id '${id}'`)
-		return path.join(deps.prdsDir, match)
+		if (!match) throw new Error(`no ${kind} directory found for id '${id}'`)
+		return path.join(root, match)
+	}
+
+	async function findPrdDir(id: string): Promise<string> {
+		return findEntityDir(deps.prdsDir, 'PRD', id)
 	}
 
 	async function readPrdStore(id: string): Promise<PrdStore> {
@@ -71,25 +100,21 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return path.join(dir, match)
 	}
 
+	async function allocateEntity(title: string, root: string): Promise<{ id: string; slug: string; dir: string }> {
+		const slug = slugify(title)
+		const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
+		return { id, slug, dir: path.join(root, `${id}-${slug}`) }
+	}
+
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
 		return withMutationLock(deps.projectRoot, async () => {
-			const slug = slugify(spec.title)
-			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
-			const dir = path.join(deps.prdsDir, `${id}-${slug}`)
+			const { id, slug, dir } = await allocateEntity(spec.title, deps.prdsDir)
 			const branch = `${id}-${slug}`
 			const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 
 			await mkdir(dir, { recursive: true })
 			await writeFile(path.join(dir, 'README.md'), spec.body)
-			const store: PrdStore = {
-				id,
-				slug,
-				title: spec.title,
-				createdAt: new Date().toISOString(),
-				closedAt: null,
-				targetBranch,
-			}
-			await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
+			await writeFile(path.join(dir, 'store.json'), jsonWithNewline({ ...baseStore(id, slug, spec.title), targetBranch }))
 
 			await deps.git.createLocalBranch(branch, targetBranch)
 			await deps.git.pushSetUpstream(branch)
@@ -110,9 +135,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const storePath = path.join(deps.prdsDir, entry, 'store.json')
 			try {
 				const store: PrdStore = JSON.parse(await readFile(storePath, 'utf8'))
-				const isClosed = store.closedAt !== null
-				if (opts.state === 'open' && isClosed) continue
-				if (opts.state === 'closed' && !isClosed) continue
+				if (!acceptsState(store, opts)) continue
 				summaries.push({
 					id: store.id,
 					title: store.title,
@@ -126,15 +149,16 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return summaries
 	}
 
+	async function closeStore(dir: string): Promise<void> {
+		const storePath = path.join(dir, 'store.json')
+		const store: { closedAt: string | null } = JSON.parse(await readFile(storePath, 'utf8'))
+		if (store.closedAt !== null) return
+		store.closedAt = new Date().toISOString()
+		await writeFile(storePath, jsonWithNewline(store))
+	}
+
 	async function closePrd(id: string): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => {
-			const dir = await findPrdDir(id)
-			const storePath = path.join(dir, 'store.json')
-			const store: PrdStore = JSON.parse(await readFile(storePath, 'utf8'))
-			if (store.closedAt !== null) return // idempotent: already closed in store
-			store.closedAt = new Date().toISOString()
-			await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
-		})
+		return withMutationLock(deps.projectRoot, async () => closeStore(await findPrdDir(id)))
 	}
 
 	async function createSlice(prdId: string, spec: SliceSpec): Promise<Slice> {
@@ -156,7 +180,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				needsRevision: false,
 				blockedBy: spec.blockedBy,
 			}
-			await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
+			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(store))
 
 			return sliceFromStore(store, spec.body) as Slice
 		})
@@ -189,20 +213,15 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return result
 	}
 
+	async function updateStore<T extends MutableStore>(dir: string, patch: SlicePatch | FixPatch): Promise<void> {
+		const storePath = path.join(dir, 'store.json')
+		const store: T = JSON.parse(await readFile(storePath, 'utf8'))
+		applyMutablePatch(store, patch)
+		await writeFile(storePath, jsonWithNewline(store))
+	}
+
 	async function updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => {
-			const dir = await findSliceDir(prdId, sliceId)
-			const storePath = path.join(dir, 'store.json')
-			const store: SliceStore = JSON.parse(await readFile(storePath, 'utf8'))
-
-			if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
-			if (patch.needsRevision !== undefined) store.needsRevision = patch.needsRevision
-			if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
-			if (patch.state === 'CLOSED' && store.closedAt === null) store.closedAt = new Date().toISOString()
-			if (patch.state === 'OPEN') store.closedAt = null
-
-			await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
-		})
+		return withMutationLock(deps.projectRoot, async () => updateStore<SliceStore>(await findSliceDir(prdId, sliceId), patch))
 	}
 
 	function sliceFromStore(store: SliceStore, body: string): Omit<Slice, 'bucket'> {
@@ -266,15 +285,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function findFixDir(id: string): Promise<string> {
-		let entries: string[]
-		try {
-			entries = await readdir(deps.fixesDir)
-		} catch {
-			throw new Error(`no fix directory found for id '${id}' (fixesDir does not exist)`)
-		}
-		const match = entries.find((e) => e.startsWith(`${id}-`))
-		if (!match) throw new Error(`no fix directory found for id '${id}'`)
-		return path.join(deps.fixesDir, match)
+		return findEntityDir(deps.fixesDir, 'fix', id)
 	}
 
 	async function readFixStore(id: string): Promise<FixStore> {
@@ -303,26 +314,12 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 
 	async function createFix(spec: FixSpec): Promise<{ id: string; branch: string }> {
 		return withMutationLock(deps.projectRoot, async () => {
-			const slug = slugify(spec.title)
-			const id = await allocateNextId(deps.prdsDir, deps.fixesDir)
-			const dir = path.join(deps.fixesDir, `${id}-${slug}`)
+			const { id, slug, dir } = await allocateEntity(spec.title, deps.fixesDir)
 			const branch = fixBranchFor(id, slug)
 			const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 
 			await mkdir(dir, { recursive: true })
-			const store: FixStore = {
-				id,
-				slug,
-				title: spec.title,
-				body: spec.body,
-				createdAt: new Date().toISOString(),
-				closedAt: null,
-				targetBranch,
-				readyForAgent: true,
-				needsRevision: false,
-				blockedBy: [],
-			}
-			await writeFile(path.join(dir, 'store.json'), JSON.stringify(store, null, 2) + '\n')
+			await writeFile(path.join(dir, 'store.json'), jsonWithNewline({ ...baseStore(id, slug, spec.title), body: spec.body, targetBranch, readyForAgent: true, needsRevision: false, blockedBy: [] }))
 
 			await deps.git.createLocalBranch(branch, targetBranch)
 			await deps.git.pushSetUpstream(branch)
@@ -351,9 +348,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const storePath = path.join(deps.fixesDir, entry, 'store.json')
 			try {
 				const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
-				const isClosed = store.closedAt !== null
-				if (opts.state === 'open' && isClosed) continue
-				if (opts.state === 'closed' && !isClosed) continue
+				if (!acceptsState(store, opts)) continue
 				summaries.push({
 					id: store.id,
 					title: store.title,
@@ -368,30 +363,11 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function updateFix(id: string, patch: FixPatch): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => {
-			const dir = await findFixDir(id)
-			const storePath = path.join(dir, 'store.json')
-			const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
-
-			if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
-			if (patch.needsRevision !== undefined) store.needsRevision = patch.needsRevision
-			if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
-			if (patch.state === 'CLOSED' && store.closedAt === null) store.closedAt = new Date().toISOString()
-			if (patch.state === 'OPEN') store.closedAt = null
-
-			await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
-		})
+		return withMutationLock(deps.projectRoot, async () => updateStore<FixStore>(await findFixDir(id), patch))
 	}
 
 	async function closeFix(id: string): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => {
-			const dir = await findFixDir(id)
-			const storePath = path.join(dir, 'store.json')
-			const store: FixStore = JSON.parse(await readFile(storePath, 'utf8'))
-			if (store.closedAt !== null) return
-			store.closedAt = new Date().toISOString()
-			await writeFile(storePath, JSON.stringify(store, null, 2) + '\n')
-		})
+		return withMutationLock(deps.projectRoot, async () => closeStore(await findFixDir(id)))
 	}
 
 	return {

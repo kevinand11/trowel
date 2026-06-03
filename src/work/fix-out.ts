@@ -1,5 +1,7 @@
 import { v, type PipeOutput } from 'valleyed'
 
+import { parseJson, validateJson } from './parse-json.ts'
+
 const fixOutPipe = () =>
 	v.object({
 		title: v.string(),
@@ -9,18 +11,8 @@ const fixOutPipe = () =>
 export type FixOut = PipeOutput<ReturnType<typeof fixOutPipe>>
 
 export function parseFixOut(raw: string): FixOut {
-	let parsed: unknown
-	try {
-		parsed = JSON.parse(raw)
-	} catch (e) {
-		throw new Error(`Invalid fix-out.json: ${(e as Error).message}`)
-	}
-	const result = v.validate(fixOutPipe(), parsed)
-	if (!result.valid) {
-		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
-		throw new Error(`Invalid fix-out.json:\n${messages}`)
-	}
-	return result.value as FixOut
+	const parsed = parseJson(raw, 'fix-out.json')
+	return validateJson<FixOut>(fixOutPipe(), parsed, 'Invalid fix-out.json')
 }
 
 if (import.meta.vitest) {

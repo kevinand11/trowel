@@ -4,7 +4,26 @@ import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice, FixPatch, FixRecord, FixSpec, FixSummary, Storage, StorageDeps, StorageFactory, PrdRecord, PrdSpec, PrdSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
+type LabelPatch = { readyForAgent?: boolean; needsRevision?: boolean }
+
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
+	async function closeIssueIfOpen(id: string): Promise<void> {
+		const state = await deps.gh.getIssueState(id)
+		if (state !== null && state.toUpperCase() === 'CLOSED') return
+		const opts = deps.closeOptions.comment !== null ? { comment: deps.closeOptions.comment } : undefined
+		await deps.gh.closeIssue(id, opts)
+	}
+
+	async function applyLabelPatch(id: string, patch: LabelPatch): Promise<void> {
+		if (patch.readyForAgent !== undefined) {
+			const opts = patch.readyForAgent ? { add: [deps.labels.readyForAgent] } : { remove: [deps.labels.readyForAgent] }
+			await deps.gh.editIssueLabels(id, opts)
+		}
+		if (patch.needsRevision !== undefined) {
+			const opts = patch.needsRevision ? { add: [deps.labels.needsRevision] } : { remove: [deps.labels.needsRevision] }
+			await deps.gh.editIssueLabels(id, opts)
+		}
+	}
 	async function createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }> {
 		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithTargetBranch(spec.body, targetBranch), labels: [deps.labels.prd] })
@@ -69,11 +88,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function closePrd(id: string): Promise<void> {
-		// Idempotent: if the issue is already closed, no-op.
-		const state = await deps.gh.getIssueState(id)
-		if (state !== null && state.toUpperCase() === 'CLOSED') return
-		const opts = deps.closeOptions.comment !== null ? { comment: deps.closeOptions.comment } : undefined
-		await deps.gh.closeIssue(id, opts)
+		await closeIssueIfOpen(id)
 	}
 
 	async function findPrd(id: string): Promise<PrdRecord | null> {
@@ -175,23 +190,13 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function updateFix(id: string, patch: FixPatch): Promise<void> {
-		if (patch.readyForAgent !== undefined) {
-			const opts = patch.readyForAgent ? { add: [deps.labels.readyForAgent] } : { remove: [deps.labels.readyForAgent] }
-			await deps.gh.editIssueLabels(id, opts)
-		}
-		if (patch.needsRevision !== undefined) {
-			const opts = patch.needsRevision ? { add: [deps.labels.needsRevision] } : { remove: [deps.labels.needsRevision] }
-			await deps.gh.editIssueLabels(id, opts)
-		}
+		await applyLabelPatch(id, patch)
 		if (patch.state === 'CLOSED') await deps.gh.closeIssue(id)
 		else if (patch.state === 'OPEN') await deps.gh.reopenIssue(id)
 	}
 
 	async function closeFix(id: string): Promise<void> {
-		const state = await deps.gh.getIssueState(id)
-		if (state !== null && state.toUpperCase() === 'CLOSED') return
-		const opts = deps.closeOptions.comment !== null ? { comment: deps.closeOptions.comment } : undefined
-		await deps.gh.closeIssue(id, opts)
+		await closeIssueIfOpen(id)
 	}
 
 	return {
@@ -211,14 +216,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function updateSlice(_prdId: string, sliceId: string, patch: SlicePatch): Promise<void> {
-		if (patch.readyForAgent !== undefined) {
-			const opts = patch.readyForAgent ? { add: [deps.labels.readyForAgent] } : { remove: [deps.labels.readyForAgent] }
-			await deps.gh.editIssueLabels(sliceId, opts)
-		}
-		if (patch.needsRevision !== undefined) {
-			const opts = patch.needsRevision ? { add: [deps.labels.needsRevision] } : { remove: [deps.labels.needsRevision] }
-			await deps.gh.editIssueLabels(sliceId, opts)
-		}
+		await applyLabelPatch(sliceId, patch)
 		if (patch.blockedBy !== undefined) {
 			const current = await deps.gh.listBlockedBy(sliceId)
 			const currentByNumber = new Map(current.map((b) => [String(b.number), b.id]))

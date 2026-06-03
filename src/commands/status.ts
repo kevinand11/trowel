@@ -3,30 +3,19 @@ import path from 'node:path'
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
 import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
+import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../utils/bucket-format.ts'
 import type { Bucket } from '../utils/bucket.ts'
 import { createGh, type GhOps } from '../utils/gh-ops.ts'
-import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { reconcileEntity } from '../work/reconcile.ts'
-
-// Bucket render order. Mirrors the predicate evaluation order in
-// `src/utils/bucket.ts` so the user reads buckets in the same flow as
-// the classifier evaluates them.
-const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
+import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
 function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
-	const counts: Record<Bucket, number> = {
-		done: 0,
-		'needs-revision': 0,
-		'in-flight': 0,
-		blocked: 0,
-		ready: 0,
-		draft: 0,
-	}
+	const counts: Record<Bucket, number> = emptyBucketCounts()
 	for (const s of slices) counts[s.bucket]++
 
-	const summary = slices.length === 0 ? '(no slices)' : `(${formatCounts(counts)})`
+	const summary = slices.length === 0 ? '(no slices)' : `(${formatBucketCounts(counts)})`
 
 	const lines: string[] = []
 	lines.push(`PRD ${prd.id}  ${prd.title}`)
@@ -53,12 +42,6 @@ function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
 	}
 
 	return lines.join('\n')
-}
-
-function formatCounts(counts: Record<Bucket, number>): string {
-	return BUCKET_ORDER.filter((b) => counts[b] > 0)
-		.map((b) => `${counts[b]} ${b}`)
-		.join(' · ')
 }
 
 function bySliceId(slices: ClassifiedSlice[]): Map<string, ClassifiedSlice> {

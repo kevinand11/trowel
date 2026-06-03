@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process'
 import { unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+import { detectCliVersion, spawnHarness, spawnPrintCommand } from './process.ts'
 import type {
 	HarnessAdapter,
 	HarnessSpawnHandle,
@@ -9,7 +9,6 @@ import type {
 	HarnessSpawnPrintArgs,
 	HarnessVersionInfo,
 } from './types.ts'
-import { tryExec } from '../utils/shell.ts'
 
 export const codexHarness: HarnessAdapter = {
 	kind: 'codex',
@@ -20,21 +19,11 @@ export const codexHarness: HarnessAdapter = {
 		// `--json` streams NDJSON events per agent step (tool calls, results, deltas) rather than
 		// only the final response. Flag name has shifted between codex CLI versions; verify
 		// against `codex exec --help` if upgrading.
-		const child = spawn(
-			'codex',
-			['exec', '--json', '--model', args.model, '--dangerously-bypass-approvals-and-sandbox', '--cd', args.cwd, '-'],
-			{ cwd: args.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] },
-		)
-		child.stdout?.pipe(args.logStream, { end: false })
-		child.stderr?.pipe(args.logStream, { end: false })
-		child.stdin?.write(args.prompt)
-		child.stdin?.end()
-
-		const waitForExit = new Promise<number>((resolve, reject) => {
-			child.on('error', reject)
-			child.on('exit', (code) => resolve(code ?? -1))
+		return spawnPrintCommand('codex', ['exec', '--json', '--model', args.model, '--dangerously-bypass-approvals-and-sandbox', '--cd', args.cwd, '-'], {
+			cwd: args.cwd,
+			prompt: args.prompt,
+			logStream: args.logStream,
 		})
-		return { child, waitForExit }
 	},
 
 	// Codex has no --append-system-prompt; codex auto-discovers AGENTS.md in cwd.
@@ -43,11 +32,7 @@ export const codexHarness: HarnessAdapter = {
 		const agentsPath = path.join(args.cwd, 'AGENTS.md')
 		await writeFile(agentsPath, args.systemPrompt, 'utf8')
 
-		const child = spawn('codex', ['--model', args.model, '--cd', args.cwd], {
-			cwd: args.cwd,
-			env: process.env,
-			stdio: 'inherit',
-		})
+		const child = spawnHarness('codex', ['--model', args.model, '--cd', args.cwd], { cwd: args.cwd, stdio: 'inherit' })
 		const waitForExit = new Promise<number>((resolve, reject) => {
 			child.on('error', reject)
 			child.on('exit', async (code) => {
@@ -65,14 +50,7 @@ export const codexHarness: HarnessAdapter = {
 	},
 
 	async detectVersion(): Promise<HarnessVersionInfo> {
-		for (const flag of ['--version', '-V']) {
-			const r = await tryExec('codex', [flag])
-			if (r.ok) {
-				const m = `${r.stdout}\n${r.stderr}`.match(/(\d+\.\d+\.\d+)/)
-				return { installed: true, version: m?.[1] }
-			}
-		}
-		return { installed: false }
+		return detectCliVersion('codex', ['--version', '-V'])
 	},
 }
 

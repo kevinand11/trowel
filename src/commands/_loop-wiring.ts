@@ -2,14 +2,13 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { loadConfig } from '../config.ts'
+import { buildStorage, loadCommandBase } from './runtime.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt, type Role } from '../prompts/load.ts'
 import type { Config } from '../schema.ts'
-import { getStorage, type StorageKind } from '../storages/registry.ts'
-import type { Storage, StorageDeps, Slice } from '../storages/types.ts'
+import type { StorageKind } from '../storages/registry.ts'
+import type { Storage, Slice } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
-import { createRepoGit } from '../utils/git-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
@@ -28,29 +27,13 @@ type LoopWiring = {
 }
 
 export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<LoopWiring> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) throw new Error('no project root found')
-
+	const base = await loadCommandBase('work')
+	const { config, projectRoot, git, gh } = base
 	const storageKind = opts.storage ?? config.storage
 	const harnessKind = opts.harness ?? config.agent.harness
 	const harness = getHarness(harnessKind)
-
 	const log = (m: string) => process.stdout.write(`${m}\n`)
-	const git = createRepoGit(projectRoot)
-	const gh = createGh()
-
-	const storageDeps: StorageDeps = {
-		gh,
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-		git,
-		log,
-	}
-	const storage = getStorage(storageKind, storageDeps)
+	const storage = buildStorage(base, storageKind, { log })
 
 	await ensureTrowelDir(projectRoot)
 

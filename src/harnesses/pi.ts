@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process'
-
+import { detectCliVersion, spawnHarness, spawnPrintCommand, waitForChildExit } from './process.ts'
 import type {
 	HarnessAdapter,
 	HarnessSpawnHandle,
@@ -7,7 +6,6 @@ import type {
 	HarnessSpawnPrintArgs,
 	HarnessVersionInfo,
 } from './types.ts'
-import { tryExec } from '../utils/shell.ts'
 
 export const piHarness: HarnessAdapter = {
 	kind: 'pi',
@@ -16,41 +14,17 @@ export const piHarness: HarnessAdapter = {
 
 	async spawnPrint(args: HarnessSpawnPrintArgs): Promise<HarnessSpawnHandle> {
 		// `--mode json` emits NDJSON events per agent step instead of the final response text.
-		const child = spawn('pi', ['-p', '--mode', 'json', '--model', args.model, '--no-session', args.prompt], {
-			cwd: args.cwd,
-			env: process.env,
-			stdio: ['pipe', 'pipe', 'pipe'],
-		})
-		child.stdout?.pipe(args.logStream, { end: false })
-		child.stderr?.pipe(args.logStream, { end: false })
-		child.stdin?.end()
-
-		const waitForExit = new Promise<number>((resolve, reject) => {
-			child.on('error', reject)
-			child.on('exit', (code) => resolve(code ?? -1))
-		})
-		return { child, waitForExit }
+		return spawnPrintCommand('pi', ['-p', '--mode', 'json', '--model', args.model, '--no-session', args.prompt], { cwd: args.cwd, logStream: args.logStream })
 	},
 
 	async spawnInteractive(args: HarnessSpawnInteractiveArgs): Promise<HarnessSpawnHandle> {
-		const child = spawn('pi', ['--append-system-prompt', args.systemPrompt, '--model', args.model], {
-			cwd: args.cwd,
-			env: process.env,
-			stdio: 'inherit',
-		})
-		const waitForExit = new Promise<number>((resolve, reject) => {
-			child.on('error', reject)
-			child.on('exit', (code) => resolve(code ?? -1))
-		})
-		return { child, waitForExit }
+		const child = spawnHarness('pi', ['--append-system-prompt', args.systemPrompt, '--model', args.model], { cwd: args.cwd, stdio: 'inherit' })
+		return { child, waitForExit: waitForChildExit(child) }
 	},
 
 	async detectVersion(): Promise<HarnessVersionInfo> {
 		// pi prints --version to stderr, not stdout — scan both streams.
-		const r = await tryExec('pi', ['--version'])
-		if (!r.ok) return { installed: false }
-		const m = `${r.stdout}\n${r.stderr}`.match(/(\d+\.\d+\.\d+)/)
-		return { installed: true, version: m?.[1] }
+		return detectCliVersion('pi', ['--version'])
 	},
 }
 

@@ -1,96 +1,38 @@
-import { buildLoopWiring } from './_loop-wiring.ts'
+import { runManualSliceCommand } from './manual-slice-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 import type { StorageKind } from '../storages/registry.ts'
-import type { ClassifiedSlice, Slice, Storage } from '../storages/types.ts'
-import type { GhOps } from '../utils/gh-ops.ts'
-import { classifySlicesForPrd } from '../work/slice-buckets.ts'
+import type { Slice } from '../storages/types.ts'
 
 export async function address(sliceId: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
-	try {
-		const wiring = await buildLoopWiring({ storage: opts.storage, harness: opts.harness })
-		await runAddress(sliceId, {
-			storage: wiring.storage,
-			gh: wiring.gh,
-			usePrs: wiring.config.work.usePrs,
-			runOnePhase: (prdId, slice) => wiring.runOnePhase(prdId, slice, 'address'),
-			stderr: (s) => process.stderr.write(s),
-		})
-	} catch (e) {
-		process.stderr.write(`trowel address: ${(e as Error).message}\n`)
-		process.exit(1)
-	}
-}
-
-type AddressRuntime = {
-	storage: Storage
-	gh: GhOps
-	usePrs: boolean
-	runOnePhase: (prdId: string, slice: Slice) => Promise<void>
-	stderr: (s: string) => void
-}
-
-async function runAddress(sliceId: string, rt: AddressRuntime): Promise<void> {
-	const hit = await rt.storage.findSlice(sliceId)
-	if (!hit) throw new Error(`slice '${sliceId}' not found`)
-	const { prdId } = hit
-	const slice = (await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId, usePrs: rt.usePrs })).find((s) => s.id === sliceId)
-	if (!slice) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
-	if (slice.bucket !== 'needs-revision') {
-		throw new Error(
-			`slice '${sliceId}' is in bucket '${slice.bucket}', not 'needs-revision'. ` +
-				`Addresser only runs against slices flagged for revision.`,
-		)
-	}
-	await rt.runOnePhase(prdId, slice)
+	await runManualSliceCommand({
+		commandName: 'address',
+		sliceId,
+		storage: opts.storage,
+		harness: opts.harness,
+		role: 'address',
+		requiredBucket: 'needs-revision',
+		reason: () => 'Addresser only runs against slices flagged for revision.',
+	})
 }
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
-
-	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
-		return {
-			id: 's1',
-			title: 'Implement A',
-			body: 'spec',
-			state: 'OPEN',
-			readyForAgent: true,
-			needsRevision: true,
-			bucket: 'needs-revision',
-			blockedBy: [],
-			prState: 'draft',
-			...overrides,
-		}
-	}
-
-	function makeStorage(slices: Slice[]): Storage {
-		const sliceById = new Map(slices.map((s) => [s.id, s]))
-		return {
-			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
-			listPrds: async () => [],
-			closePrd: async () => {},
-			createSlice: async () => {
-				throw new Error('not used')
-			},
-			findSlices: async () => slices,
-			findSlice: async (sliceId) => {
-				const s = sliceById.get(sliceId)
-				return s ? { prdId: 'p1', slice: s } : null
-			},
-			updateSlice: async () => {},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
-		}
-	}
+	const { runSlicePhaseCommand } = await import('./slice-phase-command.ts')
+	const { fakeClassifiedSlice, fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	describe('runAddress', () => {
+		const runAddress = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime']) =>
+			runSlicePhaseCommand({
+				sliceId,
+				runtime,
+				requiredBucket: 'needs-revision',
+				reason: () => 'Addresser only runs against slices flagged for revision.',
+			})
+
 		test('on a needs-revision slice (issue storage): calls runOnePhase exactly once', async () => {
-			const slice = makeSlice({ id: 's1', bucket: 'needs-revision' })
-			const storage = makeStorage([slice])
+			const slice = fakeClassifiedSlice({ id: 's1', bucket: 'needs-revision', needsRevision: true, prState: 'draft' })
+			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
 			const calls: Slice[] = []
 			await runAddress('s1', {
@@ -100,18 +42,15 @@ if (import.meta.vitest) {
 				runOnePhase: async (_prdId, s) => {
 					calls.push(s)
 				},
-				stderr: () => {},
 			})
 			expect(calls).toHaveLength(1)
 		})
 
 		test('refuses when slice bucket is not "needs-revision"', async () => {
-			const slice = makeSlice({ id: 's1', bucket: 'in-flight', needsRevision: false })
-			const storage = makeStorage([slice])
+			const slice = fakeClassifiedSlice({ id: 's1', bucket: 'in-flight', needsRevision: false, prState: 'draft' })
+			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
-			await expect(runAddress('s1', { storage, gh, usePrs: false, runOnePhase: async () => {}, stderr: () => {} })).rejects.toThrow(
-				/bucket 'in-flight'/,
-			)
+			await expect(runAddress('s1', { storage, gh, usePrs: false, runOnePhase: async () => {} })).rejects.toThrow(/bucket 'in-flight'/)
 		})
 	})
 }

@@ -7,12 +7,19 @@ import { doctor } from './commands/doctor.ts'
 import { fix } from './commands/fix.ts'
 import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
-import { list, listFix, type PrdState } from './commands/list.ts'
+import { list, listFix, type ListState } from './commands/list.ts'
 import { review } from './commands/review.ts'
 import { start } from './commands/start.ts'
 import { statusFix, statusPrd, statusSlice } from './commands/status.ts'
 import * as stubs from './commands/stubs.ts'
 import { work, type WorkScope } from './commands/work.ts'
+
+function parseListState(commandName: string, raw: string): ListState {
+	const validStates: ListState[] = ['open', 'closed', 'all']
+	if (validStates.includes(raw as ListState)) return raw as ListState
+	process.stderr.write(`trowel ${commandName}: invalid --state '${raw}' (expected open | closed | all)\n`)
+	process.exit(1)
+}
 
 export function run(): void {
 	const program = new Command()
@@ -58,12 +65,7 @@ export function run(): void {
 		.option('--state <kind>', 'Filter by state: open | closed | all', 'open')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (opts: { state: string; storage?: string }) => {
-			const validStates: PrdState[] = ['open', 'closed', 'all']
-			if (!validStates.includes(opts.state as PrdState)) {
-				process.stderr.write(`trowel list prd: invalid --state '${opts.state}' (expected open | closed | all)\n`)
-				process.exit(1)
-			}
-			await list(opts.state as PrdState, { storage: opts.storage })
+			await list(parseListState('list prd', opts.state), { storage: opts.storage })
 		})
 
 	listCmd
@@ -72,12 +74,7 @@ export function run(): void {
 		.option('--state <kind>', 'Filter by state: open | closed | all', 'open')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (opts: { state: string; storage?: string }) => {
-			const validStates: PrdState[] = ['open', 'closed', 'all']
-			if (!validStates.includes(opts.state as PrdState)) {
-				process.stderr.write(`trowel list fix: invalid --state '${opts.state}' (expected open | closed | all)\n`)
-				process.exit(1)
-			}
-			await listFix(opts.state as PrdState, { storage: opts.storage })
+			await listFix(parseListState('list fix', opts.state), { storage: opts.storage })
 		})
 
 	const statusCmd = program.command('status').description('Show the current state of a PRD, Slice, or Fix')

@@ -17,24 +17,11 @@ export async function classifySlicesForPrd(args: {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { fakeClassifiedSlice, fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	describe('classifySlicesForPrd', () => {
 		function storageWithSlice(prState: null = null): Storage {
-			return {
-				createPrd: async () => ({ id: 'p', branch: 'p' }),
-				findPrd: async () => null,
-				listPrds: async () => [],
-				closePrd: async () => {},
-				createSlice: async () => { throw new Error('not used') },
-				findSlices: async () => [{ id: '124', title: 'Read Query Shape', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false, blockedBy: [], prState }],
-				findSlice: async () => null,
-				updateSlice: async () => {},
-				createFix: async () => ({ id: 'f', branch: 'f' }),
-				findFix: async () => null,
-				listFixes: async () => [],
-				updateFix: async () => {},
-				closeFix: async () => {},
-			}
+			return fakeSliceStorage([fakeClassifiedSlice({ id: '124', title: 'Read Query Shape', prState })])
 		}
 
 		test('usePrs:false classifies raw storage slices without gh enrichment', async () => {

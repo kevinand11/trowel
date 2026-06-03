@@ -1,15 +1,13 @@
-import path from 'node:path'
-
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
-import { loadConfig } from '../config.ts'
-import { getStorage, type StorageKind } from '../storages/registry.ts'
-import type { Slice, Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
-import { createGh, type GhOps } from '../utils/gh-ops.ts'
-import { classifySlicesForPrd } from '../work/slice-buckets.ts'
-import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from './runtime.ts'
+import type { StorageKind } from '../storages/registry.ts'
+import type { Slice, Storage, DeleteBranchPolicy } from '../storages/types.ts'
+import type { GhOps } from '../utils/gh-ops.ts'
+import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { slug as slugify } from '../utils/slug.ts'
+import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
 type OpenPr = { number: number; url: string }
 
@@ -144,55 +142,38 @@ function sliceBranchName(prdId: string, slice: Slice): string {
 	return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
 }
 
-export async function closePrd(prdId: string, opts: { storage?: StorageKind }): Promise<void> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) {
-		process.stderr.write('trowel close: no project root found\n')
-		process.exit(1)
-	}
-
-	const storageKind = opts.storage ?? config.storage
-	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
-
-	const git = createRepoGit(projectRoot)
-	const gh = createGh()
-	const storageDeps: StorageDeps = {
-		gh,
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-		confirm: promptConfirm,
-		git,
-	}
-	const storage = getStorage(storageKind, storageDeps)
-
-	const listOpenPrs = async (b: string): Promise<OpenPr[]> => {
+function listOpenPrsFor(base: CommandBase): (branch: string) => Promise<OpenPr[]> {
+	return async (branch) => {
 		try {
-			const prs = await gh.listOpenPrs({ base: b })
+			const prs = await base.gh.listOpenPrs({ base: branch })
 			return prs.map((p) => ({ number: p.number, url: p.url ?? '' }))
 		} catch {
 			return []
 		}
 	}
+}
 
-	try {
-		await withMutationLock(projectRoot, () =>
-			runClosePrd(prdId, {
-				storage,
-				deleteBranchPolicy: config.close.deleteBranch,
-				confirm: promptConfirm,
-				stdout: (s) => process.stdout.write(s),
-				git,
-				listOpenPrs,
-			}),
-		)
-	} catch (error) {
-		process.stderr.write(`trowel close: ${(error as Error).message}\n`)
-		process.exit(1)
+async function buildCloseRuntime(opts: { storage?: StorageKind }): Promise<{ base: CommandBase; storage: Storage; confirm: (msg: string) => Promise<boolean>; listOpenPrs: (branch: string) => Promise<OpenPr[]> }> {
+	const base = await loadCommandBase('close')
+	const confirm = (msg: string) => inqConfirm({ message: msg, default: false })
+	const storage = buildStorage(base, opts.storage ?? base.config.storage, { confirm })
+	return { base, storage, confirm, listOpenPrs: listOpenPrsFor(base) }
+}
+
+function closeRuntime(base: CommandBase, storage: Storage, confirm: (msg: string) => Promise<boolean>, listOpenPrs: (branch: string) => Promise<OpenPr[]>): CloseRuntime {
+	return {
+		storage,
+		deleteBranchPolicy: base.config.close.deleteBranch,
+		confirm,
+		stdout: (s) => process.stdout.write(s),
+		git: base.git,
+		listOpenPrs,
 	}
+}
+
+export async function closePrd(prdId: string, opts: { storage?: StorageKind }): Promise<void> {
+	const { base, storage, confirm, listOpenPrs } = await buildCloseRuntime(opts)
+	await exitOnCommandError('close', () => withMutationLock(base.projectRoot, () => runClosePrd(prdId, closeRuntime(base, storage, confirm, listOpenPrs))))
 }
 
 async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
@@ -223,113 +204,28 @@ async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
 }
 
 export async function closeFix(fixId: string, opts: { storage?: StorageKind }): Promise<void> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) {
-		process.stderr.write('trowel close: no project root found\n')
-		process.exit(1)
-	}
-
-	const storageKind = opts.storage ?? config.storage
-	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
-
-	const git = createRepoGit(projectRoot)
-	const gh = createGh()
-	const storageDeps: StorageDeps = {
-		gh,
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-		confirm: promptConfirm,
-		git,
-	}
-	const storage = getStorage(storageKind, storageDeps)
-
-	const listOpenPrs = async (b: string): Promise<OpenPr[]> => {
-		try {
-			const prs = await gh.listOpenPrs({ base: b })
-			return prs.map((p) => ({ number: p.number, url: p.url ?? '' }))
-		} catch {
-			return []
-		}
-	}
-
-	try {
-		await withMutationLock(projectRoot, () =>
-			runCloseFix(fixId, {
-				storage,
-				deleteBranchPolicy: config.close.deleteBranch,
-				confirm: promptConfirm,
-				stdout: (s) => process.stdout.write(s),
-				git,
-				listOpenPrs,
-			}),
-		)
-	} catch (error) {
-		process.stderr.write(`trowel close: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+	const { base, storage, confirm, listOpenPrs } = await buildCloseRuntime(opts)
+	await exitOnCommandError('close', () => withMutationLock(base.projectRoot, () => runCloseFix(fixId, closeRuntime(base, storage, confirm, listOpenPrs))))
 }
 
 export async function closeSlice(sliceId: string, opts: { storage?: StorageKind }): Promise<void> {
-	const { config, projectRoot } = await loadConfig()
-	if (!projectRoot) {
-		process.stderr.write('trowel close: no project root found\n')
-		process.exit(1)
-	}
-
-	const storageKind = opts.storage ?? config.storage
-	const promptConfirm = (msg: string) => inqConfirm({ message: msg, default: false })
-
-	const git = createRepoGit(projectRoot)
-	const gh = createGh()
-	const storageDeps: StorageDeps = {
-		gh,
-		repoRoot: projectRoot,
-		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
-		labels: config.labels,
-		closeOptions: config.close,
-		confirm: promptConfirm,
-		git,
-	}
-	const storage = getStorage(storageKind, storageDeps)
-
-	const listOpenPrs = async (b: string): Promise<OpenPr[]> => {
-		try {
-			const prs = await gh.listOpenPrs({ base: b })
-			return prs.map((p) => ({ number: p.number, url: p.url ?? '' }))
-		} catch {
-			return []
-		}
-	}
-
-	try {
-		await withMutationLock(projectRoot, () =>
+	const { base, storage, confirm, listOpenPrs } = await buildCloseRuntime(opts)
+	await exitOnCommandError('close', () =>
+		withMutationLock(base.projectRoot, () =>
 			runCloseSlice(sliceId, {
-				storage,
-				deleteBranchPolicy: config.close.deleteBranch,
-				confirm: promptConfirm,
-				stdout: (s) => process.stdout.write(s),
-				git,
-				gh,
-				usePrs: config.work.usePrs,
-				listOpenPrs,
-				perSliceBranches: config.work.perSliceBranches,
+				...closeRuntime(base, storage, confirm, listOpenPrs),
+				gh: base.gh,
+				usePrs: base.config.work.usePrs,
+				perSliceBranches: base.config.work.perSliceBranches,
 			}),
-		)
-	} catch (error) {
-		process.stderr.write(`trowel close: ${(error as Error).message}\n`)
-		process.exit(1)
-	}
+		),
+	)
 }
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
 	const noPrGh = () => recordingGhOps().gh
 
@@ -390,7 +286,7 @@ if (import.meta.vitest) {
 
 	function fakeGit(state: GitState): { git: GitOps; calls: string[] } {
 		const calls: string[] = []
-		const git: GitOps = {
+		const git: GitOps = noopGitOps({
 			currentBranch: async () => state.current,
 			baseBranch: async () => 'main',
 			branchExists: async (b) => state.branches.has(b),
@@ -406,26 +302,7 @@ if (import.meta.vitest) {
 				calls.push(`deleteBranch(${b})`)
 				state.branches.delete(b)
 			},
-			// unused in close tests; the GitOps shape is the canonical 12-method bag
-			fetch: async () => {},
-			push: async () => {},
-			mergeNoFf: async () => {},
-			deleteRemoteBranch: async () => {},
-			createRemoteBranch: async () => {},
-			createLocalBranch: async () => {},
-			pushSetUpstream: async () => {},
-			worktreeAdd: async () => {},
-			worktreeRemove: async () => {},
-			worktreeList: async () => [],
-			restoreAll: async () => {},
-			cleanUntracked: async () => {},
-			isWorkingTreeClean: async () => true,
-			stashPush: async () => {},
-			stashPop: async () => {},
-			mergeAbort: async () => {},
-			commitsAhead: async () => 0,
-			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-		}
+		})
 		return { git, calls }
 	}
 

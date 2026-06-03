@@ -171,7 +171,7 @@ export async function init(layerArg: string): Promise<void> {
 	}
 }
 
-export function validatePrdsDir(s: string): true | string {
+function validatePrdsDir(s: string): true | string {
 	if (s.trim() === '') return 'cannot be empty'
 	if (path.isAbsolute(s)) return 'must be project-relative (no leading /)'
 	return true
@@ -216,7 +216,7 @@ if (import.meta.vitest) {
 		await rm(path.dirname(f.home), { recursive: true, force: true })
 	}
 
-	function fixedPrompts(storage: string, confirm: boolean): InitPrompts {
+	function fixedPrompts(storage: string, confirm: boolean, overrides: Partial<InitPrompts> = {}): InitPrompts {
 		return {
 			storage: async () => storage,
 			prdsDir: async (current) => current,
@@ -225,7 +225,20 @@ if (import.meta.vitest) {
 			usePrs: async (current) => current,
 			review: async (current) => current,
 			confirm: async () => confirm,
+			...overrides,
 		}
+	}
+
+	function runProjectInit(f: Fixture, prompts: InitPrompts, stdout: (s: string) => void = () => {}) {
+		return runInit({ layer: 'project', cwd: f.project, home: f.home, prompts, stdout })
+	}
+
+	function promptsForFile(overrides: Partial<InitPrompts> = {}): InitPrompts {
+		return fixedPrompts('file', true, { usePrs: async () => false, review: async () => false, ...overrides })
+	}
+
+	function promptsForIssue(overrides: Partial<InitPrompts> = {}): InitPrompts {
+		return fixedPrompts('issue', true, { usePrs: async () => false, review: async () => false, ...overrides })
 	}
 
 	describe('validatePrdsDir', () => {
@@ -257,13 +270,7 @@ if (import.meta.vitest) {
 		})
 
 		test('writes a sparse file at <projectRoot>/.trowel/config.json with the keys the wizard asked about', async () => {
-			const result = await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: fixedPrompts('file', true),
-				stdout: () => {},
-			})
+			const result = await runProjectInit(f, fixedPrompts('file', true))
 			expect(result.wrote).toBe(true)
 			expect(result.path).toBe(path.join(f.project, '.trowel', 'config.json'))
 			const raw = await read(result.path, 'utf8')
@@ -277,13 +284,7 @@ if (import.meta.vitest) {
 		})
 
 		test('emits schema.json alongside the config file', async () => {
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: fixedPrompts('file', true),
-				stdout: () => {},
-			})
+			await runProjectInit(f, fixedPrompts('file', true))
 			const schemaPath = path.join(f.project, '.trowel', 'schema.json')
 			const schema = JSON.parse(await read(schemaPath, 'utf8'))
 			expect(schema.title).toBe('Trowel config')
@@ -291,13 +292,7 @@ if (import.meta.vitest) {
 		})
 
 		test('written config opens with $schema as the first key', async () => {
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: fixedPrompts('file', true),
-				stdout: () => {},
-			})
+			await runProjectInit(f, fixedPrompts('file', true))
 			const raw = await read(path.join(f.project, '.trowel', 'config.json'), 'utf8')
 			expect(Object.keys(JSON.parse(raw))[0]).toBe('$schema')
 		})
@@ -307,7 +302,7 @@ if (import.meta.vitest) {
 				layer: 'global',
 				cwd: f.project,
 				home: f.home,
-				prompts: fixedPrompts('file', true),
+				prompts: promptsForFile(),
 				stdout: () => {},
 			})
 			const schemaPath = path.join(f.home, '.trowel', 'schema.json')
@@ -356,24 +351,15 @@ if (import.meta.vitest) {
 
 		test('on issue storage, prdsDir prompt is NOT called', async () => {
 			let prdsDirCalls = 0
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'issue',
+			await runProjectInit(
+				f,
+				promptsForIssue({
 					prdsDir: async (current) => {
 						prdsDirCalls++
 						return current
 					},
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(prdsDirCalls).toBe(0)
 		})
 
@@ -382,13 +368,7 @@ if (import.meta.vitest) {
 			await mk(path.dirname(configPath), { recursive: true })
 			await write(configPath, JSON.stringify({ storage: 'file', docs: { prdsDir: 'keep/me' } }), 'utf8')
 
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: fixedPrompts('issue', true),
-				stdout: () => {},
-			})
+			await runProjectInit(f, fixedPrompts('issue', true))
 			const merged = JSON.parse(await read(configPath, 'utf8'))
 			expect(merged.storage).toBe('issue')
 			expect(merged.docs).toEqual({ prdsDir: 'keep/me' })
@@ -406,24 +386,15 @@ if (import.meta.vitest) {
 
 		test('fresh project (no existing config) → default is the hard-coded fallback "docs/prds"', async () => {
 			let seenDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
+			await runProjectInit(
+				f,
+				promptsForFile({
 					prdsDir: async (current) => {
 						seenDefault = current
 						return current
 					},
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(seenDefault).toBe('docs/prds')
 		})
 
@@ -433,24 +404,15 @@ if (import.meta.vitest) {
 			await write(configPath, JSON.stringify({ storage: 'file', docs: { prdsDir: 'a/b/c' } }), 'utf8')
 
 			let seenDefault: string | undefined
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
+			await runProjectInit(
+				f,
+				promptsForFile({
 					prdsDir: async (current) => {
 						seenDefault = current
 						return current
 					},
-					agentHarness: async (current) => current,
-					agentModel: async (current) => current,
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(seenDefault).toBe('a/b/c')
 		})
 	})
@@ -466,24 +428,15 @@ if (import.meta.vitest) {
 
 		test('prompts for agent.model and writes the answer into the sparse file', async () => {
 			let modelDefault = ''
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: {
-					storage: async () => 'file',
-					prdsDir: async (current) => current,
-					agentHarness: async (current) => current,
+			await runProjectInit(
+				f,
+				promptsForFile({
 					agentModel: async (current) => {
 						modelDefault = current
 						return 'claude-sonnet-4-6'
 					},
-					usePrs: async () => false,
-					review: async () => false,
-					confirm: async () => true,
-				},
-				stdout: () => {},
-			})
+				}),
+			)
 			expect(modelDefault).toBe('claude-opus-4-6')
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
 			expect(written).toMatchObject({ agent: { model: 'claude-sonnet-4-6' } })
@@ -702,7 +655,7 @@ if (import.meta.vitest) {
 				layer: 'private',
 				cwd: f.project,
 				home: f.home,
-				prompts: fixedPrompts('file', true),
+				prompts: promptsForFile(),
 				stdout: () => {},
 			})
 			expect(result.wrote).toBe(true)
@@ -726,13 +679,7 @@ if (import.meta.vitest) {
 			await mk(path.dirname(configPath), { recursive: true })
 			await write(configPath, JSON.stringify({ agent: { model: 'sonnet' } }), 'utf8')
 
-			await runInit({
-				layer: 'project',
-				cwd: f.project,
-				home: f.home,
-				prompts: fixedPrompts('issue', true),
-				stdout: () => {},
-			})
+			await runProjectInit(f, fixedPrompts('issue', true))
 
 			const merged = JSON.parse(await read(configPath, 'utf8'))
 			expect(merged).toMatchObject({
@@ -774,7 +721,7 @@ if (import.meta.vitest) {
 					layer: 'project',
 					cwd: '/tmp/elsewhere',
 					home: f.home,
-					prompts: fixedPrompts('file', true),
+					prompts: promptsForFile(),
 					stdout: () => {},
 					resolveRoot: async () => null,
 				}),
@@ -787,7 +734,7 @@ if (import.meta.vitest) {
 					layer: 'private',
 					cwd: '/tmp/elsewhere',
 					home: f.home,
-					prompts: fixedPrompts('file', true),
+					prompts: promptsForFile(),
 					stdout: () => {},
 					resolveRoot: async () => null,
 				}),
@@ -799,7 +746,7 @@ if (import.meta.vitest) {
 				layer: 'global',
 				cwd: '/tmp/elsewhere',
 				home: f.home,
-				prompts: fixedPrompts('file', true),
+				prompts: promptsForFile(),
 				stdout: () => {},
 				resolveRoot: async () => null,
 			})
@@ -856,7 +803,7 @@ if (import.meta.vitest) {
 					layer: 'project',
 					cwd: f.project,
 					home: f.home,
-					prompts: fixedPrompts('file', true),
+					prompts: promptsForFile(),
 					stdout: () => {},
 				}),
 			).rejects.toThrow(/Invalid existing config/)
