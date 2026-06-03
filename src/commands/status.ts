@@ -1,71 +1,14 @@
 import path from 'node:path'
 
 import { loadConfig } from '../config.ts'
+import { renderStatus, renderStatusFix, renderStatusSlice } from './status-render.ts'
 import { getStorage } from '../storages/registry.ts'
-import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
-import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../utils/bucket-format.ts'
-import type { Bucket } from '../utils/bucket.ts'
+import type { ClassifiedSlice, PrdRecord, Slice, Storage, StorageDeps } from '../storages/types.ts'
 import { createGh, type GhOps } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { reconcileEntity } from '../work/reconcile.ts'
 import { classifySlicesForPrd } from '../work/slice-buckets.ts'
-
-function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
-	const counts = bucketCountsFor(slices)
-	const summary = slices.length === 0 ? '(no slices)' : `(${formatBucketCounts(counts)})`
-	const lines = [
-		`PRD ${prd.id}  ${prd.title}`,
-		`Branch:  ${prd.branch}`,
-		`State:   ${prd.state}          ${summary}`,
-		'',
-		...renderBucketSections(slices),
-	]
-	return lines.join('\n')
-}
-
-function bucketCountsFor(slices: ClassifiedSlice[]): Record<Bucket, number> {
-	const counts: Record<Bucket, number> = emptyBucketCounts()
-	for (const s of slices) counts[s.bucket]++
-	return counts
-}
-
-function renderBucketSections(slices: ClassifiedSlice[]): string[] {
-	const lines: string[] = []
-	const sliceById = bySliceId(slices)
-	for (const bucket of BUCKET_ORDER) appendBucketSection(lines, bucket, slices, sliceById)
-	return lines
-}
-
-function appendBucketSection(lines: string[], bucket: Bucket, slices: ClassifiedSlice[], sliceById: Map<string, ClassifiedSlice>): void {
-	const inBucket = slices.filter((s) => s.bucket === bucket)
-	if (inBucket.length === 0) return
-	lines.push(`  ${bucket}`)
-	for (const s of inBucket) lines.push(renderSliceSummaryLine(s, sliceById))
-	lines.push('')
-}
-
-function renderSliceSummaryLine(s: ClassifiedSlice, sliceById: Map<string, ClassifiedSlice>): string {
-	const right = rightColumn(s, sliceById)
-	const idCol = s.id.padEnd(8)
-	return right ? `    ${idCol}  ${s.title.padEnd(48)}  ${right}` : `    ${idCol}  ${s.title}`
-}
-
-function bySliceId(slices: ClassifiedSlice[]): Map<string, ClassifiedSlice> {
-	return new Map(slices.map((s) => [s.id, s]))
-}
-
-function rightColumn(s: ClassifiedSlice, byId: Map<string, ClassifiedSlice>): string {
-	if (s.bucket === 'blocked') {
-		const unmet = s.blockedBy.filter((id) => {
-			const dep = byId.get(id)
-			return !dep || dep.bucket !== 'done'
-		})
-		if (unmet.length === 0) return ''
-		return `blockedBy: ${unmet.join(', ')}`
-	}
-	return ''
-}
 
 type StatusRuntime = {
 	storage: Storage
@@ -78,8 +21,7 @@ async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
 	const prd = await rt.storage.findPrd(prdId)
 	if (!prd) throw new Error(`PRD '${prdId}' not found`)
 	const slices = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId, usePrs: rt.usePrs })
-	rt.stdout(renderStatus(prd, slices))
-	if (!renderStatus(prd, slices).endsWith('\n')) rt.stdout('\n')
+	writeStatusText(rt.stdout, renderStatus(prd, slices))
 }
 
 async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; usePrs: boolean }> {
@@ -132,25 +74,10 @@ export async function statusSlice(sliceId: string, opts: { storage?: string }): 
 	await exitOnStatusError(() => withMutationLock(projectRoot, () => runStatusSlice(sliceId, statusRuntime(storage, gh, usePrs))))
 }
 
-function renderStatusFix(fix: FixRecord): string {
-	const lines: string[] = []
-	lines.push(`Fix ${fix.id}  ${fix.title}`)
-	lines.push(`Branch:  ${fix.branch}`)
-	lines.push(`State:   ${fix.state}`)
-	lines.push(`ready-for-agent: ${fix.readyForAgent}`)
-	lines.push(`needs-revision:  ${fix.needsRevision}`)
-	if (fix.body.trim().length > 0) {
-		lines.push('')
-		lines.push(fix.body.trim())
-	}
-	return lines.join('\n')
-}
-
 async function runStatusFix(fixId: string, rt: StatusRuntime): Promise<void> {
 	const fix = await rt.storage.findFix(fixId)
 	if (!fix) throw new Error(`Fix '${fixId}' not found`)
-	rt.stdout(renderStatusFix(fix))
-	if (!renderStatusFix(fix).endsWith('\n')) rt.stdout('\n')
+	writeStatusText(rt.stdout, renderStatusFix(fix))
 }
 
 export async function statusFix(fixId: string, opts: { storage?: string }): Promise<void> {
@@ -206,28 +133,6 @@ function targetStatusSlice(sliceId: string, siblings: ClassifiedSlice[]): Classi
 function writeStatusText(stdout: (s: string) => void, text: string): void {
 	stdout(text)
 	if (!text.endsWith('\n')) stdout('\n')
-}
-
-function renderStatusSlice(prd: PrdRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
-	const lines: string[] = []
-	lines.push(`Slice ${slice.id}  ${slice.title}`)
-	lines.push(`PRD:     ${prd.id}  ${prd.title}`)
-	lines.push(`State:   ${slice.state}   bucket: ${slice.bucket}`)
-	lines.push(`ready-for-agent: ${slice.readyForAgent}`)
-	lines.push(`needs-revision:  ${slice.needsRevision}`)
-	if (slice.blockedBy.length > 0) {
-		lines.push('blockedBy:')
-		const byId = new Map(siblings.map((s) => [s.id, s]))
-		for (const id of slice.blockedBy) {
-			const dep = byId.get(id)
-			if (dep) {
-				lines.push(`  ${id.padEnd(6)}  ${dep.bucket.padEnd(14)}  ${dep.title}`)
-			} else {
-				lines.push(`  ${id.padEnd(6)}  (not found)`)
-			}
-		}
-	}
-	return lines.join('\n')
 }
 
 if (import.meta.vitest) {

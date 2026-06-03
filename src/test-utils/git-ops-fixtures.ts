@@ -1,31 +1,40 @@
 import type { GitOps } from '../utils/git-ops.ts'
 
+const noop = async (): Promise<void> => {}
+const fakeCurrentBranch = async (): Promise<string> => 'fake-current'
+const fakeBaseBranch = async (): Promise<string> => 'fake-base'
+const trueAsync = async (): Promise<boolean> => true
+const falseAsync = async (): Promise<boolean> => false
+const zeroAsync = async (): Promise<number> => 0
+const emptyWorktreeList = async (): Promise<Awaited<ReturnType<GitOps['worktreeList']>>> => []
+const installedGit = async (): Promise<Awaited<ReturnType<GitOps['detectVersion']>>> => ({ installed: true, version: '0.0.0' })
+
 export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 	return {
-		currentBranch: async () => 'fake-current',
-		baseBranch: async () => 'fake-base',
-		branchExists: async () => true,
-		isMerged: async () => false,
-		checkout: async () => {},
-		deleteBranch: async () => {},
-		fetch: async () => {},
-		push: async () => {},
-		mergeNoFf: async () => {},
-		deleteRemoteBranch: async () => {},
-		createRemoteBranch: async () => {},
-		createLocalBranch: async () => {},
-		pushSetUpstream: async () => {},
-		worktreeAdd: async () => {},
-		worktreeRemove: async () => {},
-		worktreeList: async () => [],
-		restoreAll: async () => {},
-		cleanUntracked: async () => {},
-		isWorkingTreeClean: async () => true,
-		stashPush: async () => {},
-		stashPop: async () => {},
-		mergeAbort: async () => {},
-		commitsAhead: async () => 0,
-		detectVersion: async () => ({ installed: true, version: '0.0.0' }),
+		currentBranch: fakeCurrentBranch,
+		baseBranch: fakeBaseBranch,
+		branchExists: trueAsync,
+		isMerged: falseAsync,
+		checkout: noop,
+		deleteBranch: noop,
+		fetch: noop,
+		push: noop,
+		mergeNoFf: noop,
+		deleteRemoteBranch: noop,
+		createRemoteBranch: noop,
+		createLocalBranch: noop,
+		pushSetUpstream: noop,
+		worktreeAdd: noop,
+		worktreeRemove: noop,
+		worktreeList: emptyWorktreeList,
+		restoreAll: noop,
+		cleanUntracked: noop,
+		isWorkingTreeClean: trueAsync,
+		stashPush: noop,
+		stashPop: noop,
+		mergeAbort: noop,
+		commitsAhead: zeroAsync,
+		detectVersion: installedGit,
 		...overrides,
 	}
 }

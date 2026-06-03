@@ -12,13 +12,24 @@ type WorkRuntime = {
 	stdout: (s: string) => void
 }
 
+type WorkHandler = (id: string, rt: WorkRuntime) => Promise<void>
+
+const WORK_HANDLERS: Record<WorkScope, WorkHandler> = {
+	prd: runPrdWork,
+	fix: runFixWork,
+}
+
 async function runWork(scope: WorkScope, id: string, rt: WorkRuntime): Promise<void> {
-	if (scope === 'prd') {
-		const prd = await rt.storage.findPrd(id)
-		if (!prd) throw new Error(`PRD '${id}' not found`)
-		await rt.runEntity({ kind: 'prd', id, integrationBranch: prd.branch, targetBranch: prd.targetBranch, title: prd.title })
-		return
-	}
+	await WORK_HANDLERS[scope](id, rt)
+}
+
+async function runPrdWork(id: string, rt: WorkRuntime): Promise<void> {
+	const prd = await rt.storage.findPrd(id)
+	if (!prd) throw new Error(`PRD '${id}' not found`)
+	await rt.runEntity({ kind: 'prd', id, integrationBranch: prd.branch, targetBranch: prd.targetBranch, title: prd.title })
+}
+
+async function runFixWork(id: string, rt: WorkRuntime): Promise<void> {
 	const fix = await rt.storage.findFix(id)
 	if (!fix) throw new Error(`Fix '${id}' not found`)
 	await rt.runEntity({ kind: 'fix', id, branch: fix.branch, targetBranch: fix.targetBranch, title: fix.title })

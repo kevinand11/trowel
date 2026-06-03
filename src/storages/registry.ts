@@ -18,36 +18,11 @@ export function getStorage(kind: string, deps: StorageDeps): Storage {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
-	const noopGit = {
-		fetch: async () => {},
-		push: async () => {},
-		checkout: async () => {},
-		mergeNoFf: async () => {},
-		deleteRemoteBranch: async () => {},
-		createRemoteBranch: async () => {},
-		createLocalBranch: async () => {},
-		pushSetUpstream: async () => {},
-		currentBranch: async () => '',
-		branchExists: async () => false,
-		isMerged: async () => false,
-		deleteBranch: async () => {},
-		worktreeAdd: async () => {},
-		worktreeRemove: async () => {},
-		worktreeList: async () => [],
-		restoreAll: async () => {},
-		cleanUntracked: async () => {},
-		baseBranch: async () => 'main',
-		isWorkingTreeClean: async () => true,
-		stashPush: async () => {},
-		stashPop: async () => {},
-		mergeAbort: async () => {},
-		commitsAhead: async () => 0,
-		detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-	}
 	const testDeps: StorageDeps = {
 		gh: recordingGhOps().gh,
-		git: noopGit,
+		git: noopGitOps({ currentBranch: async () => '', branchExists: async () => false }),
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
 		prdsDir: '/tmp/x/docs/prds',

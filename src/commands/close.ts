@@ -1,23 +1,17 @@
 import { confirm as inqConfirm } from '@inquirer/prompts'
 
+import { deleteBranchIfPresent, restoreStartingBranch, type CloseBranchRuntime, type OpenPr } from './close-branch.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from './runtime.ts'
 import type { StorageKind } from '../storages/registry.ts'
-import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, SlicePatch, Storage, DeleteBranchPolicy } from '../storages/types.ts'
+import type { ClassifiedSlice, FixRecord, PrdRecord, Slice, SlicePatch, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { slug as slugify } from '../utils/slug.ts'
 import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
-type OpenPr = { number: number; url: string }
-
-type CloseRuntime = {
+type CloseRuntime = CloseBranchRuntime & {
 	storage: Storage
-	deleteBranchPolicy: DeleteBranchPolicy
-	confirm: (msg: string) => Promise<boolean>
-	stdout: (s: string) => void
-	git: GitOps
-	listOpenPrs: (baseBranch: string) => Promise<OpenPr[]>
 }
 
 type CloseSliceRuntime = CloseRuntime & {
@@ -68,52 +62,6 @@ async function closePrdRecord(prdId: string, prd: PrdRecord, rt: CloseRuntime): 
 	}
 }
 
-async function deleteBranchIfPresent(branch: string, targetBranch: string, rt: CloseRuntime): Promise<void> {
-	if (await rt.git.branchExists(branch)) await maybeDeleteBranch(branch, targetBranch, rt)
-}
-
-async function restoreStartingBranch(back: string, fallbackBranch: string, rt: CloseRuntime): Promise<void> {
-	const current = await rt.git.currentBranch()
-	if (current === back) return
-	if (await rt.git.branchExists(back)) {
-		await rt.git.checkout(back)
-	} else {
-		rt.stdout(`Switched to '${fallbackBranch}' (was on deleted branch '${back}')\n`)
-	}
-}
-
-async function maybeDeleteBranch(branch: string, baseBranch: string, rt: CloseRuntime): Promise<void> {
-	if (!(await confirmBranchDeletePolicy(branch, rt))) return
-	if (!(await confirmNoBlockingOpenPrs(branch, rt))) return
-	if (!(await confirmMergedOrDeletionAccepted(branch, baseBranch, rt))) return
-	await checkoutAwayFromDeletedBranch(branch, baseBranch, rt)
-	await rt.git.deleteBranch(branch)
-}
-
-async function confirmBranchDeletePolicy(branch: string, rt: CloseRuntime): Promise<boolean> {
-	if (rt.deleteBranchPolicy === 'never') return false
-	if (rt.deleteBranchPolicy === 'always') return true
-	return rt.confirm(`Delete integration branch '${branch}' (local + origin)? [y/N]`)
-}
-
-async function confirmNoBlockingOpenPrs(branch: string, rt: CloseRuntime): Promise<boolean> {
-	const prs = await rt.listOpenPrs(branch)
-	if (prs.length === 0) return true
-	rt.stdout(`Open PRs targeting '${branch}':\n`)
-	for (const pr of prs) rt.stdout(`  #${pr.number}  ${pr.url}\n`)
-	return rt.confirm('Deleting the branch will close these PRs. Continue? [y/N]')
-}
-
-async function confirmMergedOrDeletionAccepted(branch: string, baseBranch: string, rt: CloseRuntime): Promise<boolean> {
-	if (await rt.git.isMerged(branch, baseBranch)) return true
-	return rt.confirm(`Branch '${branch}' contains commits not on '${baseBranch}' — delete anyway? [y/N]`)
-}
-
-async function checkoutAwayFromDeletedBranch(branch: string, baseBranch: string, rt: CloseRuntime): Promise<void> {
-	const current = await rt.git.currentBranch()
-	if (current === branch) await rt.git.checkout(baseBranch)
-}
-
 async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<void> {
 	const { prdId } = await findSliceOrThrow(sliceId, rt.storage)
 	const back = await rt.git.currentBranch()
@@ -162,8 +110,7 @@ async function confirmCloseNonDoneSlice(sliceId: string, target: ClassifiedSlice
 
 async function deleteSliceBranchIfPresent(prdId: string, target: ClassifiedSlice, sliceMergeTarget: string, rt: CloseSliceRuntime): Promise<void> {
 	if (!rt.perSliceBranches) return
-	const branch = sliceBranchName(prdId, target)
-	if (await rt.git.branchExists(branch)) await maybeDeleteBranch(branch, sliceMergeTarget, rt)
+	await deleteBranchIfPresent(sliceBranchName(prdId, target), sliceMergeTarget, rt)
 }
 
 function sliceBranchName(prdId: string, slice: Slice): string {

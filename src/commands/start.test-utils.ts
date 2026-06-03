@@ -1,6 +1,7 @@
 import type { StartRuntime } from './start.ts'
-import type { Slice, PrdSpec, SliceSpec, SlicePatch, Storage } from '../storages/types.ts'
-import type { GitOps } from '../utils/git-ops.ts'
+import type { Slice, PrdSpec, SliceSpec, SlicePatch } from '../storages/types.ts'
+import { noopGitOps } from '../test-utils/git-ops-fixtures.ts'
+import { fakeSliceStorage } from '../test-utils/storage-fixtures.ts'
 
 export type FakeCalls = {
 	createPrd: PrdSpec[]
@@ -27,6 +28,19 @@ export type MakeFakesOpts = {
 	stashPopThrows?: Error
 }
 
+function fakeStartSlice(id: string, spec: SliceSpec): Slice {
+	return {
+		id,
+		title: spec.title,
+		body: spec.body,
+		state: 'OPEN',
+		readyForAgent: false,
+		needsRevision: false,
+		blockedBy: [],
+		prState: null,
+	}
+}
+
 export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeCalls; gitState: FakeGitState } {
 	const calls: FakeCalls = { createPrd: [], createSlice: [], updateSlice: [], stdout: [], git: [] }
 	const gitState: FakeGitState = {
@@ -37,41 +51,24 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 	let sliceCursor = 0
 	const createSliceIds = opts.createSliceIds ?? []
 
-	const storage: Storage = {
+	const storage = fakeSliceStorage([], null, {
 		createPrd: async (spec) => {
 			calls.createPrd.push(spec)
 			if (opts.createPrdThrows) throw opts.createPrdThrows
 			return opts.createPrdResult ?? { id: 'pid', branch: 'pid-branch' }
 		},
-		findPrd: async () => null,
-		listPrds: async () => [],
-		closePrd: async () => {},
 		createSlice: async (prdId, spec) => {
 			calls.createSlice.push({ prdId, spec })
 			const id = createSliceIds[sliceCursor++] ?? `s${sliceCursor}`
-			const slice: Slice = {
-				id, title: spec.title, body: spec.body, state: 'OPEN',
-				readyForAgent: false, needsRevision: false,
-				blockedBy: [], prState: null,
-			}
-			return slice
+			return fakeStartSlice(id, spec)
 		},
-		findSlices: async () => [],
-		findSlice: async () => null,
 		updateSlice: async (prdId, sliceId, patch) => {
 			calls.updateSlice.push({ prdId, sliceId, patch })
 		},
-		createFix: async () => ({ id: 'x', branch: 'x' }),
-		findFix: async () => null,
-		listFixes: async () => [],
-		updateFix: async () => {},
-		closeFix: async () => {},
-	}
+	})
 
-	const git: GitOps = {
+	const git = noopGitOps({
 		currentBranch: async () => gitState.current,
-		baseBranch: async () => 'main',
-		branchExists: async () => true,
 		checkout: async (b) => {
 			calls.git.push(`checkout(${b})`)
 			gitState.current = b
@@ -87,14 +84,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 			if (opts.stashPopThrows) throw opts.stashPopThrows
 			gitState.stashStack -= 1
 		},
-		fetch: async () => {}, push: async () => {}, mergeNoFf: async () => {}, mergeAbort: async () => {},
-		deleteRemoteBranch: async () => {}, createRemoteBranch: async () => {},
-		createLocalBranch: async () => {}, pushSetUpstream: async () => {},
-		isMerged: async () => false, deleteBranch: async () => {}, commitsAhead: async () => 0,
-		worktreeAdd: async () => {}, worktreeRemove: async () => {},
-		worktreeList: async () => [], restoreAll: async () => {}, cleanUntracked: async () => {},
-		detectVersion: async () => ({ installed: true, version: '0.0.0' }),
-	}
+	})
 
 	const rt: StartRuntime = {
 		projectRoot: '/fake/proj',
