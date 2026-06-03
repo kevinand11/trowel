@@ -4,9 +4,9 @@ import { confirm as inqConfirm } from '@inquirer/prompts'
 
 import { loadConfig } from '../config.ts'
 import { getStorage, type StorageKind } from '../storages/registry.ts'
-import type { ClassifiedSlice, Slice, Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
-import { classifySlices } from '../utils/bucket.ts'
-import { createGh } from '../utils/gh-ops.ts'
+import type { Slice, Storage, StorageDeps, DeleteBranchPolicy } from '../storages/types.ts'
+import { createGh, type GhOps } from '../utils/gh-ops.ts'
+import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { slug as slugify } from '../utils/slug.ts'
@@ -23,6 +23,8 @@ type CloseRuntime = {
 }
 
 type CloseSliceRuntime = CloseRuntime & {
+	gh: GhOps
+	usePrs: boolean
 	perSliceBranches: boolean
 }
 
@@ -104,7 +106,7 @@ async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<vo
 	const prd = await rt.storage.findPrd(prdId)
 	const sliceMergeTarget = prd?.branch ?? await rt.git.baseBranch()
 
-	const siblings = classifySlicesLocal(await rt.storage.findSlices(prdId))
+	const siblings = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId, usePrs: rt.usePrs })
 	const target = siblings.find((s) => s.id === sliceId)
 	if (!target) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
 
@@ -140,10 +142,6 @@ async function runCloseSlice(sliceId: string, rt: CloseSliceRuntime): Promise<vo
 
 function sliceBranchName(prdId: string, slice: Slice): string {
 	return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
-}
-
-function classifySlicesLocal(slices: Slice[]): ClassifiedSlice[] {
-	return classifySlices(slices)
 }
 
 export async function closePrd(prdId: string, opts: { storage?: StorageKind }): Promise<void> {
@@ -317,6 +315,8 @@ export async function closeSlice(sliceId: string, opts: { storage?: StorageKind 
 				confirm: promptConfirm,
 				stdout: (s) => process.stdout.write(s),
 				git,
+				gh,
+				usePrs: config.work.usePrs,
 				listOpenPrs,
 				perSliceBranches: config.work.perSliceBranches,
 			}),
@@ -329,6 +329,9 @@ export async function closeSlice(sliceId: string, opts: { storage?: StorageKind 
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+
+	const noPrGh = () => recordingGhOps().gh
 
 	type FakeStorageState = {
 		prd: { id: string; branch: string; targetBranch?: string; title: string; state: 'OPEN' | 'CLOSED' } | null
@@ -951,6 +954,8 @@ if (import.meta.vitest) {
 					confirm: async () => false,
 					stdout: () => {},
 					git,
+					gh: noPrGh(),
+					usePrs: false,
 					listOpenPrs: async () => [],
 					perSliceBranches: false,
 				}),
@@ -968,6 +973,8 @@ if (import.meta.vitest) {
 				confirm: async () => { confirmCount++; return true },
 				stdout: (s) => (buf += s),
 				git,
+				gh: noPrGh(),
+				usePrs: false,
 				listOpenPrs: async () => [],
 				perSliceBranches: false,
 			})
@@ -988,6 +995,8 @@ if (import.meta.vitest) {
 				confirm: async (m) => { prompt = m; return false },
 				stdout: (s) => (buf += s),
 				git,
+				gh: noPrGh(),
+				usePrs: false,
 				listOpenPrs: async () => [],
 				perSliceBranches: false,
 			})
@@ -1005,6 +1014,8 @@ if (import.meta.vitest) {
 				confirm: async () => true,
 				stdout: () => {},
 				git,
+				gh: noPrGh(),
+				usePrs: false,
 				listOpenPrs: async () => [],
 				perSliceBranches: false,
 			})
@@ -1025,6 +1036,8 @@ if (import.meta.vitest) {
 				confirm: async () => true,
 				stdout: () => {},
 				git,
+				gh: noPrGh(),
+				usePrs: false,
 				listOpenPrs: async () => [],
 				perSliceBranches: true,
 			})
@@ -1041,6 +1054,8 @@ if (import.meta.vitest) {
 				confirm: async () => true,
 				stdout: () => {},
 				git,
+				gh: noPrGh(),
+				usePrs: false,
 				listOpenPrs: async () => [],
 				perSliceBranches: true,
 			})

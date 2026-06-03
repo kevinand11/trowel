@@ -21,6 +21,7 @@ type LoopWiring = {
 	config: Config
 	projectRoot: string
 	storage: Storage
+	gh: ReturnType<typeof createGh>
 	integrationBranch: (prdId: string) => Promise<string>
 	runOnePhase: (prdId: string, slice: Slice, role: Role) => Promise<void>
 	runEntityLoopFor: (entity: LoopEntity) => Promise<void>
@@ -150,5 +151,5 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		})
 	}
 
-	return { config, projectRoot, storage, integrationBranch, runOnePhase, runEntityLoopFor }
+	return { config, projectRoot, storage, gh, integrationBranch, runOnePhase, runEntityLoopFor }
 }

@@ -3,11 +3,12 @@ import path from 'node:path'
 import { loadConfig } from '../config.ts'
 import { getStorage } from '../storages/registry.ts'
 import type { ClassifiedSlice, FixSummary, PrdSummary, Storage, StorageDeps } from '../storages/types.ts'
-import { classifySlices, type Bucket } from '../utils/bucket.ts'
+import type { Bucket } from '../utils/bucket.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 import { reconcileEntity } from '../work/reconcile.ts'
+import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
 const BUCKET_ORDER: Bucket[] = ['done', 'needs-revision', 'in-flight', 'blocked', 'ready', 'draft']
 
@@ -51,6 +52,8 @@ function formatCounts(counts: Record<Bucket, number>): string {
 
 type ListRuntime = {
 	storage: Storage
+	gh: ReturnType<typeof createGh>
+	usePrs: boolean
 	stdout: (s: string) => void
 }
 
@@ -60,7 +63,7 @@ async function runListPrds(filter: PrdState, rt: ListRuntime): Promise<void> {
 	const sorted = [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 	const rows: PrdListRow[] = await Promise.all(
 		sorted.map(async (summary) => {
-			const slices = classifySlices(await rt.storage.findSlices(summary.id))
+			const slices = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId: summary.id, usePrs: rt.usePrs })
 			const found = await rt.storage.findPrd(summary.id)
 			const state: 'OPEN' | 'CLOSED' = found?.state ?? 'OPEN'
 			return { summary, state, slices }
@@ -119,7 +122,7 @@ async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListR
 	}
 	const storage = getStorage(storageKind, storageDeps)
 	return {
-		rt: { storage, stdout: (s) => process.stdout.write(s) },
+		rt: { storage, gh, usePrs: config.work.usePrs, stdout: (s) => process.stdout.write(s) },
 		projectRoot,
 		storage,
 		gh,
@@ -162,6 +165,7 @@ export async function listFix(filter: PrdState, opts: { storage?: string }): Pro
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 
 	function fakeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
@@ -276,8 +280,9 @@ if (import.meta.vitest) {
 					return []
 				},
 			})
+			const { gh } = recordingGhOps()
 			const captured: string[] = []
-			await runListPrds('closed', { storage, stdout: (s) => captured.push(s) })
+			await runListPrds('closed', { storage, gh, usePrs: false, stdout: (s) => captured.push(s) })
 			expect(receivedState).toBe('closed')
 		})
 
@@ -290,10 +295,26 @@ if (import.meta.vitest) {
 				findPrd: async (id) => ({ id, title: id, branch: `b/${id}`, state: 'OPEN' }),
 				findSlices: async () => [],
 			})
+			const { gh } = recordingGhOps()
 			const captured: string[] = []
-			await runListPrds('open', { storage, stdout: (s) => captured.push(s) })
+			await runListPrds('open', { storage, gh, usePrs: false, stdout: (s) => captured.push(s) })
 			const text = captured.join('')
 			expect(text.indexOf('newer')).toBeLessThan(text.indexOf('older'))
+		})
+
+		test('usePrs:true counts a ready storage slice with an open PR as in-flight', async () => {
+			const storage = fakeStorage({
+				listPrds: async () => [{ id: '123', title: 'Paginated Reads', branch: '123-paginated-reads', createdAt: '2026-05-13T00:00:00.000Z' }],
+				findPrd: async (id) => ({ id, title: 'Paginated Reads', branch: '123-paginated-reads', state: 'OPEN' }),
+				findSlices: async () => [{ id: '124', title: 'Read query-shape validation', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }],
+			})
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 130, headRefName: 'prd-123/slice-124-read-query-shape-validation', isDraft: false }],
+			})
+			const captured: string[] = []
+			await runListPrds('open', { storage, gh, usePrs: true, stdout: (s) => captured.push(s) })
+			expect(captured.join('')).toContain('1 in-flight')
+			expect(captured.join('')).not.toContain('1 ready')
 		})
 
 		test('aborts the whole command when one findSlices rejects', async () => {
@@ -308,7 +329,8 @@ if (import.meta.vitest) {
 					return []
 				},
 			})
-			await expect(runListPrds('open', { storage, stdout: () => {} })).rejects.toThrow(/rate limited/)
+			const { gh } = recordingGhOps()
+			await expect(runListPrds('open', { storage, gh, usePrs: false, stdout: () => {} })).rejects.toThrow(/rate limited/)
 		})
 	})
 }

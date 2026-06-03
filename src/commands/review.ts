@@ -2,13 +2,16 @@ import { buildLoopWiring } from './_loop-wiring.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 import type { StorageKind } from '../storages/registry.ts'
 import type { ClassifiedSlice, Slice, Storage } from '../storages/types.ts'
-import { classifySlices } from '../utils/bucket.ts'
+import type { GhOps } from '../utils/gh-ops.ts'
+import { classifySlicesForPrd } from '../work/slice-buckets.ts'
 
 export async function review(sliceId: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring({ storage: opts.storage, harness: opts.harness })
 		await runReview(sliceId, {
 			storage: wiring.storage,
+			gh: wiring.gh,
+			usePrs: wiring.config.work.usePrs,
 			runOnePhase: (prdId, slice) => wiring.runOnePhase(prdId, slice, 'review'),
 			stderr: (s) => process.stderr.write(s),
 		})
@@ -20,6 +23,8 @@ export async function review(sliceId: string, opts: { storage?: StorageKind; har
 
 type ReviewRuntime = {
 	storage: Storage
+	gh: GhOps
+	usePrs: boolean
 	runOnePhase: (prdId: string, slice: Slice) => Promise<void>
 	stderr: (s: string) => void
 }
@@ -28,7 +33,7 @@ async function runReview(sliceId: string, rt: ReviewRuntime): Promise<void> {
 	const hit = await rt.storage.findSlice(sliceId)
 	if (!hit) throw new Error(`slice '${sliceId}' not found`)
 	const { prdId } = hit
-	const slice = classifySlices(await rt.storage.findSlices(prdId)).find((s) => s.id === sliceId)
+	const slice = (await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId, usePrs: rt.usePrs })).find((s) => s.id === sliceId)
 	if (!slice) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
 	if (slice.bucket !== 'in-flight') {
 		throw new Error(
@@ -41,6 +46,7 @@ async function runReview(sliceId: string, rt: ReviewRuntime): Promise<void> {
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 
 	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
@@ -85,9 +91,12 @@ if (import.meta.vitest) {
 		test('on an in-flight slice (issue storage): calls runOnePhase exactly once', async () => {
 			const slice = makeSlice({ id: 's1', bucket: 'in-flight' })
 			const storage = makeStorage([slice])
+			const { gh } = recordingGhOps()
 			const calls: Slice[] = []
 			await runReview('s1', {
 				storage,
+				gh,
+				usePrs: false,
 				runOnePhase: async (_prdId, s) => {
 					calls.push(s)
 				},
@@ -99,7 +108,8 @@ if (import.meta.vitest) {
 		test('refuses when slice bucket is not "in-flight"', async () => {
 			const slice = makeSlice({ id: 's1', prState: null }) // no PR → bucket 'ready'
 			const storage = makeStorage([slice])
-			await expect(runReview('s1', { storage, runOnePhase: async () => {}, stderr: () => {} })).rejects.toThrow(
+			const { gh } = recordingGhOps()
+			await expect(runReview('s1', { storage, gh, usePrs: false, runOnePhase: async () => {}, stderr: () => {} })).rejects.toThrow(
 				/bucket 'ready'/,
 			)
 		})
