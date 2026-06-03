@@ -32,6 +32,7 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 	// continue from it or discard and start a fresh grill. Happens BEFORE
 	// preflight because the file is host-owned ephemeral state.
 	let resumedSpec: ReturnType<typeof parseStartOut> | null = null
+	let discardExistingStartOut = false
 	const existingRaw = await rt.readStartOut()
 	if (existingRaw !== null) {
 		let parsed: ReturnType<typeof parseStartOut> | null = null
@@ -44,13 +45,13 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 		if (parsed) {
 			printResumePreview(rt, parsed)
 			const cont = await rt.confirm('Continue with the spec above? (no → discard and start a fresh grill)')
-			await unlinkSwallowEnoent(startOutPath)
 			if (cont) resumedSpec = parsed
+			else discardExistingStartOut = true
 		} else {
 			rt.stdout(`\nExisting .trowel/start-out.json is invalid:\n${parseError!.message}\n\n`)
 			const wipe = await rt.confirm('Discard the invalid file and start a fresh grill? (no → abort)')
 			if (!wipe) throw parseError!
-			await unlinkSwallowEnoent(startOutPath)
+			discardExistingStartOut = true
 		}
 	}
 
@@ -58,6 +59,7 @@ export async function runStart(rt: StartRuntime): Promise<void> {
 	if (failures.length > 0) {
 		throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
 	}
+	if (discardExistingStartOut) await unlinkSwallowEnoent(startOutPath)
 
 	const backTo = await rt.git.currentBranch()
 	let stashed = false
@@ -412,6 +414,67 @@ if (import.meta.vitest) {
 				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run' }])
 				expect(calls.createSlice).toHaveLength(1)
 				expect(await fileExists(tmp.startOutPath)).toBe(false)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('valid existing spec + user confirms continue + preflight fails → start-out.json persists for another resume', async () => {
+			const tmp = await setupTmp()
+			try {
+				const spec = {
+					prd: { title: 'Resume Me', body: 'body from prior run' },
+					slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
+				}
+				await writeFile(tmp.startOutPath, JSON.stringify(spec))
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					currentBranch: 'main',
+					preflightFailures: ['working tree dirty'],
+				})
+				rt.projectRoot = tmp.projectRoot
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => true // continue
+
+				await expect(runStart(rt)).rejects.toThrow(/preflight failed/i)
+
+				expect(calls.createPrd).toEqual([])
+				expect(await fileExists(tmp.startOutPath)).toBe(true)
+			} finally {
+				await tmp.cleanup()
+			}
+		})
+
+		test('valid existing spec + user starts fresh + preflight fails → stale start-out.json is not cleaned up yet', async () => {
+			const tmp = await setupTmp()
+			try {
+				const spec = {
+					prd: { title: 'STALE', body: 'old' },
+					slices: [{ title: 'old-slice', body: 'x', blockedBy: [], readyForAgent: true }],
+				}
+				await writeFile(tmp.startOutPath, JSON.stringify(spec))
+
+				const { rt, calls } = makeFakes({
+					startOut: null,
+					currentBranch: 'main',
+					preflightFailures: ['working tree dirty'],
+				})
+				rt.projectRoot = tmp.projectRoot
+				let interactiveCalled = false
+				rt.runInteractive = async () => { interactiveCalled = true }
+				rt.readStartOut = async () => {
+					try { return await readFile(tmp.startOutPath, 'utf8') } catch { return null }
+				}
+				rt.confirm = async () => false // discard and start fresh, but preflight stops first
+
+				await expect(runStart(rt)).rejects.toThrow(/preflight failed/i)
+
+				expect(interactiveCalled).toBe(false)
+				expect(calls.createPrd).toEqual([])
+				expect(await fileExists(tmp.startOutPath)).toBe(true)
 			} finally {
 				await tmp.cleanup()
 			}
