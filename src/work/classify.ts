@@ -13,10 +13,11 @@ import type { ClassifiedSlice, ClassifySliceConfig, ResumeState } from '../stora
  *
  *   done       state === 'CLOSED'
  *   done       !readyForAgent
- *   done       prState === 'merged' || prState === 'ready'
- *   done       prState === 'draft' && !config.review        (review opt-out)
+ *   done       prState === 'merged'
  *   blocked    bucket === 'blocked'
  *   address    needsRevision
+ *   done       prState === 'ready'
+ *   done       prState === 'draft' && !config.review        (review opt-out)
  *   review     prState === 'draft'
  *   implement  (catch-all)
  */
@@ -29,10 +30,10 @@ const RESUME_RULES: ResumeRule[] = [
 	{ state: 'done', matches: (slice) => slice.state === 'CLOSED' },
 	{ state: 'done', matches: (slice) => !slice.readyForAgent },
 	{ state: 'done', matches: (slice) => slice.prState === 'merged' },
-	{ state: 'done', matches: (slice) => slice.prState === 'ready' },
-	{ state: 'done', matches: (slice, config) => slice.prState === 'draft' && !config.review },
 	{ state: 'blocked', matches: (slice) => slice.bucket === 'blocked' },
 	{ state: 'address', matches: (slice) => slice.needsRevision },
+	{ state: 'done', matches: (slice) => slice.prState === 'ready' },
+	{ state: 'done', matches: (slice, config) => slice.prState === 'draft' && !config.review },
 	{ state: 'review', matches: (slice) => slice.prState === 'draft' },
 ]
 
@@ -89,6 +90,10 @@ if (import.meta.vitest) {
 
 		test('needsRevision with a draft PR and review: true → address (addresser handles reviewer feedback)', () => {
 			expect(classify(makeSlice({ needsRevision: true, prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('address')
+		})
+
+		test('needsRevision with a ready PR → address (revision work beats awaiting human merge)', () => {
+			expect(classify(makeSlice({ needsRevision: true, prState: 'ready', bucket: 'needs-revision' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('address')
 		})
 
 		test('open slice with no PR yet → implement', () => {
