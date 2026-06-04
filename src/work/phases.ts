@@ -257,8 +257,7 @@ async function landReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, sli
 async function landReadyReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
 	if (kind === 'review') return markSlicePrReady(deps, branch, tag)
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-	deps.log(`${tag} cleared needsRevision`)
+	await clearSliceNeedsRevision(deps, ctx, slice, branch, tag)
 	return 'progress'
 }
 
@@ -272,14 +271,25 @@ async function markSlicePrReady(deps: PhaseDeps, branch: string, tag: string): P
 async function landReviewNeedsRevision(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
 	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
+	await updatePrNeedsRevisionLabel(deps, branch, true)
 	deps.log(`${tag} flagged needsRevision`)
 	return 'progress'
 }
 
-async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, _verdict: TurnOut, ctx: PhaseCtx, _branch: string, tag: string): Promise<PhaseOutcome> {
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
-	deps.log(`${tag} no-work-needed: cleared needsRevision`)
+async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, _verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+	await clearSliceNeedsRevision(deps, ctx, slice, branch, tag, 'no-work-needed: ')
 	return 'no-work'
+}
+
+async function clearSliceNeedsRevision(deps: PhaseDeps, ctx: PhaseCtx, slice: Slice, branch: string, tag: string, prefix = ''): Promise<void> {
+	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+	await updatePrNeedsRevisionLabel(deps, branch, false)
+	deps.log(`${tag} ${prefix}cleared needsRevision`)
+}
+
+async function updatePrNeedsRevisionLabel(deps: PhaseDeps, branch: string, present: boolean): Promise<void> {
+	const prNumber = await deps.gh.findPrNumberByHead(branch)
+	await deps.gh.editIssueLabels(String(prNumber), present ? { add: ['needs-revision'] } : { remove: ['needs-revision'] })
 }
 
 if (import.meta.vitest) {
@@ -292,10 +302,10 @@ if (import.meta.vitest) {
 		mergeNoVerify?: boolean
 		branchExists?: (b: string) => boolean
 		commitsAhead?: number
-	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { state: 'OPEN' | 'CLOSED' }; logs: string[] } {
+	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { state: 'OPEN' | 'CLOSED'; needsRevision: boolean }; logs: string[] } {
 		const calls: GitCall[] = []
 		const logs: string[] = []
-		const storageState = { state: 'OPEN' as 'OPEN' | 'CLOSED' }
+		const storageState = { state: 'OPEN' as 'OPEN' | 'CLOSED', needsRevision: true }
 		const recorded = (method: string) => (...args: unknown[]) => { calls.push({ method, args }); return Promise.resolve() }
 		const git: GitOps = {
 			fetch: recorded('fetch'),
@@ -336,6 +346,7 @@ if (import.meta.vitest) {
 			findSlice: async () => null,
 			updateSlice: async (_p, _s, patch) => {
 				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
+				if (patch.needsRevision !== undefined) storageState.needsRevision = patch.needsRevision
 			},
 			createFix: async () => ({ id: 'x', branch: 'x' }),
 			findFix: async () => null,
@@ -343,10 +354,15 @@ if (import.meta.vitest) {
 			updateFix: async () => {},
 			closeFix: async () => {},
 		}
+		const gh: GhOps = {
+			findPrNumberByHead: async (head) => { calls.push({ method: 'findPrNumberByHead', args: [head] }); return 132 },
+			editIssueLabels: async (id, patch) => { calls.push({ method: 'editIssueLabels', args: [id, patch] }) },
+			markPrReady: async (prNumber) => { calls.push({ method: 'markPrReady', args: [prNumber] }) },
+		} as GhOps
 		const deps: PhaseDeps = {
 			storage,
 			git,
-			gh: {} as GhOps,
+			gh,
 			log: (m) => { logs.push(m) },
 			mergeNoVerify: overrides.mergeNoVerify ?? false,
 		}
@@ -444,6 +460,31 @@ if (import.meta.vitest) {
 			// `push` IS called once (the slice-branch push earlier in landImplement), but NOT
 			// the integration-branch push that comes after the merge.
 			expect(methods.filter((m) => m === 'push')).toHaveLength(1)
+		})
+	})
+
+	describe('landAddress: clears needs-revision state', () => {
+		test('ready clears storage flag and matching PR label so enrichment does not requeue address', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			await landAddress(deps, { ...slice, needsRevision: true }, { verdict: 'ready', commits: 5 }, { ...ctx, config: { usePrs: true, review: true, perSliceBranches: true } })
+			expect(storageState.needsRevision).toBe(false)
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
+		})
+
+		test('no-work-needed clears storage flag and matching PR label so enrichment does not requeue address', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			await landAddress(deps, { ...slice, needsRevision: true }, { verdict: 'no-work-needed', commits: 0 }, { ...ctx, config: { usePrs: true, review: true, perSliceBranches: true } })
+			expect(storageState.needsRevision).toBe(false)
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
+		})
+	})
+
+	describe('landReview: flags needs-revision state', () => {
+		test('needs-revision sets storage flag and matching PR label', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			await landReview(deps, slice, { verdict: 'needs-revision', commits: 0 }, { ...ctx, config: { usePrs: true, review: true, perSliceBranches: true } })
+			expect(storageState.needsRevision).toBe(true)
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { add: ['needs-revision'] }] })
 		})
 	})
 
