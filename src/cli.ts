@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { address } from './commands/address.ts'
-import { closeFix, closePrd, closeSlice } from './commands/close/index.ts'
+import { closeFix, closeChange, closeSlice } from './commands/close/index.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { fix } from './commands/fix.ts'
@@ -10,7 +10,7 @@ import { init } from './commands/init.ts'
 import { list, listFix, type ListState } from './commands/list/index.ts'
 import { review } from './commands/review.ts'
 import { start } from './commands/start.ts'
-import { statusFix, statusPrd, statusSlice } from './commands/status/index.ts'
+import { statusFix, statusChange, statusSlice } from './commands/status/index.ts'
 import * as stubs from './commands/stubs.ts'
 import { work, type WorkScope } from './commands/work/index.ts'
 
@@ -24,27 +24,27 @@ function parseListState(commandName: string, raw: string): ListState {
 export function run(): void {
 	const program = new Command()
 
-	program.name('trowel').description('Personal CLI for PRD-driven feature work').version('0.0.0')
+	program.name('trowel').description('Personal CLI for Change-driven feature work').version('0.0.0')
 
 	program
 		.command('start')
-		.description('Start a new PRD: grill, create artifacts, branch, slice')
+		.description('Start a new Change: grill, create artifacts, branch, slice')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.action(async (opts: { storage?: string; harness?: string }) => {
 			await start(opts)
 		})
 
-	const workCmd = program.command('work').description("Run the AFK loop on a PRD or a Fix")
+	const workCmd = program.command('work').description("Run the AFK loop on a Change or a Fix")
 
 	workCmd
-		.command('prd')
-		.description("Run the AFK loop on a PRD's open slices")
-		.argument('<prd-id>')
+		.command('change')
+		.description("Run the AFK loop on a Change's open slices")
+		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (prdId: string, opts) => {
-			await work('prd' as WorkScope, prdId, opts)
+		.action(async (changeId: string, opts) => {
+			await work('change' as WorkScope, changeId, opts)
 		})
 
 	workCmd
@@ -60,12 +60,12 @@ export function run(): void {
 	const listCmd = program.command('list').description('List entities in this project')
 
 	listCmd
-		.command('prd')
-		.description('List PRDs in this project')
+		.command('change')
+		.description('List Changes in this project')
 		.option('--state <kind>', 'Filter by state: open | closed | all', 'open')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (opts: { state: string; storage?: string }) => {
-			await list(parseListState('list prd', opts.state), { storage: opts.storage })
+			await list(parseListState('list change', opts.state), { storage: opts.storage })
 		})
 
 	listCmd
@@ -77,20 +77,20 @@ export function run(): void {
 			await listFix(parseListState('list fix', opts.state), { storage: opts.storage })
 		})
 
-	const statusCmd = program.command('status').description('Show the current state of a PRD, Slice, or Fix')
+	const statusCmd = program.command('status').description('Show the current state of a Change, Slice, or Fix')
 
 	statusCmd
-		.command('prd')
-		.description("Show a PRD's current state (done / in-flight / ready slices)")
-		.argument('<prd-id>')
+		.command('change')
+		.description("Show a Change's current state (done / in-flight / ready slices)")
+		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
-		.action(async (prdId: string, opts) => {
-			await statusPrd(prdId, opts)
+		.action(async (changeId: string, opts) => {
+			await statusChange(changeId, opts)
 		})
 
 	statusCmd
 		.command('slice')
-		.description("Show a single slice's state (parent PRD, bucket, blockers)")
+		.description("Show a single slice's state (parent Change, bucket, blockers)")
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (sliceId: string, opts) => {
@@ -106,15 +106,15 @@ export function run(): void {
 			await statusFix(fixId, opts)
 		})
 
-	const closeCmd = program.command('close').description('Close a PRD, Slice, or Fix (manual abort)')
+	const closeCmd = program.command('close').description('Close a Change, Slice, or Fix (manual abort)')
 
 	closeCmd
-		.command('prd')
-		.description('Close a PRD and tidy branches/orphans')
-		.argument('<prd-id>')
+		.command('change')
+		.description('Close a Change and tidy branches/orphans')
+		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
-		.action(async (prdId: string, opts) => {
-			await closePrd(prdId, opts)
+		.action(async (changeId: string, opts) => {
+			await closeChange(changeId, opts)
 		})
 
 	closeCmd

@@ -7,7 +7,7 @@ import type { ClassifiedSlice, ClassifySliceConfig, PhaseOutcome, ResumeState, S
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
-type LoopPhaseCtx = { prdId: string; integrationBranch: string; config: ClassifySliceConfig }
+type LoopPhaseCtx = { changeId: string; integrationBranch: string; config: ClassifySliceConfig }
 type SliceStepResult = { outcome: ProcessOutcome } | { outcome: 'progress' }
 
 const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'review', 'address'])
@@ -19,9 +19,9 @@ const PROCESS_OUTCOME_BY_PHASE: Record<PhaseOutcome, ProcessOutcome | null> = {
 	progress: null,
 }
 
-export async function processSlice(prdId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
-	const ctx = loopPhaseCtx(prdId, deps)
-	const tag = `[work prd-${prdId} slice-${initial.id}]`
+export async function processSlice(changeId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
+	const ctx = loopPhaseCtx(changeId, deps)
+	const tag = `[work change-${changeId} slice-${initial.id}]`
 	const initialOutcome = initialProcessOutcome(initial, ctx, tag, deps)
 	if (initialOutcome) return initialOutcome
 
@@ -29,9 +29,9 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 	return stepResult.outcome === 'progress' ? 'no-work' : stepResult.outcome
 }
 
-function loopPhaseCtx (prdId: string, deps: LoopDeps): LoopPhaseCtx {
+function loopPhaseCtx (changeId: string, deps: LoopDeps): LoopPhaseCtx {
 	return {
-		prdId,
+		changeId,
 		integrationBranch: deps.integrationBranch,
 		config: { usePrs: deps.config.usePrs, review: deps.config.review, perSliceBranches: deps.config.perSliceBranches },
 	}

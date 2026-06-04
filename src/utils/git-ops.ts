@@ -17,7 +17,7 @@ export type GitOps = {
 	mergeAbort(): Promise<void>
 	deleteRemoteBranch(branch: string): Promise<void>
 	createRemoteBranch(newBranch: string, baseBranch: string): Promise<void>
-	// file storage's createPrd uses these for integration-branch creation
+	// file storage's createChange uses these for integration-branch creation
 	createLocalBranch(name: string, baseBranch: string): Promise<void>
 	pushSetUpstream(branch: string): Promise<void>
 	// host-side close cleanup (consumed by `src/commands/close/index.ts`)

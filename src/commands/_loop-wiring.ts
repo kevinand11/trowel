@@ -21,8 +21,8 @@ type LoopWiring = {
 	projectRoot: string
 	storage: Storage
 	gh: ReturnType<typeof createGh>
-	integrationBranch: (prdId: string) => Promise<string>
-	runOnePhase: (prdId: string, slice: Slice, role: Role) => Promise<void>
+	integrationBranch: (changeId: string) => Promise<string>
+	runOnePhase: (changeId: string, slice: Slice, role: Role) => Promise<void>
 	runEntityLoopFor: (entity: LoopEntity) => Promise<void>
 }
 
@@ -46,7 +46,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			const logStream = createWriteStream(logPath, { flags: 'a' })
 
 			const startedAt = new Date().toISOString()
-			logStream.write(`\n=== ${startedAt} · prd-${worktree.prdId} · ${role} · harness=${harness.kind} ===\n`)
+			logStream.write(`\n=== ${startedAt} · change-${worktree.changeId} · ${role} · harness=${harness.kind} ===\n`)
 
 			const baseHead = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], '')
 			const { waitForExit } = await harness.spawnPrint({
@@ -68,7 +68,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 
 	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
 		spawnTurn(args, {
-			prdId: scopeId,
+			changeId: scopeId,
 			projectRoot,
 			copyToWorktree: config.turn.copyToWorktree,
 			git,
@@ -76,18 +76,18 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			log,
 		})
 
-	const integrationBranch = async (prdId: string): Promise<string> => {
-		const prd = await storage.findPrd(prdId)
-		if (!prd) throw new Error(`PRD '${prdId}' not found`)
-		return prd.branch
+	const integrationBranch = async (changeId: string): Promise<string> => {
+		const change = await storage.findChange(changeId)
+		if (!change) throw new Error(`Change '${changeId}' not found`)
+		return change.branch
 	}
 
-	const runOnePhase = async (prdId: string, slice: Slice, role: Role): Promise<void> => {
-		const branch = await integrationBranch(prdId)
-		const ctx = { prdId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
+	const runOnePhase = async (changeId: string, slice: Slice, role: Role): Promise<void> => {
+		const branch = await integrationBranch(changeId)
+		const ctx = { changeId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
 		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
 		const prep = await prepareOnePhase(role, phaseDeps, slice, ctx)
-		const verdict: TurnOut = await makeSpawnTurnFor(prdId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
+		const verdict: TurnOut = await makeSpawnTurnFor(changeId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
 		await landOnePhase(role, phaseDeps, slice, verdict, ctx)
 	}
 
@@ -96,8 +96,8 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			projectRoot,
 			git,
 			cleanupAge: config.work.worktreeCleanupAge,
-			orphanCheck: async (sweptPrdId, sweptBranch) => {
-				if (sweptPrdId !== entity.id) return false
+			orphanCheck: async (sweptChangeId, sweptBranch) => {
+				if (sweptChangeId !== entity.id) return false
 				return !(await git.branchExists(sweptBranch))
 			},
 		}).catch((e: Error) => log(`sweepOrphanWorktrees failed: ${e.message}`))
@@ -134,7 +134,7 @@ async function gitCountOrZero(cwd: string, revRange: string): Promise<number> {
 }
 
 function logHarnessExitIfFailed(exitCode: number, worktree: TurnWorktree, harnessKind: string, logPath: string, log: (m: string) => void): void {
-	if (exitCode !== 0) log(`[work prd-${worktree.prdId} slice-${worktree.branch}] ${harnessKind} exited ${exitCode}; see ${logPath}`)
+	if (exitCode !== 0) log(`[work change-${worktree.changeId} slice-${worktree.branch}] ${harnessKind} exited ${exitCode}; see ${logPath}`)
 }
 
 function prepareOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, ctx: PhaseCtx) {

@@ -15,8 +15,8 @@ const heldRoots = new AsyncLocalStorage<Set<string>>()
 
 /**
  * Run `fn` while holding trowel's project-wide mutation lock at
- * `<projectRoot>/.trowel/lock`. Any command that mutates state (PRD/slice CRUD, branch ops,
- * `closePrd`) wraps its entry function in this; read-only commands (`status`, `list`, `config`,
+ * `<projectRoot>/.trowel/lock`. Any command that mutates state (Change/slice CRUD, branch ops,
+ * `closeChange`) wraps its entry function in this; read-only commands (`status`, `list`, `config`,
  * `doctor`) do not.
  *
  * Reentrant per async context — nested `withMutationLock` calls on the same project root, in the

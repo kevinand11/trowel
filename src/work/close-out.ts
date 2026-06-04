@@ -4,7 +4,7 @@ import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 
 /**
- * Unified terminal step that ships a closeable PRD or Fix. See ADR
+ * Unified terminal step that ships a closeable Change or Fix. See ADR
  * `2026-05-17-fix-entity-unified-close-out.md`. Branches on `config.work.usePrs`:
  *
  * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
@@ -17,7 +17,7 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
  */
 export type CloseOutEntity = {
-	kind: 'prd' | 'fix'
+	kind: 'change' | 'fix'
 	id: string
 	branch: string
 	targetBranch?: string
@@ -109,7 +109,7 @@ async function restoreAfterFailedCloseOutMerge(current: string, targetBranch: st
 }
 
 async function markEntityClosed(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
-	if (entity.kind === 'prd') await deps.storage.closePrd(entity.id)
+	if (entity.kind === 'change') await deps.storage.closeChange(entity.id)
 	else await deps.storage.closeFix(entity.id)
 }
 
@@ -120,7 +120,7 @@ async function deleteAutoBranchIfAllowed(entity: CloseOutEntity, deps: CloseOutD
 }
 
 function bodyFor(entity: CloseOutEntity): string {
-	return entity.kind === 'fix' ? `Closes #${entity.id}` : `Closes PRD ${entity.id}`
+	return entity.kind === 'fix' ? `Closes #${entity.id}` : `Closes Change ${entity.id}`
 }
 
 /**
@@ -141,13 +141,13 @@ if (import.meta.vitest) {
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
-	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { prd: string[]; fix: string[] } } {
-		const closed = { prd: [] as string[], fix: [] as string[] }
+	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { change: string[]; fix: string[] } } {
+		const closed = { change: [] as string[], fix: [] as string[] }
 		const storage: Storage = {
-			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async (id) => { closed.prd.push(id) },
+			createChange: async () => ({ id: 'x', branch: 'x' }),
+			findChange: async () => null,
+			listChanges: async () => [],
+			closeChange: async (id) => { closed.change.push(id) },
 			createSlice: async () => { throw new Error('nyi') },
 			findSlices: async () => [],
 			findSlice: async () => null,
@@ -176,7 +176,7 @@ if (import.meta.vitest) {
 		return { git, calls }
 	}
 
-	async function runFixCloseOutWithPr(state: 'OPEN' | 'MERGED'): Promise<{ closed: { prd: string[]; fix: string[] }; calls: Array<[string, ...unknown[]]> }> {
+	async function runFixCloseOutWithPr(state: 'OPEN' | 'MERGED'): Promise<{ closed: { change: string[]; fix: string[] }; calls: Array<[string, ...unknown[]]> }> {
 		const { storage, closed } = fakeStorage()
 		const { git } = fakeGit()
 		const { gh, calls } = recordingGhOps({
@@ -202,18 +202,18 @@ if (import.meta.vitest) {
 			expect(closed.fix).toEqual(['5'])
 		})
 
-		test('PRD + usePrs:false: host-merges integration to targetBranch, marks PRD CLOSED, retains branch on never', async () => {
+		test('Change + usePrs:false: host-merges integration to targetBranch, marks Change CLOSED, retains branch on never', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
-				{ kind: 'prd', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ kind: 'change', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: false } },
 			)
 			expect(calls).toContain('checkout(release/1.2)')
 			expect(calls).toContain('push(release/1.2)')
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
-			expect(closed.prd).toEqual(['3'])
+			expect(closed.change).toEqual(['3'])
 		})
 
 		test('prompt policy is coerced to never in auto Close-out', async () => {
@@ -234,7 +234,7 @@ if (import.meta.vitest) {
 			expect(closed.fix).toEqual([])
 		})
 
-		test('PRD + usePrs:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
+		test('Change + usePrs:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
 			const { storage } = fakeStorage()
 			const { git } = fakeGit()
 			const { gh, calls } = recordingGhOps({
@@ -242,14 +242,14 @@ if (import.meta.vitest) {
 				findPrNumberByHead: async () => 22,
 			})
 			await runCloseOut(
-				{ kind: 'prd', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ kind: 'change', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'never', mergeNoVerify: false } },
 			)
 			expect(calls.find((c) => c[0] === 'createDraftPr')).toEqual(['createDraftPr', {
 				title: 'Feat',
 				head: '3-feat',
 				base: 'release/1.2',
-				body: 'Closes PRD 3',
+				body: 'Closes Change 3',
 			}])
 			expect(calls).toContainEqual(['markPrReady', 22])
 		})

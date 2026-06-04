@@ -4,7 +4,7 @@ import { parseJson, validateJson } from './parse-json.ts'
 
 const startOutPipe = () =>
 	v.object({
-		prd: v.object({
+		change: v.object({
 			title: v.string(),
 			body: v.string(),
 		}),
@@ -77,19 +77,19 @@ if (import.meta.vitest) {
 	const { parseStartOut } = await import('./start-out.ts')
 
 	describe('parseStartOut', () => {
-		test('rejects a payload missing the prd field', () => {
+		test('rejects a payload missing the change field', () => {
 			const raw = JSON.stringify({ slices: [] })
 			expect(() => parseStartOut(raw)).toThrow(/Invalid start-out\.json/)
 		})
 
 		test('rejects a payload missing the slices field', () => {
-			const raw = JSON.stringify({ prd: { title: 'x', body: 'y' } })
+			const raw = JSON.stringify({ change: { title: 'x', body: 'y' } })
 			expect(() => parseStartOut(raw)).toThrow(/Invalid start-out\.json/)
 		})
 
 		test('rejects a blockedBy index ≥ slices.length, naming the offending slice index', () => {
 			const raw = JSON.stringify({
-				prd: { title: 't', body: 'b' },
+				change: { title: 't', body: 'b' },
 				slices: [
 					{ title: 'a', body: 'b', blockedBy: [], readyForAgent: true },
 					{ title: 'a', body: 'b', blockedBy: [5], readyForAgent: true },
@@ -100,7 +100,7 @@ if (import.meta.vitest) {
 
 		test('rejects a negative blockedBy index', () => {
 			const raw = JSON.stringify({
-				prd: { title: 't', body: 'b' },
+				change: { title: 't', body: 'b' },
 				slices: [{ title: 'a', body: 'b', blockedBy: [-1], readyForAgent: true }],
 			})
 			expect(() => parseStartOut(raw)).toThrow(/slice 0.*blockedBy.*-1/i)
@@ -108,7 +108,7 @@ if (import.meta.vitest) {
 
 		test('rejects a slice that blocks on itself', () => {
 			const raw = JSON.stringify({
-				prd: { title: 't', body: 'b' },
+				change: { title: 't', body: 'b' },
 				slices: [{ title: 'a', body: 'b', blockedBy: [0], readyForAgent: true }],
 			})
 			expect(() => parseStartOut(raw)).toThrow(/slice 0.*self/i)
@@ -116,7 +116,7 @@ if (import.meta.vitest) {
 
 		test('rejects a 2-cycle (A blocks B, B blocks A)', () => {
 			const raw = JSON.stringify({
-				prd: { title: 't', body: 'b' },
+				change: { title: 't', body: 'b' },
 				slices: [
 					{ title: 'A', body: 'b', blockedBy: [1], readyForAgent: true },
 					{ title: 'B', body: 'b', blockedBy: [0], readyForAgent: true },
@@ -127,7 +127,7 @@ if (import.meta.vitest) {
 
 		test('rejects a 3-cycle (A→B→C→A)', () => {
 			const raw = JSON.stringify({
-				prd: { title: 't', body: 'b' },
+				change: { title: 't', body: 'b' },
 				slices: [
 					{ title: 'A', body: 'b', blockedBy: [2], readyForAgent: true },
 					{ title: 'B', body: 'b', blockedBy: [0], readyForAgent: true },
@@ -137,9 +137,9 @@ if (import.meta.vitest) {
 			expect(() => parseStartOut(raw)).toThrow(/cycle/i)
 		})
 
-		test('accepts an empty slices array (single-slice PRD or "add slices later" cases)', () => {
+		test('accepts an empty slices array (single-slice Change or "add slices later" cases)', () => {
 			const raw = JSON.stringify({
-				prd: { title: 'Spec-only PRD', body: 'body' },
+				change: { title: 'Spec-only Change', body: 'body' },
 				slices: [],
 			})
 			const out = parseStartOut(raw)
@@ -152,7 +152,7 @@ if (import.meta.vitest) {
 
 		test('parses a valid 2-slice spec where the second slice blocks on the first', () => {
 			const raw = JSON.stringify({
-				prd: { title: 'Rename Foo to Bar', body: '## Problem Statement\n…' },
+				change: { title: 'Rename Foo to Bar', body: '## Problem Statement\n…' },
 				slices: [
 					{ title: 'Rename Foo type', body: '## What to build\n…', blockedBy: [], readyForAgent: true },
 					{ title: 'Update callsites', body: '## What to build\n…', blockedBy: [0], readyForAgent: true },
@@ -161,7 +161,7 @@ if (import.meta.vitest) {
 
 			const out = parseStartOut(raw)
 
-			expect(out.prd.title).toBe('Rename Foo to Bar')
+			expect(out.change.title).toBe('Rename Foo to Bar')
 			expect(out.slices).toHaveLength(2)
 			expect(out.slices[1].blockedBy).toEqual([0])
 			expect(out.slices[0].readyForAgent).toBe(true)

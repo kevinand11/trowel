@@ -12,7 +12,7 @@ export async function runManualSliceCommand(opts: {
 	harness?: HarnessKind
 	role: Role
 	requiredBucket: Bucket
-	reason: (prdId: string) => string
+	reason: (changeId: string) => string
 }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring({ storage: opts.storage, harness: opts.harness })
@@ -22,7 +22,7 @@ export async function runManualSliceCommand(opts: {
 				storage: wiring.storage,
 				gh: wiring.gh,
 				usePrs: wiring.config.work.usePrs,
-				runOnePhase: (prdId, slice) => wiring.runOnePhase(prdId, slice, opts.role),
+				runOnePhase: (changeId, slice) => wiring.runOnePhase(changeId, slice, opts.role),
 			},
 			requiredBucket: opts.requiredBucket,
 			reason: opts.reason,

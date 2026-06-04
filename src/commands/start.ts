@@ -20,13 +20,13 @@ export type StartRuntime = {
 
 type StartSpec = ReturnType<typeof parseStartOut>
 type StartGrillResult = GrillSpecResult<StartSpec>
-type CreatedStartPrd = { prdId: string; branch: string; realIds: string[]; spec: StartSpec }
+type CreatedStartChange = { changeId: string; branch: string; realIds: string[]; spec: StartSpec }
 
 export async function runStart(rt: StartRuntime): Promise<void> {
 	const result = await resolveStartSpec(rt)
 	try {
-		const created = await materialiseStartPrd(rt, result)
-		printCreatedStartPrd(rt, created)
+		const created = await materialiseStartChange(rt, result)
+		printCreatedStartChange(rt, created)
 		await result.clearOut()
 	} catch (e) {
 		await result.recover()
@@ -45,7 +45,7 @@ function resolveStartSpec(rt: StartRuntime): Promise<StartGrillResult> {
 		parseOut: parseStartOut,
 		printResumePreview: (spec) => printResumePreview(rt, spec),
 		runInteractive: () => rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot }),
-		missingOutMessage: 'PRD not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n',
+		missingOutMessage: 'Change not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n',
 		missingOutError: 'start-out.json missing — grill aborted',
 		resumePrompt: 'Continue with the spec above? (no → discard and start a fresh grill)',
 		invalidPrompt: 'Discard the invalid file and start a fresh grill? (no → abort)',
@@ -53,43 +53,43 @@ function resolveStartSpec(rt: StartRuntime): Promise<StartGrillResult> {
 	})
 }
 
-async function materialiseStartPrd(rt: StartRuntime, result: StartGrillResult): Promise<CreatedStartPrd> {
-	const { id: prdId, branch } = await rt.storage.createPrd({ ...result.spec.prd, targetBranch: result.targetBranch })
+async function materialiseStartChange(rt: StartRuntime, result: StartGrillResult): Promise<CreatedStartChange> {
+	const { id: changeId, branch } = await rt.storage.createChange({ ...result.spec.change, targetBranch: result.targetBranch })
 	result.markMaterialised()
 	await rt.git.checkout(branch)
 	if (result.stashed) await rt.git.stashPop()
-	const realIds = await createStartSlices(rt, prdId, result.spec)
-	await updateStartSliceLinks(rt, prdId, result.spec, realIds)
-	return { prdId, branch, realIds, spec: result.spec }
+	const realIds = await createStartSlices(rt, changeId, result.spec)
+	await updateStartSliceLinks(rt, changeId, result.spec, realIds)
+	return { changeId, branch, realIds, spec: result.spec }
 }
 
-async function createStartSlices(rt: StartRuntime, prdId: string, spec: StartSpec): Promise<string[]> {
+async function createStartSlices(rt: StartRuntime, changeId: string, spec: StartSpec): Promise<string[]> {
 	const realIds: string[] = []
 	for (const slice of spec.slices) {
-		const created = await rt.storage.createSlice(prdId, { title: slice.title, body: slice.body, blockedBy: [] })
+		const created = await rt.storage.createSlice(changeId, { title: slice.title, body: slice.body, blockedBy: [] })
 		realIds.push(created.id)
 	}
 	return realIds
 }
 
-async function updateStartSliceLinks(rt: StartRuntime, prdId: string, spec: StartSpec, realIds: string[]): Promise<void> {
+async function updateStartSliceLinks(rt: StartRuntime, changeId: string, spec: StartSpec, realIds: string[]): Promise<void> {
 	for (const [i, slice] of spec.slices.entries()) {
-		await rt.storage.updateSlice(prdId, realIds[i]!, {
+		await rt.storage.updateSlice(changeId, realIds[i]!, {
 			blockedBy: slice.blockedBy.map((idx) => realIds[idx]!),
 			readyForAgent: slice.readyForAgent,
 		})
 	}
 }
 
-function printCreatedStartPrd(rt: StartRuntime, created: CreatedStartPrd): void {
-	rt.stdout(`\nCreated PRD ${created.prdId}\n`)
+function printCreatedStartChange(rt: StartRuntime, created: CreatedStartChange): void {
+	rt.stdout(`\nCreated Change ${created.changeId}\n`)
 	rt.stdout(`Branch: ${created.branch} (you are now on it)\n`)
 	printCreatedStartSlices(rt, created)
-	rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the PRD/slice artifacts). Commit at your discretion.\n')
-	rt.stdout(`\nNext: trowel work ${created.prdId}\n`)
+	rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the Change/slice artifacts). Commit at your discretion.\n')
+	rt.stdout(`\nNext: trowel work ${created.changeId}\n`)
 }
 
-function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartPrd): void {
+function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartChange): void {
 	if (created.realIds.length === 0) return
 	rt.stdout('Slices:\n')
 	for (const [i, slice] of created.spec.slices.entries()) rt.stdout(`  - ${created.realIds[i]} ${slice.title}\n`)
@@ -97,7 +97,7 @@ function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartPrd): vo
 
 function printResumePreview(rt: StartRuntime, spec: ReturnType<typeof parseStartOut>): void {
 	rt.stdout('\nFound existing .trowel/start-out.json from a prior run:\n')
-	rt.stdout(`\n# ${spec.prd.title}\n\n${spec.prd.body}\n`)
+	rt.stdout(`\n# ${spec.change.title}\n\n${spec.change.body}\n`)
 	printResumeSlices(rt, spec.slices)
 	rt.stdout('\n')
 }
@@ -170,14 +170,14 @@ if (import.meta.vitest) {
 
 	function resumeSpec() {
 		return {
-			prd: { title: 'Resume Me', body: 'body from prior run' },
+			change: { title: 'Resume Me', body: 'body from prior run' },
 			slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
 		}
 	}
 
 	function minimalStartOutJson(): string {
 		return JSON.stringify({
-			prd: { title: 't', body: 'b' },
+			change: { title: 't', body: 'b' },
 			slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
 		})
 	}
@@ -195,7 +195,7 @@ if (import.meta.vitest) {
 	async function expectRunStartRejectsWithoutCreate(startOut: string, error: RegExp): Promise<void> {
 		const { rt, calls, gitState } = makeFakes({ startOut, currentBranch: 'main' })
 		await expect(runStart(rt)).rejects.toThrow(error)
-		expect(calls.createPrd).toEqual([])
+		expect(calls.createChange).toEqual([])
 		expect(gitState.current).toBe('main')
 	}
 
@@ -206,7 +206,7 @@ if (import.meta.vitest) {
 		rt.confirm = async () => false
 		await expect(runStart(rt)).rejects.toThrow(error)
 		expect(interactiveCalled).toBe(false)
-		expect(calls.createPrd).toEqual([])
+		expect(calls.createChange).toEqual([])
 		expect(await fileExists(tmp.startOutPath)).toBe(true)
 	}
 
@@ -215,19 +215,19 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const staleSpec = {
-					prd: { title: 'STALE', body: 'old' },
+					change: { title: 'STALE', body: 'old' },
 					slices: [{ title: 'old-slice', body: 'x', blockedBy: [], readyForAgent: true }],
 				}
 				await writeFile(tmp.startOutPath, JSON.stringify(staleSpec))
 
 				const freshSpec = {
-					prd: { title: 'FRESH', body: 'new' },
+					change: { title: 'FRESH', body: 'new' },
 					slices: [{ title: 'new-slice', body: 'y', blockedBy: [], readyForAgent: true }],
 				}
 
 				const { rt, calls } = makeFakes({
 					startOut: null,
-					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -242,7 +242,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(stalePresentAtRunInteractive).toBe(false)
-				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new', targetBranch: 'main' }])
+				expect(calls.createChange).toEqual([{ title: 'FRESH', body: 'new', targetBranch: 'main' }])
 			} finally {
 				await tmp.cleanup()
 			}
@@ -251,16 +251,16 @@ if (import.meta.vitest) {
 		test('invalid existing spec + user confirms wipe → file wiped, claude runs fresh grill', async () => {
 			const tmp = await setupTmp()
 			try {
-				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing prd
+				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing change
 
 				const freshSpec = {
-					prd: { title: 'FRESH', body: 'new' },
+					change: { title: 'FRESH', body: 'new' },
 					slices: [{ title: 'x', body: 'y', blockedBy: [], readyForAgent: true }],
 				}
 
 				const { rt, calls } = makeFakes({
 					startOut: null,
-					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -275,7 +275,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(interactiveCalled).toBe(true)
-				expect(calls.createPrd).toEqual([{ title: 'FRESH', body: 'new', targetBranch: 'main' }])
+				expect(calls.createChange).toEqual([{ title: 'FRESH', body: 'new', targetBranch: 'main' }])
 				expect(calls.stdout.join('')).toMatch(/invalid/i)
 			} finally {
 				await tmp.cleanup()
@@ -285,7 +285,7 @@ if (import.meta.vitest) {
 		test('invalid existing spec + user declines wipe → runStart throws with validation error, file persists', async () => {
 			const tmp = await setupTmp()
 			try {
-				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing prd
+				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing change
 
 				await expectAttachedStartOutAbort(tmp, { startOut: null, currentBranch: 'main' }, /Invalid start-out\.json/)
 			} finally {
@@ -293,11 +293,11 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('preview prints PRD title, PRD body, and a slice row per slice before the confirm prompt', async () => {
+		test('preview prints Change title, Change body, and a slice row per slice before the confirm prompt', async () => {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
-					prd: { title: 'Resume Me', body: 'long body content goes here' },
+					change: { title: 'Resume Me', body: 'long body content goes here' },
 					slices: [
 						{ title: 'first slice', body: 'a', blockedBy: [], readyForAgent: true },
 						{ title: 'second slice', body: 'b', blockedBy: [0], readyForAgent: false },
@@ -338,7 +338,7 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeAttachedFakes(tmp, {
 					startOut: null, // not used — readStartOut overridden below
-					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -349,7 +349,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(interactiveCalls).toBe(0)
-				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run', targetBranch: 'main' }])
+				expect(calls.createChange).toEqual([{ title: 'Resume Me', body: 'body from prior run', targetBranch: 'main' }])
 				expect(calls.createSlice).toHaveLength(1)
 				expect(await fileExists(tmp.startOutPath)).toBe(false)
 			} finally {
@@ -364,7 +364,7 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeAttachedFakes(tmp, {
 					startOut: null,
-					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 					preflightFailures: ['working tree dirty'],
@@ -376,7 +376,7 @@ if (import.meta.vitest) {
 				await runStart(rt)
 
 				expect(interactiveCalled).toBe(false)
-				expect(calls.createPrd).toEqual([{ title: 'Resume Me', body: 'body from prior run', targetBranch: 'main' }])
+				expect(calls.createChange).toEqual([{ title: 'Resume Me', body: 'body from prior run', targetBranch: 'main' }])
 				expect(await fileExists(tmp.startOutPath)).toBe(false)
 			} finally {
 				await tmp.cleanup()
@@ -387,7 +387,7 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
-					prd: { title: 'STALE', body: 'old' },
+					change: { title: 'STALE', body: 'old' },
 					slices: [{ title: 'old-slice', body: 'x', blockedBy: [], readyForAgent: true }],
 				}
 				await writeFile(tmp.startOutPath, JSON.stringify(spec))
@@ -405,7 +405,7 @@ if (import.meta.vitest) {
 			try {
 				// Stale file left behind by a prior aborted run
 				await writeFile(tmp.startOutPath, JSON.stringify({
-					prd: { title: 'STALE', body: 'should-not-be-read' },
+					change: { title: 'STALE', body: 'should-not-be-read' },
 					slices: [],
 				}))
 
@@ -422,7 +422,7 @@ if (import.meta.vitest) {
 
 				await expect(runStart(rt)).rejects.toThrow(/start-out.json missing/i)
 				expect(stalePresentAtRunInteractive).toBe(false)
-				expect(calls.createPrd).toEqual([])
+				expect(calls.createChange).toEqual([])
 				expect(await fileExists(tmp.startOutPath)).toBe(false)
 			} finally {
 				await tmp.cleanup()
@@ -432,7 +432,7 @@ if (import.meta.vitest) {
 		test('failure path (invalid spec) leaves start-out.json on disk for inspection', async () => {
 			const tmp = await setupTmp()
 			try {
-				const invalid = JSON.stringify({ slices: [] }) // missing prd
+				const invalid = JSON.stringify({ slices: [] }) // missing change
 				const { rt } = makeFakes({ startOut: invalid, currentBranch: 'main' })
 				attachStartOutFile(rt, tmp)
 				rt.runInteractive = async () => {
@@ -449,12 +449,12 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
-					prd: { title: 'T', body: 'B' },
+					change: { title: 'T', body: 'B' },
 					slices: [{ title: 'S', body: 'B', blockedBy: [], readyForAgent: true }],
 				}
 				const { rt } = makeFakes({
 					startOut: JSON.stringify(spec),
-					createPrdResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', branch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -478,7 +478,7 @@ if (import.meta.vitest) {
 			})
 			await expect(runStart(rt)).rejects.toThrow(/start-out.json missing/i)
 			expect(calls.stdout.join('')).toMatch(/git status/i)
-			expect(calls.createPrd).toEqual([])
+			expect(calls.createChange).toEqual([])
 			expect(gitState.current).toBe('main')
 		})
 
@@ -493,13 +493,13 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: invalid start-out.json', () => {
-		test('schema violation (missing prd) → re-raises validation error, BACK_TO restored, no createPrd', async () => {
+		test('schema violation (missing change) → re-raises validation error, BACK_TO restored, no createChange', async () => {
 			await expectRunStartRejectsWithoutCreate(JSON.stringify({ slices: [] }), /Invalid start-out\.json/)
 		})
 
-		test('blockedBy cycle → re-raises, no createPrd, BACK_TO restored', async () => {
+		test('blockedBy cycle → re-raises, no createChange, BACK_TO restored', async () => {
 			const cyclic = JSON.stringify({
-				prd: { title: 't', body: 'b' },
+				change: { title: 't', body: 'b' },
 				slices: [
 					{ title: 'A', body: 'b', blockedBy: [1], readyForAgent: true },
 					{ title: 'B', body: 'b', blockedBy: [0], readyForAgent: true },
@@ -510,11 +510,11 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: stash dance', () => {
-		test('dirty tree → stashPush before createPrd, then checkout integration, then stashPop (in that order)', async () => {
+		test('dirty tree → stashPush before createChange, then checkout integration, then stashPop (in that order)', async () => {
 			const startOut = minimalStartOutJson()
 			const { rt, calls } = makeFakes({
 				startOut,
-				createPrdResult: { id: 'pid', branch: 'pid-branch' },
+				createChangeResult: { id: 'pid', branch: 'pid-branch' },
 				createSliceIds: ['s1'],
 				currentBranch: 'main',
 				cleanTree: false,
@@ -527,7 +527,7 @@ if (import.meta.vitest) {
 			const startOut = minimalStartOutJson()
 			const { rt, calls } = makeFakes({
 				startOut,
-				createPrdResult: { id: 'pid', branch: 'pid-branch' },
+				createChangeResult: { id: 'pid', branch: 'pid-branch' },
 				createSliceIds: ['s1'],
 				currentBranch: 'main',
 				cleanTree: true,
@@ -542,7 +542,7 @@ if (import.meta.vitest) {
 			const startOut = minimalStartOutJson()
 			const { rt, gitState } = makeFakes({
 				startOut,
-				createPrdResult: { id: 'pid', branch: 'pid-branch' },
+				createChangeResult: { id: 'pid', branch: 'pid-branch' },
 				createSliceIds: ['s1'],
 				currentBranch: 'main',
 				cleanTree: false,
@@ -553,17 +553,17 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('runStart: createPrd fails after stash', () => {
-		test('storage.createPrd throws while stashed → stash popped on BACK_TO, BACK_TO restored, error re-raised', async () => {
+	describe('runStart: createChange fails after stash', () => {
+		test('storage.createChange throws while stashed → stash popped on BACK_TO, BACK_TO restored, error re-raised', async () => {
 			const startOut = minimalStartOutJson()
 			const { rt, calls, gitState } = makeFakes({
 				startOut,
 				currentBranch: 'main',
 				cleanTree: false,
-				createPrdThrows: new Error('GitHub API down'),
+				createChangeThrows: new Error('GitHub API down'),
 			})
 			await expect(runStart(rt)).rejects.toThrow(/GitHub API down/)
-			// stash was pushed; createPrd failed; stash must be popped back on the original branch
+			// stash was pushed; createChange failed; stash must be popped back on the original branch
 			expect(calls.git).toEqual(['stashPush', 'stashPop'])
 			expect(gitState.current).toBe('main')
 			expect(gitState.stashStack).toBe(0)
@@ -571,7 +571,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: preflight short-circuit', () => {
-		test('preflight failures → throws before claude is launched; no createPrd', async () => {
+		test('preflight failures → throws before claude is launched; no createChange', async () => {
 			const { rt, calls } = makeFakes({
 				startOut: null,
 				preflightFailures: ['working tree dirty', 'gh not authenticated'],
@@ -580,14 +580,14 @@ if (import.meta.vitest) {
 			rt.runInteractive = async () => { claudeRan = true }
 			await expect(runStart(rt)).rejects.toThrow(/working tree dirty[\s\S]*gh not authenticated/i)
 			expect(claudeRan).toBe(false)
-			expect(calls.createPrd).toEqual([])
+			expect(calls.createChange).toEqual([])
 		})
 	})
 
 	describe('runStart: summary', () => {
-		test('prints PRD id, integration branch, slice ids, and a commit-reminder hint after success', async () => {
+		test('prints Change id, integration branch, slice ids, and a commit-reminder hint after success', async () => {
 			const startOut = JSON.stringify({
-				prd: { title: 'Rename Foo', body: 'b' },
+				change: { title: 'Rename Foo', body: 'b' },
 				slices: [
 					{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true },
 					{ title: 'B', body: 'b', blockedBy: [0], readyForAgent: true },
@@ -595,7 +595,7 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls } = makeFakes({
 				startOut,
-				createPrdResult: { id: 'abc123', branch: 'abc123-rename-foo' },
+				createChangeResult: { id: 'abc123', branch: 'abc123-rename-foo' },
 				createSliceIds: ['s1', 's2'],
 				currentBranch: 'main',
 			})
@@ -611,25 +611,25 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: happy path', () => {
-		test('passes the invocation branch as the PRD target branch', async () => {
+		test('passes the invocation branch as the Change target branch', async () => {
 			const startOutJson = JSON.stringify({
-				prd: { title: 'Target Develop', body: 'spec body' },
+				change: { title: 'Target Develop', body: 'spec body' },
 				slices: [],
 			})
 			const { rt, calls } = makeFakes({
 				startOut: startOutJson,
-				createPrdResult: { id: 'abc123', branch: 'abc123-target-develop' },
+				createChangeResult: { id: 'abc123', branch: 'abc123-target-develop' },
 				currentBranch: 'develop',
 			})
 
 			await runStart(rt)
 
-			expect(calls.createPrd).toEqual([{ title: 'Target Develop', body: 'spec body', targetBranch: 'develop' }])
+			expect(calls.createChange).toEqual([{ title: 'Target Develop', body: 'spec body', targetBranch: 'develop' }])
 		})
 
-		test('claude writes valid 2-slice spec → createPrd + 2× createSlice + 2× updateSlice with resolved blockedBy and readyForAgent', async () => {
+		test('claude writes valid 2-slice spec → createChange + 2× createSlice + 2× updateSlice with resolved blockedBy and readyForAgent', async () => {
 			const startOutJson = JSON.stringify({
-				prd: { title: 'Rename Foo', body: 'spec body' },
+				change: { title: 'Rename Foo', body: 'spec body' },
 				slices: [
 					{ title: 'Rename type', body: 'a', blockedBy: [], readyForAgent: true },
 					{ title: 'Update callsites', body: 'b', blockedBy: [0], readyForAgent: false },
@@ -637,21 +637,21 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls, gitState } = makeFakes({
 				startOut: startOutJson,
-				createPrdResult: { id: 'abc123', branch: 'abc123-rename-foo' },
+				createChangeResult: { id: 'abc123', branch: 'abc123-rename-foo' },
 				createSliceIds: ['slice-a', 'slice-b'],
 				currentBranch: 'main',
 			})
 
 			await runStart(rt)
 
-			expect(calls.createPrd).toEqual([{ title: 'Rename Foo', body: 'spec body', targetBranch: 'main' }])
+			expect(calls.createChange).toEqual([{ title: 'Rename Foo', body: 'spec body', targetBranch: 'main' }])
 			expect(calls.createSlice).toEqual([
-				{ prdId: 'abc123', spec: { title: 'Rename type', body: 'a', blockedBy: [] } },
-				{ prdId: 'abc123', spec: { title: 'Update callsites', body: 'b', blockedBy: [] } },
+				{ changeId: 'abc123', spec: { title: 'Rename type', body: 'a', blockedBy: [] } },
+				{ changeId: 'abc123', spec: { title: 'Update callsites', body: 'b', blockedBy: [] } },
 			])
 			expect(calls.updateSlice).toEqual([
-				{ prdId: 'abc123', sliceId: 'slice-a', patch: { blockedBy: [], readyForAgent: true } },
-				{ prdId: 'abc123', sliceId: 'slice-b', patch: { blockedBy: ['slice-a'], readyForAgent: false } },
+				{ changeId: 'abc123', sliceId: 'slice-a', patch: { blockedBy: [], readyForAgent: true } },
+				{ changeId: 'abc123', sliceId: 'slice-b', patch: { blockedBy: ['slice-a'], readyForAgent: false } },
 			])
 			expect(gitState.current).toBe('abc123-rename-foo')
 		})

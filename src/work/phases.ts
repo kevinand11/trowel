@@ -33,8 +33,8 @@ function withPhaseLock<T>(deps: PhaseDeps, fn: () => Promise<T>): Promise<T> {
 	return withMutationLock(deps.projectRoot, fn)
 }
 
-function sliceBranchFor(prdId: string, slice: Slice): string {
-	return `prd-${prdId}/slice-${slice.id}-${slugify(slice.title)}`
+function sliceBranchFor(changeId: string, slice: Slice): string {
+	return `change-${changeId}/slice-${slice.id}-${slugify(slice.title)}`
 }
 
 async function pushSliceBranchIfNeeded(deps: PhaseDeps, branch: string, commits: number, tag: string): Promise<void> {
@@ -58,9 +58,9 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 			turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
 		}
 	}
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	const branch = sliceBranchFor(ctx.changeId, slice)
 	if (await deps.git.branchExists(branch)) {
-		deps.log(`[work prd-${ctx.prdId} slice-${slice.id}] reusing existing slice branch '${branch}' (contains prior implementer commits from an aborted run)`)
+		deps.log(`[work change-${ctx.changeId} slice-${slice.id}] reusing existing slice branch '${branch}' (contains prior implementer commits from an aborted run)`)
 	} else {
 		await deps.git.createRemoteBranch(branch, ctx.integrationBranch)
 	}
@@ -91,7 +91,7 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  *   `trowel doctor`, not preflight-gated).
  */
 async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<void> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await deps.git.checkout(ctx.integrationBranch)
 	try {
 		await deps.git.mergeNoFf(branch, { noVerify: deps.mergeNoVerify })
@@ -105,7 +105,7 @@ async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: Pha
 	await deps.git.push(ctx.integrationBranch)
 	await deps.git.deleteRemoteBranch(branch)
 	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+	await deps.storage.updateSlice(ctx.changeId, slice.id, { state: 'CLOSED' })
 	deps.log(`${tag} closed slice`)
 }
 
@@ -123,18 +123,18 @@ async function landImplementLocked(deps: PhaseDeps, slice: Slice, verdict: TurnO
 async function landImplementNoWork(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const recovered = await recoverNoWorkNeededSliceBranch(deps, slice, ctx)
 	if (recovered) return recovered
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { readyForAgent: false })
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
+	await deps.storage.updateSlice(ctx.changeId, slice.id, { readyForAgent: false })
 	deps.log(`${tag} no-work-needed: cleared readyForAgent`)
 	return 'no-work'
 }
 
 async function recoverNoWorkNeededSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome | null> {
 	if (!canRecoverNoWorkNeededSliceBranch(ctx)) return null
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	const branch = sliceBranchFor(ctx.changeId, slice)
 	const ahead = await deps.git.commitsAhead(branch, ctx.integrationBranch)
 	if (ahead <= 0) return null
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	deps.log(`${tag} no-work-needed but slice branch has ${ahead} unmerged commit(s) from a prior Turn; treating as ready`)
 	await mergeSliceIntoIntegration(deps, slice, ctx, branch)
 	return 'done'
@@ -146,24 +146,24 @@ function canRecoverNoWorkNeededSliceBranch(ctx: PhaseCtx): boolean {
 
 async function landImplementReady(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, commits: number): Promise<PhaseOutcome> {
 	if (!ctx.config.perSliceBranches) return closeDirectIntegrationSlice(deps, slice, ctx)
-	const branch = sliceBranchFor(ctx.prdId, slice)
-	await pushSliceBranchIfNeeded(deps, branch, commits, `[work prd-${ctx.prdId} slice-${slice.id}]`)
+	const branch = sliceBranchFor(ctx.changeId, slice)
+	await pushSliceBranchIfNeeded(deps, branch, commits, `[work change-${ctx.changeId} slice-${slice.id}]`)
 	if (ctx.config.usePrs) return openSliceDraftPr(deps, slice, ctx, branch)
 	await mergeSliceIntoIntegration(deps, slice, ctx, branch)
 	return 'done'
 }
 
 async function closeDirectIntegrationSlice(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await deps.git.push(ctx.integrationBranch)
 	deps.log(`${tag} pushed ${ctx.integrationBranch}`)
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { state: 'CLOSED' })
+	await deps.storage.updateSlice(ctx.changeId, slice.id, { state: 'CLOSED' })
 	deps.log(`${tag} closed slice`)
 	return 'done'
 }
 
 async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.integrationBranch, body: `Closes #${slice.id}` })
 	deps.log(`${tag} opened draft PR for ${branch}`)
 	return 'progress'
@@ -178,7 +178,7 @@ async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, br
  * fetch the diff and post comments against.
  */
 export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	const branch = sliceBranchFor(ctx.changeId, slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },
@@ -210,7 +210,7 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut
  * reviewer's comments in `turnIn.feedback`.
  */
 export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	const branch = sliceBranchFor(ctx.changeId, slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
 	const turnIn: TurnIn = {
@@ -248,8 +248,8 @@ const REVIEW_ADDRESS_LAND_RULES: ReviewAddressLandRule[] = [
 ]
 
 async function landReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	const tag = `[work prd-${ctx.prdId} slice-${slice.id}]`
-	const branch = sliceBranchFor(ctx.prdId, slice)
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
+	const branch = sliceBranchFor(ctx.changeId, slice)
 	const rule = REVIEW_ADDRESS_LAND_RULES.find((r) => r.matches(kind, verdict))
 	return rule?.land(kind, deps, slice, verdict, ctx, branch, tag) ?? 'partial'
 }
@@ -270,7 +270,7 @@ async function markSlicePrReady(deps: PhaseDeps, branch: string, tag: string): P
 
 async function landReviewNeedsRevision(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: true })
+	await deps.storage.updateSlice(ctx.changeId, slice.id, { needsRevision: true })
 	await updatePrNeedsRevisionLabel(deps, branch, true)
 	deps.log(`${tag} flagged needsRevision`)
 	return 'progress'
@@ -282,7 +282,7 @@ async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps
 }
 
 async function clearSliceNeedsRevision(deps: PhaseDeps, ctx: PhaseCtx, slice: Slice, branch: string, tag: string, prefix = ''): Promise<void> {
-	await deps.storage.updateSlice(ctx.prdId, slice.id, { needsRevision: false })
+	await deps.storage.updateSlice(ctx.changeId, slice.id, { needsRevision: false })
 	await updatePrNeedsRevisionLabel(deps, branch, false)
 	deps.log(`${tag} ${prefix}cleared needsRevision`)
 }
@@ -337,10 +337,10 @@ if (import.meta.vitest) {
 			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 		}
 		const storage: Storage = {
-			createPrd: async () => ({ id: 'p', branch: 'b' }),
-			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async () => {},
+			createChange: async () => ({ id: 'p', branch: 'b' }),
+			findChange: async () => null,
+			listChanges: async () => [],
+			closeChange: async () => {},
 			createSlice: async () => ({ id: 's', title: '', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
 			findSlices: async () => [],
 			findSlice: async () => null,
@@ -374,7 +374,7 @@ if (import.meta.vitest) {
 		readyForAgent: true, needsRevision: false, blockedBy: [], prState: null,
 	}
 	const ctx: PhaseCtx = {
-		prdId: 'pid',
+		changeId: 'pid',
 		integrationBranch: 'integration',
 		config: { usePrs: false, review: false, perSliceBranches: true },
 	}
@@ -386,11 +386,11 @@ if (import.meta.vitest) {
 			const methods = calls.map((c) => c.method)
 			expect(methods).toContain('createRemoteBranch')
 			expect(methods).toContain('fetch')
-			expect(prep.branch).toBe('prd-pid/slice-42-a-slice')
+			expect(prep.branch).toBe('change-pid/slice-42-a-slice')
 		})
 
 		test('slice branch ALREADY exists → skip createRemoteBranch, still fetch, log a "reusing" warning', async () => {
-			const sliceBranch = 'prd-pid/slice-42-a-slice'
+			const sliceBranch = 'change-pid/slice-42-a-slice'
 			const { deps, calls, logs } = makePhaseDeps({ branchExists: (b) => b === sliceBranch })
 			const prep = await prepareImplement(deps, slice, ctx)
 			const methods = calls.map((c) => c.method)

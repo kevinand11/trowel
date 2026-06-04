@@ -1,12 +1,12 @@
 import type { StartRuntime } from './start.ts'
-import type { Slice, PrdSpec, SliceSpec, SlicePatch } from '../storages/types.ts'
+import type { Slice, ChangeSpec, SliceSpec, SlicePatch } from '../storages/types.ts'
 import { noopGitOps } from '../test-utils/git-ops-fixtures.ts'
 import { fakeSliceStorage } from '../test-utils/storage-fixtures.ts'
 
 export type FakeCalls = {
-	createPrd: PrdSpec[]
-	createSlice: Array<{ prdId: string; spec: SliceSpec }>
-	updateSlice: Array<{ prdId: string; sliceId: string; patch: SlicePatch }>
+	createChange: ChangeSpec[]
+	createSlice: Array<{ changeId: string; spec: SliceSpec }>
+	updateSlice: Array<{ changeId: string; sliceId: string; patch: SlicePatch }>
 	stdout: string[]
 	git: string[]
 }
@@ -19,12 +19,12 @@ export type FakeGitState = {
 
 export type MakeFakesOpts = {
 	startOut: string | null
-	createPrdResult?: { id: string; branch: string }
+	createChangeResult?: { id: string; branch: string }
 	createSliceIds?: string[]
 	currentBranch?: string
 	cleanTree?: boolean
 	preflightFailures?: string[]
-	createPrdThrows?: Error
+	createChangeThrows?: Error
 	stashPopThrows?: Error
 }
 
@@ -42,7 +42,7 @@ function fakeStartSlice(id: string, spec: SliceSpec): Slice {
 }
 
 export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeCalls; gitState: FakeGitState } {
-	const calls: FakeCalls = { createPrd: [], createSlice: [], updateSlice: [], stdout: [], git: [] }
+	const calls: FakeCalls = { createChange: [], createSlice: [], updateSlice: [], stdout: [], git: [] }
 	const gitState: FakeGitState = {
 		current: opts.currentBranch ?? 'main',
 		clean: opts.cleanTree ?? true,
@@ -52,18 +52,18 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 	const createSliceIds = opts.createSliceIds ?? []
 
 	const storage = fakeSliceStorage([], null, {
-		createPrd: async (spec) => {
-			calls.createPrd.push(spec)
-			if (opts.createPrdThrows) throw opts.createPrdThrows
-			return opts.createPrdResult ?? { id: 'pid', branch: 'pid-branch' }
+		createChange: async (spec) => {
+			calls.createChange.push(spec)
+			if (opts.createChangeThrows) throw opts.createChangeThrows
+			return opts.createChangeResult ?? { id: 'pid', branch: 'pid-branch' }
 		},
-		createSlice: async (prdId, spec) => {
-			calls.createSlice.push({ prdId, spec })
+		createSlice: async (changeId, spec) => {
+			calls.createSlice.push({ changeId, spec })
 			const id = createSliceIds[sliceCursor++] ?? `s${sliceCursor}`
 			return fakeStartSlice(id, spec)
 		},
-		updateSlice: async (prdId, sliceId, patch) => {
-			calls.updateSlice.push({ prdId, sliceId, patch })
+		updateSlice: async (changeId, sliceId, patch) => {
+			calls.updateSlice.push({ changeId, sliceId, patch })
 		},
 	})
 

@@ -3,18 +3,18 @@ import type { Storage, Slice } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 
 export type EffectiveSliceReader = {
-	findSlices(prdId: string): Promise<Slice[]>
-	findSlice(prdId: string, sliceId: string): Promise<Slice | null>
+	findSlices(changeId: string): Promise<Slice[]>
+	findSlice(changeId: string, sliceId: string): Promise<Slice | null>
 }
 
 export function createEffectiveSliceReader(deps: { storage: Storage; gh: GhOps; usePrs: boolean }): EffectiveSliceReader {
 	return {
-		async findSlices(prdId) {
-			const raw = await deps.storage.findSlices(prdId)
-			return deps.usePrs ? enrichSlicesFromOpenPrs(deps.gh, prdId, raw) : raw
+		async findSlices(changeId) {
+			const raw = await deps.storage.findSlices(changeId)
+			return deps.usePrs ? enrichSlicesFromOpenPrs(deps.gh, changeId, raw) : raw
 		},
-		async findSlice(prdId, sliceId) {
-			const slices = await this.findSlices(prdId)
+		async findSlice(changeId, sliceId) {
+			const slices = await this.findSlices(changeId)
 			return slices.find((s) => s.id === sliceId) ?? null
 		},
 	}
@@ -29,7 +29,7 @@ if (import.meta.vitest) {
 		test('returns raw storage slices when usePrs is false', async () => {
 			const slice = fakeClassifiedSlice({ id: '125', prState: null, needsRevision: false })
 			const { gh, calls } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-123/slice-125-filter-only-count-terminal', isDraft: false, labels: [{ name: 'needs-revision' }] }],
+				listOpenPrs: async () => [{ number: 1, headRefName: 'change-123/slice-125-filter-only-count-terminal', isDraft: false, labels: [{ name: 'needs-revision' }] }],
 			})
 			const reader = createEffectiveSliceReader({ storage: fakeSliceStorage([slice]), gh, usePrs: false })
 			expect(await reader.findSlices('123')).toEqual([slice])
@@ -39,7 +39,7 @@ if (import.meta.vitest) {
 		test('enriches open PR state and needs-revision PR labels when usePrs is true', async () => {
 			const slice = fakeClassifiedSlice({ id: '125', title: 'Filter-only count terminal', prState: null, needsRevision: false })
 			const { gh } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-123/slice-125-filter-only-count-terminal', isDraft: false, labels: [{ name: 'needs-revision' }] }],
+				listOpenPrs: async () => [{ number: 1, headRefName: 'change-123/slice-125-filter-only-count-terminal', isDraft: false, labels: [{ name: 'needs-revision' }] }],
 			})
 			const reader = createEffectiveSliceReader({ storage: fakeSliceStorage([slice]), gh, usePrs: true })
 			expect(await reader.findSlice('123', '125')).toMatchObject({ id: '125', prState: 'ready', needsRevision: true })

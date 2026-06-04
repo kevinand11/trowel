@@ -5,7 +5,7 @@ import type { TurnIn } from '../work/verdict.ts'
 
 export type { GitOps }
 
-export type PrdSpec = {
+export type ChangeSpec = {
 	title: string
 	body: string
 	targetBranch?: string
@@ -17,26 +17,26 @@ export type SliceSpec = {
 	blockedBy: string[]
 }
 
-export type PrdSummary = {
+export type ChangeSummary = {
 	id: string
 	title: string
 	branch: string
 	/**
 	 * ISO 8601 creation timestamp. Issue storage uses the underlying GitHub issue's `createdAt`;
-	 * file storage uses the PRD's `store.json:createdAt`. Consumers sort by this (e.g. `trowel
+	 * file storage uses the Change's `store.json:createdAt`. Consumers sort by this (e.g. `trowel
 	 * list` shows newest first); storages return unsorted.
 	 */
 	createdAt: string
 }
 
-export type PrdState = 'OPEN' | 'CLOSED'
+export type ChangeState = 'OPEN' | 'CLOSED'
 
-export type PrdRecord = {
+export type ChangeRecord = {
 	id: string
 	branch: string
 	targetBranch?: string
 	title: string
-	state: PrdState
+	state: ChangeState
 }
 
 /**
@@ -74,7 +74,7 @@ export type ClassifiedSlice = Slice & { bucket: Bucket }
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
 
 /**
- * A **Fix** is structurally a Slice without a parent PRD: same Turn machinery (implement →
+ * A **Fix** is structurally a Slice without a parent Change: same Turn machinery (implement →
  * optionally review → address), same readiness flags, but lives on its own `fix/<id>-<slug>`
  * branch off its targetBranch (no Integration branch). See ADR
  * `2026-05-17-fix-entity-unified-close-out.md` and
@@ -103,7 +103,7 @@ export type FixRecord = {
 	targetBranch?: string
 	title: string
 	body: string
-	state: PrdState
+	state: ChangeState
 	readyForAgent: boolean
 	needsRevision: boolean
 	blockedBy: string[]
@@ -147,11 +147,11 @@ export type ResumeState = 'done' | 'blocked' | 'implement' | 'review' | 'address
 export type ClassifySliceConfig = { usePrs: boolean; review: boolean; perSliceBranches: boolean }
 
 /**
- * Per-loop-invocation context passed to storage methods that need to act against a specific PRD's
+ * Per-loop-invocation context passed to storage methods that need to act against a specific Change's
  * integration branch. Same shape across all phase methods so the call sites stay uniform.
  */
 export type PhaseCtx = {
-	prdId: string
+	changeId: string
 	integrationBranch: string
 	config: ClassifySliceConfig
 }
@@ -160,9 +160,9 @@ export type StorageDeps = {
 	gh: GhOps
 	repoRoot: string
 	projectRoot: string
-	prdsDir: string
+	changesDir: string
 	fixesDir: string
-	labels: { prd: string; fix: string; readyForAgent: string; needsRevision: string }
+	labels: { change: string; fix: string; readyForAgent: string; needsRevision: string }
 	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
 	/**
 	 * Optional runtime channels. Read-only call paths (status, list) construct a storage
@@ -177,22 +177,22 @@ export type StorageDeps = {
 export type StorageFactory = (deps: StorageDeps) => Storage
 
 export interface Storage {
-	// PRD lifecycle
-	createPrd(spec: PrdSpec): Promise<{ id: string; branch: string }>
-	findPrd(id: string): Promise<PrdRecord | null>
-	listPrds(opts: { state: 'open' | 'closed' | 'all' }): Promise<PrdSummary[]>
-	closePrd(id: string): Promise<void>
+	// Change lifecycle
+	createChange(spec: ChangeSpec): Promise<{ id: string; branch: string }>
+	findChange(id: string): Promise<ChangeRecord | null>
+	listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]>
+	closeChange(id: string): Promise<void>
 
 	// Slice lifecycle
-	createSlice(prdId: string, spec: SliceSpec): Promise<Slice>
-	findSlices(prdId: string): Promise<Slice[]>
+	createSlice(changeId: string, spec: SliceSpec): Promise<Slice>
+	findSlices(changeId: string): Promise<Slice[]>
 	/**
-	 * Look up a slice by its global id without knowing the parent PRD. Returns the slice plus its
-	 * parent PRD id, or null if no slice with that id exists. Powers `trowel status slice <id>`,
+	 * Look up a slice by its global id without knowing the parent Change. Returns the slice plus its
+	 * parent Change id, or null if no slice with that id exists. Powers `trowel status slice <id>`,
 	 * `trowel close slice <id>`, and the single-arg phase commands (`implement`/`address`/`review`).
 	 */
-	findSlice(sliceId: string): Promise<{ prdId: string; slice: Slice } | null>
-	updateSlice(prdId: string, sliceId: string, patch: SlicePatch): Promise<void>
+	findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null>
+	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>
 
 	// Fix lifecycle. See ADR `2026-05-17-fix-entity-unified-close-out.md`.
 	createFix(spec: FixSpec): Promise<{ id: string; branch: string }>

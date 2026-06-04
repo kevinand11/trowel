@@ -3,12 +3,12 @@ import path from 'node:path'
 import { renderStatus, renderStatusFix, renderStatusSlice } from './render.ts'
 import { loadConfig } from '../../config.ts'
 import { getStorage } from '../../storages/registry.ts'
-import type { ClassifiedSlice, PrdRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
+import type { ClassifiedSlice, ChangeRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
 import { createRepoGit } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { reconcileEntity } from '../../work/reconcile.ts'
-import { classifySlicesForPrd } from '../../work/slice-buckets.ts'
+import { classifySlicesForChange } from '../../work/slice-buckets.ts'
 
 type StatusRuntime = {
 	storage: Storage
@@ -17,11 +17,11 @@ type StatusRuntime = {
 	stdout: (s: string) => void
 }
 
-async function runStatus(prdId: string, rt: StatusRuntime): Promise<void> {
-	const prd = await rt.storage.findPrd(prdId)
-	if (!prd) throw new Error(`PRD '${prdId}' not found`)
-	const slices = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId, usePrs: rt.usePrs })
-	writeStatusText(rt.stdout, renderStatus(prd, slices))
+async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
+	const change = await rt.storage.findChange(changeId)
+	if (!change) throw new Error(`Change '${changeId}' not found`)
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })
+	writeStatusText(rt.stdout, renderStatus(change, slices))
 }
 
 async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; usePrs: boolean }> {
@@ -37,7 +37,7 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 		git: createRepoGit(projectRoot),
 		repoRoot: projectRoot,
 		projectRoot,
-		prdsDir: path.resolve(projectRoot, config.docs.prdsDir),
+		changesDir: path.resolve(projectRoot, config.docs.changesDir),
 		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
@@ -58,13 +58,13 @@ async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
 	}
 }
 
-export async function statusPrd(prdId: string, opts: { storage?: string }): Promise<void> {
+export async function statusChange(changeId: string, opts: { storage?: string }): Promise<void> {
 	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
 	await exitOnStatusError(() =>
 		withMutationLock(projectRoot, async () => {
-			const found = await storage.findPrd(prdId)
-			if (found) await reconcileEntity({ kind: 'prd', id: prdId, branch: found.branch }, { storage, gh })
-			await runStatus(prdId, statusRuntime(storage, gh, usePrs))
+			const found = await storage.findChange(changeId)
+			if (found) await reconcileEntity({ kind: 'change', id: changeId, branch: found.branch }, { storage, gh })
+			await runStatus(changeId, statusRuntime(storage, gh, usePrs))
 		}),
 	)
 }
@@ -98,30 +98,30 @@ type StatusSliceRuntime = {
 	stdout: (s: string) => void
 }
 
-type StatusSliceContext = { prd: PrdRecord; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
+type StatusSliceContext = { change: ChangeRecord; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
 
 async function runStatusSlice(sliceId: string, rt: StatusSliceRuntime): Promise<void> {
 	const context = await statusSliceContext(sliceId, rt)
-	writeStatusText(rt.stdout, renderStatusSlice(context.prd, context.target, context.siblings))
+	writeStatusText(rt.stdout, renderStatusSlice(context.change, context.target, context.siblings))
 }
 
 async function statusSliceContext(sliceId: string, rt: StatusSliceRuntime): Promise<StatusSliceContext> {
 	const hit = await findSliceForStatus(sliceId, rt)
-	const prd = await findPrdForStatusSlice(sliceId, hit.prdId, rt)
-	const siblings = await classifySlicesForPrd({ storage: rt.storage, gh: rt.gh, prdId: hit.prdId, usePrs: rt.usePrs })
-	return { prd, target: targetStatusSlice(sliceId, siblings), siblings }
+	const change = await findChangeForStatusSlice(sliceId, hit.changeId, rt)
+	const siblings = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: hit.changeId, usePrs: rt.usePrs })
+	return { change, target: targetStatusSlice(sliceId, siblings), siblings }
 }
 
-async function findSliceForStatus(sliceId: string, rt: StatusSliceRuntime): Promise<{ prdId: string; slice: Slice }> {
+async function findSliceForStatus(sliceId: string, rt: StatusSliceRuntime): Promise<{ changeId: string; slice: Slice }> {
 	const hit = await rt.storage.findSlice(sliceId)
 	if (!hit) throw new Error(`slice '${sliceId}' not found`)
 	return hit
 }
 
-async function findPrdForStatusSlice(sliceId: string, prdId: string, rt: StatusSliceRuntime): Promise<PrdRecord> {
-	const prd = await rt.storage.findPrd(prdId)
-	if (!prd) throw new Error(`slice '${sliceId}' references missing PRD '${prdId}'`)
-	return prd
+async function findChangeForStatusSlice(sliceId: string, changeId: string, rt: StatusSliceRuntime): Promise<ChangeRecord> {
+	const change = await rt.storage.findChange(changeId)
+	if (!change) throw new Error(`slice '${sliceId}' references missing Change '${changeId}'`)
+	return change
 }
 
 function targetStatusSlice(sliceId: string, siblings: ClassifiedSlice[]): ClassifiedSlice {
@@ -140,21 +140,21 @@ if (import.meta.vitest) {
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 
 	type FakeStorageState = {
-		prd: PrdRecord | null
+		change: ChangeRecord | null
 		rawSlices: Slice[]
 	}
 
 	function fakeStorage(state: FakeStorageState): Storage {
 		return {
-			createPrd: async () => {
+			createChange: async () => {
 				throw new Error('nyi')
 			},
-			findPrd: async (id) => {
-				if (!state.prd || state.prd.id !== id) return null
-				return state.prd
+			findChange: async (id) => {
+				if (!state.change || state.change.id !== id) return null
+				return state.change
 			},
-			listPrds: async () => [],
-			closePrd: async () => {},
+			listChanges: async () => [],
+			closeChange: async () => {},
 			createSlice: async () => {
 				throw new Error('nyi')
 			},
@@ -169,36 +169,36 @@ if (import.meta.vitest) {
 		}
 	}
 
-	const prd: PrdRecord = { id: 'ab12cd', branch: 'prd/ab12cd-feature', title: 'Add SSO', state: 'OPEN' }
+	const change: ChangeRecord = { id: 'ab12cd', branch: 'change/ab12cd-feature', title: 'Add SSO', state: 'OPEN' }
 
 	describe('status: tracer (no slices)', () => {
 		test('renders header + "(no slices)" summary', async () => {
-			const storage = fakeStorage({ prd, rawSlices: [] })
+			const storage = fakeStorage({ change, rawSlices: [] })
 			const { gh } = recordingGhOps()
 			let buf = ''
 			await runStatus('ab12cd', { storage, gh, usePrs: false, stdout: (s) => (buf += s) })
-			expect(buf).toContain('PRD ab12cd  Add SSO')
-			expect(buf).toContain('Branch:  prd/ab12cd-feature')
+			expect(buf).toContain('Change ab12cd  Add SSO')
+			expect(buf).toContain('Branch:  change/ab12cd-feature')
 			expect(buf).toContain('State:   OPEN')
 			expect(buf).toContain('(no slices)')
 		})
 
-		test('error when PRD not found', async () => {
-			const storage = fakeStorage({ prd: null, rawSlices: [] })
+		test('error when Change not found', async () => {
+			const storage = fakeStorage({ change: null, rawSlices: [] })
 			const { gh } = recordingGhOps()
 			await expect(runStatus('zzzzzz', { storage, gh, usePrs: false, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
 		})
 
 		test('usePrs:true renders a ready storage slice with an open PR as in-flight', async () => {
 			const storage = fakeStorage({
-				prd,
+				change,
 				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }],
 			})
 			const { gh } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 130, headRefName: `prd-${prd.id}/slice-124-read-query-shape-validation`, isDraft: false }],
+				listOpenPrs: async () => [{ number: 130, headRefName: `change-${change.id}/slice-124-read-query-shape-validation`, isDraft: false }],
 			})
 			let buf = ''
-			await runStatus(prd.id, { storage, gh, usePrs: true, stdout: (s) => (buf += s) })
+			await runStatus(change.id, { storage, gh, usePrs: true, stdout: (s) => (buf += s) })
 			expect(buf).toContain('(1 in-flight)')
 			expect(buf).toMatch(/^ {2}in-flight$/m)
 			expect(buf).not.toMatch(/^ {2}ready$/m)
@@ -219,34 +219,34 @@ if (import.meta.vitest) {
 		})
 
 		test('"done" section appears for CLOSED slices', () => {
-			const out = renderStatus(prd, [{ ...slice({ id: '142', title: 'Schema migration', state: 'CLOSED' }), bucket: 'done' }])
+			const out = renderStatus(change, [{ ...slice({ id: '142', title: 'Schema migration', state: 'CLOSED' }), bucket: 'done' }])
 			expect(out).toMatch(/^ {2}done$/m)
 			expect(out).toMatch(/142 +Schema migration/)
 		})
 
 		test('"ready" section appears for ready slices', () => {
-			const out = renderStatus(prd, [{ ...slice({ id: '147', title: 'Audit log', readyForAgent: true }), bucket: 'ready' }])
+			const out = renderStatus(change, [{ ...slice({ id: '147', title: 'Audit log', readyForAgent: true }), bucket: 'ready' }])
 			expect(out).toMatch(/^ {2}ready$/m)
 			expect(out).toMatch(/147 +Audit log/)
 		})
 
 		test('"draft" section appears for non-ready slices', () => {
-			const out = renderStatus(prd, [{ ...slice({ id: '149', title: 'TBD' }), bucket: 'draft' }])
+			const out = renderStatus(change, [{ ...slice({ id: '149', title: 'TBD' }), bucket: 'draft' }])
 			expect(out).toMatch(/^ {2}draft$/m)
 		})
 
 		test('"needs-revision" section appears for needsRevision slices', () => {
-			const out = renderStatus(prd, [{ ...slice({ id: '150', title: 'Fix me', needsRevision: true }), bucket: 'needs-revision' }])
+			const out = renderStatus(change, [{ ...slice({ id: '150', title: 'Fix me', needsRevision: true }), bucket: 'needs-revision' }])
 			expect(out).toMatch(/^ {2}needs-revision$/m)
 		})
 
 		test('"in-flight" section appears for in-flight slices', () => {
-			const out = renderStatus(prd, [{ ...slice({ id: '145', title: 'Session middleware' }), bucket: 'in-flight' }])
+			const out = renderStatus(change, [{ ...slice({ id: '145', title: 'Session middleware' }), bucket: 'in-flight' }])
 			expect(out).toMatch(/^ {2}in-flight$/m)
 		})
 
 		test('"blocked" section shows blockedBy ids in the right column (read from ClassifiedSlice.blockedBy)', () => {
-			const out = renderStatus(prd, [
+			const out = renderStatus(change, [
 				{
 					...slice({ id: '146', title: 'SSO admin UI', readyForAgent: true, blockedBy: ['145', '147'] }),
 					bucket: 'blocked',
@@ -257,7 +257,7 @@ if (import.meta.vitest) {
 		})
 
 		test('empty buckets are omitted from the rendering', () => {
-			const out = renderStatus(prd, [
+			const out = renderStatus(change, [
 				{ ...slice({ id: '142', title: 'A', state: 'CLOSED' }), bucket: 'done' },
 				{ ...slice({ id: '147', title: 'B', readyForAgent: true }), bucket: 'ready' },
 			])
@@ -268,7 +268,7 @@ if (import.meta.vitest) {
 		})
 
 		test('summary line shows counts only for non-empty buckets', () => {
-			const out = renderStatus(prd, [
+			const out = renderStatus(change, [
 				{ ...slice({ id: 'd1', state: 'CLOSED' }), bucket: 'done' },
 				{ ...slice({ id: 'd2', state: 'CLOSED' }), bucket: 'done' },
 				{ ...slice({ id: 'r1', readyForAgent: true }), bucket: 'ready' },
@@ -277,7 +277,7 @@ if (import.meta.vitest) {
 		})
 
 		test('summary uses · separator and bucket-order matches BUCKET_ORDER', () => {
-			const out = renderStatus(prd, [
+			const out = renderStatus(change, [
 				{ ...slice({ id: 'd1', state: 'CLOSED' }), bucket: 'done' },
 				{ ...slice({ id: 'fly', readyForAgent: true }), bucket: 'in-flight' },
 				{ ...slice({ id: 'r1', readyForAgent: true }), bucket: 'ready' },
@@ -288,18 +288,18 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStatusSlice', () => {
-		function sliceStorage(prd: PrdRecord, rawSlices: Slice[]): Storage {
+		function sliceStorage(change: ChangeRecord, rawSlices: Slice[]): Storage {
 			const byId = new Map(rawSlices.map((s) => [s.id, s]))
 			return {
-				createPrd: async () => ({ id: 'x', branch: 'x' }),
-				findPrd: async (id) => (id === prd.id ? prd : null),
-				listPrds: async () => [],
-				closePrd: async () => {},
+				createChange: async () => ({ id: 'x', branch: 'x' }),
+				findChange: async (id) => (id === change.id ? change : null),
+				listChanges: async () => [],
+				closeChange: async () => {},
 				createSlice: async () => { throw new Error('nyi') },
 				findSlices: async () => rawSlices,
 				findSlice: async (sliceId) => {
 					const s = byId.get(sliceId)
-					return s ? { prdId: prd.id, slice: s } : null
+					return s ? { changeId: change.id, slice: s } : null
 				},
 				updateSlice: async () => {},
 				createFix: async () => ({ id: 'x', branch: 'x' }),
@@ -323,17 +323,17 @@ if (import.meta.vitest) {
 		})
 
 		async function renderSliceStatus(slices: Slice[]): Promise<string> {
-			const storage = sliceStorage(prd, slices)
+			const storage = sliceStorage(change, slices)
 			const { gh } = recordingGhOps()
 			let buf = ''
 			await runStatusSlice('42', { storage, gh, usePrs: false, stdout: (s) => (buf += s) })
 			return buf
 		}
 
-		test('renders slice header + parent PRD ref + bucket', async () => {
+		test('renders slice header + parent Change ref + bucket', async () => {
 			const buf = await renderSliceStatus([rawSlice({ id: '42' })])
 			expect(buf).toContain('Slice 42  Implement tab parser')
-			expect(buf).toContain(`PRD:     ${prd.id}  ${prd.title}`)
+			expect(buf).toContain(`Change:     ${change.id}  ${change.title}`)
 			expect(buf).toContain('bucket: ready')
 		})
 
@@ -349,7 +349,7 @@ if (import.meta.vitest) {
 		})
 
 		test('errors when slice id not found', async () => {
-			const storage = sliceStorage(prd, [])
+			const storage = sliceStorage(change, [])
 			const { gh } = recordingGhOps()
 			await expect(runStatusSlice('999', { storage, gh, usePrs: false, stdout: () => {} })).rejects.toThrow(/slice '999' not found/)
 		})

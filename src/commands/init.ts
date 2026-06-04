@@ -12,7 +12,7 @@ import { storageFactories } from '../storages/registry.ts'
 
 type InitPrompts = {
 	storage: (current: string) => Promise<string>
-	prdsDir: (current: string) => Promise<string>
+	changesDir: (current: string) => Promise<string>
 	agentHarness: (current: string) => Promise<string>
 	agentModel: (current: string) => Promise<string>
 	usePrs: (current: boolean) => Promise<boolean>
@@ -97,16 +97,16 @@ function currentStorage(existing: PartialConfig | null): string {
 }
 
 async function addFileStorageConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
-	const prdsDirAnswer = await opts.prompts.prdsDir(currentPrdsDir(existing))
-	merged.docs = { ...docsConfig(existing), prdsDir: prdsDirAnswer }
+	const changesDirAnswer = await opts.prompts.changesDir(currentChangesDir(existing))
+	merged.docs = { ...docsConfig(existing), changesDir: changesDirAnswer }
 }
 
 function docsConfig(existing: PartialConfig | null): Partial<NonNullable<PartialConfig['docs']>> {
 	return existing?.docs ?? {}
 }
 
-function currentPrdsDir(existing: PartialConfig | null): string {
-	return valueOrDefault(docsConfig(existing).prdsDir, defaultConfig.docs.prdsDir)
+function currentChangesDir(existing: PartialConfig | null): string {
+	return valueOrDefault(docsConfig(existing).changesDir, defaultConfig.docs.changesDir)
 }
 
 async function addAgentConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
@@ -177,11 +177,11 @@ export async function init(layerArg: string): Promise<void> {
 				choices: storageChoices,
 				default: current,
 			}),
-		prdsDir: (current) =>
+		changesDir: (current) =>
 			input({
-				message: 'PRD docs directory (project-relative)',
+				message: 'Change docs directory (project-relative)',
 				default: current,
-				validate: validatePrdsDir,
+				validate: validateChangesDir,
 			}),
 		agentHarness: (current) =>
 			select({
@@ -215,7 +215,7 @@ export async function init(layerArg: string): Promise<void> {
 	}
 }
 
-function validatePrdsDir(s: string): true | string {
+function validateChangesDir(s: string): true | string {
 	if (s.trim() === '') return 'cannot be empty'
 	if (path.isAbsolute(s)) return 'must be project-relative (no leading /)'
 	return true
@@ -257,7 +257,7 @@ if (import.meta.vitest) {
 	function fixedPrompts(storage: string, confirm: boolean, overrides: Partial<InitPrompts> = {}): InitPrompts {
 		return {
 			storage: async () => storage,
-			prdsDir: async (current) => current,
+			changesDir: async (current) => current,
 			agentHarness: async (current) => current,
 			agentModel: async (current) => current,
 			usePrs: async (current) => current,
@@ -297,22 +297,22 @@ if (import.meta.vitest) {
 		return seenModelDefault
 	}
 
-	describe('validatePrdsDir', () => {
+	describe('validateChangesDir', () => {
 		test('accepts a normal project-relative path', () => {
-			expect(validatePrdsDir('docs/prds')).toBe(true)
-			expect(validatePrdsDir('some/nested/dir')).toBe(true)
+			expect(validateChangesDir('docs/changes')).toBe(true)
+			expect(validateChangesDir('some/nested/dir')).toBe(true)
 		})
 
 		test('rejects empty string', () => {
-			expect(validatePrdsDir('')).toMatch(/empty/i)
+			expect(validateChangesDir('')).toMatch(/empty/i)
 		})
 
 		test('rejects whitespace-only string', () => {
-			expect(validatePrdsDir('   ')).toMatch(/empty/i)
+			expect(validateChangesDir('   ')).toMatch(/empty/i)
 		})
 
 		test('rejects an absolute path (leading slash)', () => {
-			expect(validatePrdsDir('/etc/prds')).toMatch(/project-relative/i)
+			expect(validateChangesDir('/etc/changes')).toMatch(/project-relative/i)
 		})
 	})
 
@@ -333,7 +333,7 @@ if (import.meta.vitest) {
 			expect(JSON.parse(raw)).toEqual({
 				$schema: './schema.json',
 				storage: 'file',
-				docs: { prdsDir: 'docs/prds' },
+				docs: { changesDir: 'docs/changes' },
 				agent: { harness: 'claude', model: 'claude-opus-4-6' },
 				work: { usePrs: false },
 			})
@@ -366,7 +366,7 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('init: docs.prdsDir prompt (file storage)', () => {
+	describe('init: docs.changesDir prompt (file storage)', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -375,14 +375,14 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('on file storage, prompts for prdsDir and writes the answer to docs.prdsDir', async () => {
-			await runProjectInit(f, promptsForFile({ prdsDir: async () => 'custom/prds-here' }))
+		test('on file storage, prompts for changesDir and writes the answer to docs.changesDir', async () => {
+			await runProjectInit(f, promptsForFile({ changesDir: async () => 'custom/changes-here' }))
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written.docs).toEqual({ prdsDir: 'custom/prds-here' })
+			expect(written.docs).toEqual({ changesDir: 'custom/changes-here' })
 		})
 	})
 
-	describe('init: docs.prdsDir on issue storage', () => {
+	describe('init: docs.changesDir on issue storage', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -391,33 +391,33 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('on issue storage, prdsDir prompt is NOT called', async () => {
-			let prdsDirCalls = 0
+		test('on issue storage, changesDir prompt is NOT called', async () => {
+			let changesDirCalls = 0
 			await runProjectInit(
 				f,
 				promptsForIssue({
-					prdsDir: async (current) => {
-						prdsDirCalls++
+					changesDir: async (current) => {
+						changesDirCalls++
 						return current
 					},
 				}),
 			)
-			expect(prdsDirCalls).toBe(0)
+			expect(changesDirCalls).toBe(0)
 		})
 
-		test('on issue storage, existing docs.prdsDir is preserved as-is in the merged output', async () => {
+		test('on issue storage, existing docs.changesDir is preserved as-is in the merged output', async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ storage: 'file', docs: { prdsDir: 'keep/me' } }), 'utf8')
+			await write(configPath, JSON.stringify({ storage: 'file', docs: { changesDir: 'keep/me' } }), 'utf8')
 
 			await runProjectInit(f, fixedPrompts('issue', true))
 			const merged = JSON.parse(await read(configPath, 'utf8'))
 			expect(merged.storage).toBe('issue')
-			expect(merged.docs).toEqual({ prdsDir: 'keep/me' })
+			expect(merged.docs).toEqual({ changesDir: 'keep/me' })
 		})
 	})
 
-	describe('init: docs.prdsDir default resolution', () => {
+	describe('init: docs.changesDir default resolution', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -426,30 +426,30 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('fresh project (no existing config) → default is the hard-coded fallback "docs/prds"', async () => {
+		test('fresh project (no existing config) → default is the hard-coded fallback "docs/changes"', async () => {
 			let seenDefault: string | undefined
 			await runProjectInit(
 				f,
 				promptsForFile({
-					prdsDir: async (current) => {
+					changesDir: async (current) => {
 						seenDefault = current
 						return current
 					},
 				}),
 			)
-			expect(seenDefault).toBe('docs/prds')
+			expect(seenDefault).toBe('docs/changes')
 		})
 
-		test('existing config with custom docs.prdsDir → that value is the prompt default', async () => {
+		test('existing config with custom docs.changesDir → that value is the prompt default', async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ storage: 'file', docs: { prdsDir: 'a/b/c' } }), 'utf8')
+			await write(configPath, JSON.stringify({ storage: 'file', docs: { changesDir: 'a/b/c' } }), 'utf8')
 
 			let seenDefault: string | undefined
 			await runProjectInit(
 				f,
 				promptsForFile({
-					prdsDir: async (current) => {
+					changesDir: async (current) => {
 						seenDefault = current
 						return current
 					},

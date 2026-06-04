@@ -12,7 +12,7 @@ export const partialConfigPipe = () =>
 		storage: v.optional(v.in(Object.keys(storageFactories) as StorageKind[])),
 		docs: v.optional(
 			v.object({
-				prdsDir: v.optional(v.string()),
+				changesDir: v.optional(v.string()),
 				fixesDir: v.optional(v.string()),
 			}),
 		),
@@ -26,7 +26,7 @@ export const partialConfigPipe = () =>
 			v.object({
 				readyForAgent: v.optional(v.string()),
 				needsRevision: v.optional(v.string()),
-				prd: v.optional(v.string()),
+				change: v.optional(v.string()),
 				fix: v.optional(v.string()),
 			}),
 		),
@@ -59,7 +59,7 @@ export type Config = {
 	$schema?: string
 	storage: StorageKind
 	docs: {
-		prdsDir: string
+		changesDir: string
 		fixesDir: string
 	}
 	agent: {
@@ -69,7 +69,7 @@ export type Config = {
 	labels: {
 		readyForAgent: string
 		needsRevision: string
-		prd: string
+		change: string
 		fix: string
 	}
 	close: {
@@ -100,7 +100,7 @@ export type InitableLayer = Exclude<ConfigLayer, 'default'>
 export const defaultConfig: Config = {
 	storage: 'file',
 	docs: {
-		prdsDir: 'docs/prds',
+		changesDir: 'docs/changes',
 		fixesDir: 'docs/fixes',
 	},
 	agent: {
@@ -110,7 +110,7 @@ export const defaultConfig: Config = {
 	labels: {
 		readyForAgent: 'ready-for-agent',
 		needsRevision: 'needs-revision',
-		prd: 'prd',
+		change: 'change',
 		fix: 'fix',
 	},
 	close: {
@@ -128,7 +128,7 @@ export const defaultConfig: Config = {
 		review: false,
 		// Default true: every workflow runs each slice on its own branch, then host-merges (no PRs)
 		// or opens a draft PR (with `usePrs: true`). Set false to keep the old file-style
-		// integration-direct behavior (one branch per PRD, implementers serialize).
+		// integration-direct behavior (one branch per Change, implementers serialize).
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
 		// Host merges slice branches into the integration branch via `git merge --no-ff`.
@@ -188,8 +188,8 @@ if (import.meta.vitest) {
 			expect(defaultConfig.storage).toBe('file')
 		})
 
-		test('labels.prd defaults to "prd"', () => {
-			expect(defaultConfig.labels.prd).toBe('prd')
+		test('labels.change defaults to "change"', () => {
+			expect(defaultConfig.labels.change).toBe('change')
 		})
 
 		test('close defaults to prompt + "Closed via trowel"', () => {
@@ -266,8 +266,8 @@ if (import.meta.vitest) {
 			expect(result.valid).toBe(true)
 		})
 
-		test('accepts labels.prd as a string', () => {
-			const result = v.validate(partialConfigPipe(), { labels: { prd: 'feature' } })
+		test('accepts labels.change as a string', () => {
+			const result = v.validate(partialConfigPipe(), { labels: { change: 'feature' } })
 			expect(result.valid).toBe(true)
 		})
 

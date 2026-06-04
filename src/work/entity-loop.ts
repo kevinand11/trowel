@@ -5,18 +5,18 @@ import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
 import { reconcileEntity, type LoopEntityRef } from './reconcile.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { PrdRecord, Slice, Storage } from '../storages/types.ts'
+import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
 /**
- * The unit of work `trowel work` operates on. PRDs have slices (the legacy loop); Fixes are
+ * The unit of work `trowel work` operates on. Changes have slices (the legacy loop); Fixes are
  * single-blob entities that go through the same Turn machinery but with their own branch off
  * targetBranch. See ADR `2026-05-17-fix-entity-unified-close-out.md` and
  * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
  */
 export type LoopEntity =
-	| { kind: 'prd'; id: string; integrationBranch: string; targetBranch?: string; title: string }
+	| { kind: 'change'; id: string; integrationBranch: string; targetBranch?: string; title: string }
 	| { kind: 'fix'; id: string; branch: string; targetBranch?: string; title: string }
 
 export type EntityLoopDeps = {
@@ -35,34 +35,34 @@ export type EntityLoopDeps = {
  * Reconciliation-only pass.
  */
 export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): Promise<void> {
-	const ref: LoopEntityRef = entity.kind === 'prd'
-		? { kind: 'prd', id: entity.id, branch: entity.integrationBranch }
+	const ref: LoopEntityRef = entity.kind === 'change'
+		? { kind: 'change', id: entity.id, branch: entity.integrationBranch }
 		: { kind: 'fix', id: entity.id, branch: entity.branch }
 	await reconcileEntity(ref, { storage: deps.storage, gh: deps.gh, log: deps.log })
 
-	if (entity.kind === 'prd') {
-		await runPrdEntity(entity, deps)
+	if (entity.kind === 'change') {
+		await runChangeEntity(entity, deps)
 		return
 	}
 	await runFixEntity(entity, deps)
 }
 
-async function runPrdEntity(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: EntityLoopDeps): Promise<void> {
-	const prd = await openPrdOrStop(entity, deps)
-	if (!prd) return
-	await runLoop(entity.id, loopDepsForPrd(entity, deps))
-	await closeOutPrdIfReady(entity, prd, deps)
+async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
+	const change = await openChangeOrStop(entity, deps)
+	if (!change) return
+	await runLoop(entity.id, loopDepsForChange(entity, deps))
+	await closeOutChangeIfReady(entity, change, deps)
 }
 
-async function openPrdOrStop(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: EntityLoopDeps): Promise<PrdRecord | null> {
-	const prd = await deps.storage.findPrd(entity.id)
-	if (!prd) throw new Error(`PRD '${entity.id}' not found`)
-	if (prd.state !== 'CLOSED') return prd
-	deps.log(`[work prd-${entity.id}] already CLOSED; nothing to do`)
+async function openChangeOrStop(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeRecord | null> {
+	const change = await deps.storage.findChange(entity.id)
+	if (!change) throw new Error(`Change '${entity.id}' not found`)
+	if (change.state !== 'CLOSED') return change
+	deps.log(`[work change-${entity.id}] already CLOSED; nothing to do`)
 	return null
 }
 
-function loopDepsForPrd(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: EntityLoopDeps): LoopDeps {
+function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): LoopDeps {
 	return {
 		storage: deps.storage,
 		git: deps.git,
@@ -75,13 +75,13 @@ function loopDepsForPrd(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: Enti
 	}
 }
 
-async function closeOutPrdIfReady(entity: Extract<LoopEntity, { kind: 'prd' }>, prd: PrdRecord, deps: EntityLoopDeps): Promise<void> {
+async function closeOutChangeIfReady(entity: Extract<LoopEntity, { kind: 'change' }>, change: ChangeRecord, deps: EntityLoopDeps): Promise<void> {
 	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs })
 	const slices = await reader.findSlices(entity.id)
-	if (!prdReadyForCloseOut(entity, slices, deps)) return
-	deps.log(`[work prd-${entity.id}] all slices CLOSED → running Close-out`)
+	if (!changeReadyForCloseOut(entity, slices, deps)) return
+	deps.log(`[work change-${entity.id}] all slices CLOSED → running Close-out`)
 	await runCloseOut(
-		{ kind: 'prd', id: entity.id, branch: entity.integrationBranch, targetBranch: prd.targetBranch, title: entity.title },
+		{ kind: 'change', id: entity.id, branch: entity.integrationBranch, targetBranch: change.targetBranch, title: entity.title },
 		{
 			storage: deps.storage,
 			git: deps.git,
@@ -93,8 +93,8 @@ async function closeOutPrdIfReady(entity: Extract<LoopEntity, { kind: 'prd' }>, 
 	)
 }
 
-function prdReadyForCloseOut(entity: Extract<LoopEntity, { kind: 'prd' }>, slices: Slice[], deps: EntityLoopDeps): boolean {
-	if (slices.length === 0) deps.log(`[work prd-${entity.id}] no slices; skipping Close-out`)
+function changeReadyForCloseOut(entity: Extract<LoopEntity, { kind: 'change' }>, slices: Slice[], deps: EntityLoopDeps): boolean {
+	if (slices.length === 0) deps.log(`[work change-${entity.id}] no slices; skipping Close-out`)
 	return slices.length > 0 && slices.every((s) => s.state === 'CLOSED')
 }
 
@@ -105,7 +105,7 @@ if (import.meta.vitest) {
 	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function makeStorage(overrides: Partial<Storage>): Storage {
-		return fakeSliceStorage([], null, { findPrd: async () => null, ...overrides })
+		return fakeSliceStorage([], null, { findChange: async () => null, ...overrides })
 	}
 
 	function noopGit(): GitOps {
@@ -116,19 +116,19 @@ if (import.meta.vitest) {
 		usePrs: false, review: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
 	}
 
-	async function prdClosedAfterLoop(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<boolean> {
-		let prdClosed = false
+	async function changeClosedAfterLoop(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<boolean> {
+		let changeClosed = false
 		const storage = makeStorage({
-			findPrd: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
+			findChange: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
 			findSlices: async () => slices,
-			closePrd: async () => { prdClosed = true },
+			closeChange: async () => { changeClosed = true },
 		})
 		const { gh } = recordingGhOps()
 		await runEntityLoop(
-			{ kind: 'prd', id: '3', integrationBranch: '3-feat', title: 'Feat' },
+			{ kind: 'change', id: '3', integrationBranch: '3-feat', title: 'Feat' },
 			{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: () => {}, config },
 		)
-		return prdClosed
+		return changeClosed
 	}
 
 	describe('runEntityLoop: fix', () => {
@@ -178,25 +178,25 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('runEntityLoop: prd', () => {
-		test('all slices already CLOSED + usePrs:false → Close-out fires, PRD CLOSED', async () => {
-			expect(await prdClosedAfterLoop([
+	describe('runEntityLoop: change', () => {
+		test('all slices already CLOSED + usePrs:false → Close-out fires, Change CLOSED', async () => {
+			expect(await changeClosedAfterLoop([
 				{ id: 's1', title: 'a', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
 			], { ...baseConfig, usePrs: false })).toBe(true)
 		})
 
 		test('empty slices → skips Close-out (nothing to ship)', async () => {
-			expect(await prdClosedAfterLoop([], baseConfig)).toBe(false)
+			expect(await changeClosedAfterLoop([], baseConfig)).toBe(false)
 		})
 
-		test('PRD already CLOSED → no loop, no Close-out', async () => {
+		test('Change already CLOSED → no loop, no Close-out', async () => {
 			let spawned = 0
 			const storage = makeStorage({
-				findPrd: async (id) => ({ id, branch: 'b', title: 'F', state: 'CLOSED' }),
+				findChange: async (id) => ({ id, branch: 'b', title: 'F', state: 'CLOSED' }),
 			})
 			const { gh } = recordingGhOps()
 			await runEntityLoop(
-				{ kind: 'prd', id: '3', integrationBranch: '3-feat', title: 'Feat' },
+				{ kind: 'change', id: '3', integrationBranch: '3-feat', title: 'Feat' },
 				{ storage, git: noopGit(), gh, spawnTurn: async () => { spawned++; return { verdict: 'ready', commits: 1 } }, log: () => {}, config: baseConfig },
 			)
 			expect(spawned).toBe(0)

@@ -61,27 +61,27 @@ async function findNextActionableSlice(
 	}) ?? null
 }
 
-function launchClaim(prdId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>): void {
-	const task = processClaim(prdId, slice, deps, failed).finally(() => running.delete(slice.id))
+function launchClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>): void {
+	const task = processClaim(changeId, slice, deps, failed).finally(() => running.delete(slice.id))
 	running.set(slice.id, task)
 }
 
-async function processClaim(prdId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>): Promise<void> {
+async function processClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>): Promise<void> {
 	try {
-		const outcome = await processSlice(prdId, slice, deps)
+		const outcome = await processSlice(changeId, slice, deps)
 		if (outcome === 'partial') {
-			deps.log(`[work prd-${prdId} slice-${slice.id}] partial; skipping for the rest of this run`)
+			deps.log(`[work change-${changeId} slice-${slice.id}] partial; skipping for the rest of this run`)
 			failed.add(slice.id)
 		}
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error)
-		deps.log(`[work prd-${prdId} slice-${slice.id}] error: ${msg}; skipping for the rest of this run`)
+		deps.log(`[work change-${changeId} slice-${slice.id}] error: ${msg}; skipping for the rest of this run`)
 		failed.add(slice.id)
 	}
 }
 
-export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
-	const state = loopState(prdId, deps)
+export async function runLoop(changeId: string, deps: LoopDeps): Promise<void> {
+	const state = loopState(changeId, deps)
 	while (true) {
 		await fillClaimSlots(state)
 		if (await stopIfIdle(state)) return
@@ -90,7 +90,7 @@ export async function runLoop(prdId: string, deps: LoopDeps): Promise<void> {
 }
 
 type WorkerLoopState = {
-	prdId: string
+	changeId: string
 	tag: string
 	deps: LoopDeps
 	failed: Set<string>
@@ -101,16 +101,16 @@ type WorkerLoopState = {
 	claims: number
 }
 
-function loopState(prdId: string, deps: LoopDeps): WorkerLoopState {
+function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 	const { storage, config } = deps
 	const effectiveSlices = createEffectiveSliceReader({ storage, gh: deps.gh, usePrs: config.usePrs })
 	return {
-		prdId,
-		tag: `[work prd-${prdId}]`,
+		changeId,
+		tag: `[work change-${changeId}]`,
 		deps,
 		failed: new Set<string>(),
 		running: new Map<string, Promise<void>>(),
-		fetchEnriched: () => effectiveSlices.findSlices(prdId),
+		fetchEnriched: () => effectiveSlices.findSlices(changeId),
 		config: { usePrs: config.usePrs, review: config.review, perSliceBranches: config.perSliceBranches },
 		limit: effectiveConcurrency(config.perSliceBranches, config.maxConcurrent),
 		claims: 0,
@@ -123,7 +123,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 		if (!slice) return
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
-		launchClaim(state.prdId, slice, state.deps, state.failed, state.running)
+		launchClaim(state.changeId, slice, state.deps, state.failed, state.running)
 	}
 }
 
@@ -145,10 +145,10 @@ if (import.meta.vitest) {
 
 	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
 		return {
-			createPrd: async () => ({ id: 'x', branch: 'x' }),
-			findPrd: async () => null,
-			listPrds: async () => [],
-			closePrd: async () => {},
+			createChange: async () => ({ id: 'x', branch: 'x' }),
+			findChange: async () => null,
+			listChanges: async () => [],
+			closeChange: async () => {},
 			createSlice: async () => {
 				throw new Error('unused')
 			},
@@ -224,7 +224,7 @@ if (import.meta.vitest) {
 	function prSummaryForSlice(s: Slice): import('../utils/gh-ops.ts').PrSummary | null {
 		const draftByState = new Map<Slice['prState'], boolean>([['draft', true], ['ready', false]])
 		const isDraft = draftByState.get(s.prState)
-		return isDraft === undefined ? null : { number: prNumberForSlice(s), headRefName: `prd-p1/slice-${s.id}-${s.title.toLowerCase()}`, isDraft }
+		return isDraft === undefined ? null : { number: prNumberForSlice(s), headRefName: `change-p1/slice-${s.id}-${s.title.toLowerCase()}`, isDraft }
 	}
 
 	function prNumberForSlice(s: Slice): number {
@@ -286,7 +286,7 @@ if (import.meta.vitest) {
 		test('fetchEnriched runs gh listOpenPrs whenever config.usePrs is true, regardless of storage capability', async () => {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
-			const { gh, calls } = recordingGhOps({ createDraftPr: async () => { slice.prState = 'draft' }, listOpenPrs: async () => [{ number: 1, headRefName: 'prd-p1/slice-s1-a', isDraft: true }] })
+			const { gh, calls } = recordingGhOps({ createDraftPr: async () => { slice.prState = 'draft' }, listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: true }] })
 			await runLoop('p1', makeDeps(storage, {
 				gh,
 				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
@@ -339,7 +339,7 @@ if (import.meta.vitest) {
 			await runLoop('p1', makeDeps(storage, {
 				spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
 				log: (m) => {
-					if (/^\[work prd-p1\] claim \d+:/.test(m)) claims++
+					if (/^\[work change-p1\] claim \d+:/.test(m)) claims++
 				},
 				config: { usePrs: false, review: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
 			}))
@@ -445,7 +445,7 @@ if (import.meta.vitest) {
 			const { gh } = recordingGhOps({
 				findPrNumberByHead: async () => 130,
 				markPrReady: async () => {},
-				listOpenPrs: async () => [{ number: 130, headRefName: 'prd-p1/slice-s1-a', isDraft: false }],
+				listOpenPrs: async () => [{ number: 130, headRefName: 'change-p1/slice-s1-a', isDraft: false }],
 			})
 
 			const outcome = await processSlice('p1', initial, makeDeps(storage, {

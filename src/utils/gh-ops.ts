@@ -82,9 +82,9 @@ export type GhOps = {
 	editIssueLabels(id: string, opts: { add?: string[]; remove?: string[] }): Promise<void>
 
 	// Sub-issues & blocker deps
-	listSubIssues(prdId: string): Promise<RawSubIssue[]>
+	listSubIssues(changeId: string): Promise<RawSubIssue[]>
 	getIssueInternalId(issueNumber: string): Promise<string>
-	addSubIssue(prdId: string, internalId: string): Promise<void>
+	addSubIssue(changeId: string, internalId: string): Promise<void>
 	listBlockedBy(issueId: string): Promise<BlockerEntry[]>
 	addBlockedBy(issueId: string, internalId: string): Promise<void>
 	removeBlockedBy(issueId: string, internalId: string): Promise<void>
@@ -165,16 +165,16 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			for (const label of remove) await ghOrThrow(['issue', 'edit', id, '--remove-label', label])
 		},
 
-		async listSubIssues(prdId) {
-			const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${prdId}/sub_issues`])
+		async listSubIssues(changeId) {
+			const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${changeId}/sub_issues`])
 			return JSON.parse(out) as RawSubIssue[]
 		},
 		async getIssueInternalId(issueNumber) {
 			const out = await ghOrThrow(['api', `repos/{owner}/{repo}/issues/${issueNumber}`, '--jq', '.id'])
 			return out.trim()
 		},
-		async addSubIssue(prdId, internalId) {
-			await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${prdId}/sub_issues`, '-F', `sub_issue_id=${internalId}`])
+		async addSubIssue(changeId, internalId) {
+			await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${changeId}/sub_issues`, '-F', `sub_issue_id=${internalId}`])
 		},
 		async listBlockedBy(issueId) {
 			const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by`])
@@ -322,9 +322,9 @@ if (import.meta.vitest) {
 				{ match: (a) => a[0] === 'issue' && a[1] === 'create', respond: ok('https://github.com/o/r/issues/7\n') },
 			])
 			const gh = createGh(runner)
-			const url = await gh.createIssue({ title: 'T', body: 'B', labels: ['prd', 'urgent'] })
+			const url = await gh.createIssue({ title: 'T', body: 'B', labels: ['change', 'urgent'] })
 			expect(url).toBe('https://github.com/o/r/issues/7\n')
-			expect(calls[0]).toEqual(['issue', 'create', '--title', 'T', '--body', 'B', '--label', 'prd', '--label', 'urgent'])
+			expect(calls[0]).toEqual(['issue', 'create', '--title', 'T', '--body', 'B', '--label', 'change', '--label', 'urgent'])
 		})
 
 		test('createIssue with no labels emits no --label flags', async () => {
@@ -371,9 +371,9 @@ if (import.meta.vitest) {
 			const { runner, calls } = makeRunner([
 				{ match: () => true, respond: ok(JSON.stringify([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z' }])) },
 			])
-			const out = await createGh(runner).listIssues({ label: 'prd', state: 'open' })
+			const out = await createGh(runner).listIssues({ label: 'change', state: 'open' })
 			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z' }])
-			expect(calls[0]).toEqual(['issue', 'list', '--label', 'prd', '--state', 'open', '--json', 'number,title,createdAt'])
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'change', '--state', 'open', '--json', 'number,title,createdAt'])
 		})
 	})
 

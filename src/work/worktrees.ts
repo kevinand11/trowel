@@ -48,23 +48,23 @@ function gitignoreAppendSeparator(existing: string): string {
 	return existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''
 }
 
-export type TurnWorktree = { worktreePath: string; branch: string; prdId: string }
+export type TurnWorktree = { worktreePath: string; branch: string; changeId: string }
 type GitWorktree = Awaited<ReturnType<GitOps['worktreeList']>>[number]
 
-function worktreePathFor(projectRoot: string, prdId: string, branch: string): string {
-	return path.join(projectRoot, '.trowel', 'worktrees', prdId, slug(branch))
+function worktreePathFor(projectRoot: string, changeId: string, branch: string): string {
+	return path.join(projectRoot, '.trowel', 'worktrees', changeId, slug(branch))
 }
 
 export async function ensureWorktree(args: {
-	prdId: string
+	changeId: string
 	branch: string
 	projectRoot: string
 	copyToWorktree: string[]
 	git: GitOps
 	log?: (m: string) => void
 }): Promise<TurnWorktree> {
-	const worktreePath = worktreePathFor(args.projectRoot, args.prdId, args.branch)
-	const wt: TurnWorktree = { worktreePath, branch: args.branch, prdId: args.prdId }
+	const worktreePath = worktreePathFor(args.projectRoot, args.changeId, args.branch)
+	const wt: TurnWorktree = { worktreePath, branch: args.branch, changeId: args.changeId }
 
 	const existing = await findRegisteredWorktree(args.git, worktreePath)
 	if (await reuseOrClearRegisteredWorktree(existing, wt, args.git)) return wt
@@ -126,7 +126,7 @@ async function destroyWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
 
 export async function sweepOrphanWorktrees(args: {
 	projectRoot: string
-	orphanCheck: (prdId: string, branch: string) => Promise<boolean>
+	orphanCheck: (changeId: string, branch: string) => Promise<boolean>
 	cleanupAge: string
 	git: GitOps
 	now?: Date
@@ -137,10 +137,10 @@ export async function sweepOrphanWorktrees(args: {
 	for (const w of await args.git.worktreeList()) await sweepWorktreeIfOrphan(args, root, minAgeMs, now, w)
 }
 
-async function sweepWorktreeIfOrphan(args: { orphanCheck: (prdId: string, branch: string) => Promise<boolean>; git: GitOps }, root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<void> {
+async function sweepWorktreeIfOrphan(args: { orphanCheck: (changeId: string, branch: string) => Promise<boolean>; git: GitOps }, root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<void> {
 	const candidate = await orphanWorktreeCandidate(root, minAgeMs, now, w)
 	if (!candidate) return
-	if (!(await args.orphanCheck(candidate.prdId, candidate.branch))) return
+	if (!(await args.orphanCheck(candidate.changeId, candidate.branch))) return
 	await destroyWorktree(candidate, args.git)
 }
 
@@ -153,7 +153,7 @@ async function candidateInsideWorktreeRoot(root: string, minAgeMs: number, now: 
 	const ids = worktreeIdsFromPath(root, w.path)
 	if (!ids) return null
 	if (!(await worktreeOldEnough(w.path, minAgeMs, now))) return null
-	return { worktreePath: w.path, prdId: ids.prdId, branch: worktreeBranch(w, ids.branchSlug) }
+	return { worktreePath: w.path, changeId: ids.changeId, branch: worktreeBranch(w, ids.branchSlug) }
 }
 
 function worktreeBranch(w: GitWorktree, branchSlug: string): string {
@@ -164,10 +164,10 @@ function isUnderWorktreeRoot(root: string, worktreePath: string): boolean {
 	return worktreePath.startsWith(`${root}${path.sep}`)
 }
 
-function worktreeIdsFromPath(root: string, worktreePath: string): { prdId: string; branchSlug: string } | null {
+function worktreeIdsFromPath(root: string, worktreePath: string): { changeId: string; branchSlug: string } | null {
 	const parts = path.relative(root, worktreePath).split(path.sep)
 	if (parts.length < 2) return null
-	return { prdId: parts[0]!, branchSlug: parts[1]! }
+	return { changeId: parts[0]!, branchSlug: parts[1]! }
 }
 
 async function worktreeOldEnough(worktreePath: string, minAgeMs: number, now: number): Promise<boolean> {
@@ -294,16 +294,16 @@ if (import.meta.vitest) {
 			if (cleanupRepo) await cleanupRepo()
 		})
 
-		test('ensureWorktree creates a new worktree at .trowel/worktrees/<prdId>/<slug>/', async () => {
-			const wt = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+		test('ensureWorktree creates a new worktree at .trowel/worktrees/<changeId>/<slug>/', async () => {
+			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
 			expect(wt.worktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', 'p1', 'feature-a'))
 			const s = await fsStat(path.join(wt.worktreePath, 'README.md'))
 			expect(s.isFile()).toBe(true)
 		})
 
 		test('ensureWorktree is idempotent: second call reuses the existing worktree', async () => {
-			const first = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
-			const second = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+			const first = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+			const second = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
 			expect(second.worktreePath).toBe(first.worktreePath)
 			const list = await git.worktreeList()
 			const matches = list.filter((w) => w.path === first.worktreePath)
@@ -312,13 +312,13 @@ if (import.meta.vitest) {
 
 		test('ensureWorktree copies copyToWorktree entries on first creation', async () => {
 			await fsWriteFile(path.join(projectRoot, '.env.local'), 'SECRET=1\n')
-			const wt = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: ['.env.local'], git })
+			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: ['.env.local'], git })
 			const copied = await fsReadFile(path.join(wt.worktreePath, '.env.local'), 'utf8')
 			expect(copied).toBe('SECRET=1\n')
 		})
 
 		test('resetWorktree discards uncommitted changes but preserves gitignored files', async () => {
-			const wt = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
 			await fsWriteFile(path.join(wt.worktreePath, '.gitignore'), 'keep/\n')
 			await fsMkdir(path.join(wt.worktreePath, 'keep'), { recursive: true })
 			await fsWriteFile(path.join(wt.worktreePath, 'keep', 'a.txt'), 'gitignored\n')
@@ -330,7 +330,7 @@ if (import.meta.vitest) {
 		})
 
 		test('destroyWorktree removes the worktree from git and from disk; second call is idempotent', async () => {
-			const wt = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
 			await fsWriteFile(path.join(wt.worktreePath, 'dirty.txt'), 'leftover\n')
 			await destroyWorktree(wt, git)
 			expect((await git.worktreeList()).find((w) => w.path === wt.worktreePath)).toBeUndefined()
@@ -339,15 +339,15 @@ if (import.meta.vitest) {
 		})
 
 		test('sweepOrphanWorktrees removes orphans older than cleanupAge and keeps active ones', async () => {
-			const wtOrphan = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
-			const wtActive = await ensureWorktree({ prdId: 'p1', branch: 'feature-b', projectRoot, copyToWorktree: [], git })
+			const wtOrphan = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+			const wtActive = await ensureWorktree({ changeId: 'p1', branch: 'feature-b', projectRoot, copyToWorktree: [], git })
 
 			await sweepOrphanWorktrees({
 				projectRoot,
 				git,
 				cleanupAge: '24h',
 				now: new Date(Date.now() + 48 * 3_600_000),
-				orphanCheck: async (prdId, branch) => prdId === 'p1' && branch === 'feature-a',
+				orphanCheck: async (changeId, branch) => changeId === 'p1' && branch === 'feature-a',
 			})
 
 			expect((await git.worktreeList()).find((w) => w.path === wtOrphan.worktreePath)).toBeUndefined()
@@ -355,7 +355,7 @@ if (import.meta.vitest) {
 		})
 
 		test('sweepOrphanWorktrees skips worktrees younger than cleanupAge even when orphanCheck says orphan', async () => {
-			const wt = await ensureWorktree({ prdId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
+			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
 			await sweepOrphanWorktrees({
 				projectRoot,
 				git,

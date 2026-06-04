@@ -19,7 +19,7 @@ export async function collectRunOnePhaseSlices(run: RunSlicePhase, slice: Slice)
 		storage,
 		gh,
 		usePrs: false,
-		runOnePhase: async (_prdId, s) => {
+		runOnePhase: async (_changeId, s) => {
 			calls.push(s)
 		},
 	})

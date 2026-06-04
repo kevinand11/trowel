@@ -2,8 +2,8 @@ import { readdir } from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * Allocate the next id from the file-storage shared pool. Scans every PRD directory under
- * `prdsDir`, every slice directory under each PRD's `slices/`, and every Fix directory under
+ * Allocate the next id from the file-storage shared pool. Scans every Change directory under
+ * `changesDir`, every slice directory under each Change's `slices/`, and every Fix directory under
  * `fixesDir`. Finds the maximum positive integer prefix (the `42` in `42-some-slug/`) and
  * returns `max + 1`. Returns `1` when no existing entities are found.
  *
@@ -12,22 +12,22 @@ import path from 'node:path'
  * `2026-05-17-file-storage-deterministic-shared-ids.md` and
  * `2026-05-17-fix-entity-unified-close-out.md`.
  */
-export async function allocateNextId(prdsDir: string, fixesDir?: string): Promise<string> {
-	const seen = await collectUsedIds(prdsDir, fixesDir)
+export async function allocateNextId(changesDir: string, fixesDir?: string): Promise<string> {
+	const seen = await collectUsedIds(changesDir, fixesDir)
 	return String(nextIdAfter(seen))
 }
 
-async function collectUsedIds(prdsDir: string, fixesDir?: string): Promise<number[]> {
-	const prdIds = await collectPrdAndSliceIds(prdsDir)
+async function collectUsedIds(changesDir: string, fixesDir?: string): Promise<number[]> {
+	const changeIds = await collectChangeAndSliceIds(changesDir)
 	const fixIds = fixesDir ? await collectDirectoryIds(fixesDir) : []
-	return [...prdIds, ...fixIds]
+	return [...changeIds, ...fixIds]
 }
 
-async function collectPrdAndSliceIds(prdsDir: string): Promise<number[]> {
+async function collectChangeAndSliceIds(changesDir: string): Promise<number[]> {
 	const ids: number[] = []
-	for (const prdEntry of await readdirSafe(prdsDir)) {
-		ids.push(...idFromName(prdEntry))
-		ids.push(...(await collectDirectoryIds(path.join(prdsDir, prdEntry, 'slices'))))
+	for (const changeEntry of await readdirSafe(changesDir)) {
+		ids.push(...idFromName(changeEntry))
+		ids.push(...(await collectDirectoryIds(path.join(changesDir, changeEntry, 'slices'))))
 	}
 	return ids
 }

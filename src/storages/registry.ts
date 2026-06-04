@@ -25,9 +25,9 @@ if (import.meta.vitest) {
 		git: noopGitOps({ currentBranch: async () => '', branchExists: async () => false }),
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
-		prdsDir: '/tmp/x/docs/prds',
+		changesDir: '/tmp/x/docs/changes',
 		fixesDir: '/tmp/x/docs/fixes',
-		labels: { prd: 'prd', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+		labels: { change: 'change', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },
 	}
 

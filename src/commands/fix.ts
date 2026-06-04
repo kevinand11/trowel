@@ -125,7 +125,7 @@ if (import.meta.vitest) {
 		let current = opts.currentBranch ?? 'main'
 		let clean = opts.cleanTree ?? true
 		const storage = fakeSliceStorage([], null, {
-			findPrd: async () => null,
+			findChange: async () => null,
 			createFix: async (spec) => {
 				created.push(spec)
 				current = 'fix/5-tabs'

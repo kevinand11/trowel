@@ -1,14 +1,14 @@
-import type { ClassifiedSlice, FixRecord, PrdRecord } from '../../storages/types.ts'
+import type { ClassifiedSlice, FixRecord, ChangeRecord } from '../../storages/types.ts'
 import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
 import type { Bucket } from '../../utils/bucket.ts'
 
-export function renderStatus(prd: PrdRecord, slices: ClassifiedSlice[]): string {
+export function renderStatus(change: ChangeRecord, slices: ClassifiedSlice[]): string {
 	const counts = bucketCountsFor(slices)
 	const summary = slices.length === 0 ? '(no slices)' : `(${formatBucketCounts(counts)})`
 	const lines = [
-		`PRD ${prd.id}  ${prd.title}`,
-		`Branch:  ${prd.branch}`,
-		`State:   ${prd.state}          ${summary}`,
+		`Change ${change.id}  ${change.title}`,
+		`Branch:  ${change.branch}`,
+		`State:   ${change.state}          ${summary}`,
 		'',
 		...renderBucketSections(slices),
 	]
@@ -29,10 +29,10 @@ export function renderStatusFix(fix: FixRecord): string {
 	return lines.join('\n')
 }
 
-export function renderStatusSlice(prd: PrdRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
+export function renderStatusSlice(change: ChangeRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
 	const lines: string[] = []
 	lines.push(`Slice ${slice.id}  ${slice.title}`)
-	lines.push(`PRD:     ${prd.id}  ${prd.title}`)
+	lines.push(`Change:     ${change.id}  ${change.title}`)
 	lines.push(`State:   ${slice.state}   bucket: ${slice.bucket}`)
 	lines.push(`ready-for-agent: ${slice.readyForAgent}`)
 	lines.push(`needs-revision:  ${slice.needsRevision}`)

@@ -8,7 +8,7 @@ import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 
 /**
- * Phase machinery for **Fixes** — the slice-without-PRD entity introduced in ADR
+ * Phase machinery for **Fixes** — the slice-without-Change entity introduced in ADR
  * `2026-05-17-fix-entity-unified-close-out.md`. Mirrors the slice phases in `phases.ts` with two
  * differences: the working branch is `fix/<id>-<slug>` (no Integration branch, based on the Fix's
  * targetBranch), and the implementer's `ready` verdict routes through Close-out (Fix has no slice
@@ -232,7 +232,7 @@ if (import.meta.vitest) {
 	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function fakeStorage(): Storage {
-		return fakeSliceStorage([], null, { findPrd: async () => null })
+		return fakeSliceStorage([], null, { findChange: async () => null })
 	}
 
 	function fakeGit(): GitOps {

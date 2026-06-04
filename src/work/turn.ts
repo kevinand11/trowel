@@ -15,7 +15,7 @@ export type SpawnTurnArgs = {
 }
 
 export type SpawnTurnDeps = {
-	prdId: string
+	changeId: string
 	projectRoot: string
 	copyToWorktree: string[]
 	git: GitOps
@@ -24,14 +24,14 @@ export type SpawnTurnDeps = {
 }
 
 export async function spawnTurn(args: SpawnTurnArgs, deps: SpawnTurnDeps): Promise<TurnOut> {
-	// One log file per (prd, slice, role); each Turn appends a section header at start.
+	// One log file per (change, slice, role); each Turn appends a section header at start.
 	// See ADR `2026-05-12-sandcastle-integration.md` — pre-pivot the path included a runId
 	// suffix because worktrees were also per-Turn; post-pivot worktrees are per-branch and
 	// logs follow the same one-per-(slice,role) shape.
-	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.prdId, `${args.slice.id}-${args.role}.log`)
+	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.changeId, `${args.slice.id}-${args.role}.log`)
 
 	const worktree = await ensureWorktree({
-		prdId: deps.prdId,
+		changeId: deps.changeId,
 		branch: args.branch,
 		projectRoot: deps.projectRoot,
 		copyToWorktree: deps.copyToWorktree,
@@ -109,14 +109,14 @@ if (import.meta.vitest) {
 		}
 
 		function depsWithAgent(runAgent: SpawnTurnDeps['runAgent']): SpawnTurnDeps {
-			return { prdId: '142', projectRoot, copyToWorktree: [], git, runAgent }
+			return { changeId: '142', projectRoot, copyToWorktree: [], git, runAgent }
 		}
 
 		test('writes turn-in.json into the worktree and reads turn-out.json into the parsed verdict', async () => {
 			let observedTurnIn: TurnIn | null = null
 			const args = makeArgs()
 			const deps: SpawnTurnDeps = {
-				prdId: '142',
+				changeId: '142',
 				projectRoot,
 				copyToWorktree: [],
 				git,
@@ -163,10 +163,10 @@ if (import.meta.vitest) {
 			await expect(spawnTurn(makeArgs(), deps)).rejects.toThrow(/verdict file missing/i)
 		})
 
-		test('logPath is <projectRoot>/.trowel/logs/<prdId>/<sliceId>-<role>.log (one file per slice+role; appended across Turns)', async () => {
+		test('logPath is <projectRoot>/.trowel/logs/<changeId>/<sliceId>-<role>.log (one file per slice+role; appended across Turns)', async () => {
 			let observedLogPath: string | null = null
 			const deps: SpawnTurnDeps = {
-				prdId: '142',
+				changeId: '142',
 				projectRoot,
 				copyToWorktree: [],
 				git,
@@ -179,7 +179,7 @@ if (import.meta.vitest) {
 			await spawnTurn(makeArgs({ role: 'review' }), deps)
 			expect(observedLogPath).toBe(path.join(projectRoot, '.trowel', 'logs', '142', '145-review.log'))
 
-			// A second Turn against the same (prd, slice, role) resolves to the same path; the
+			// A second Turn against the same (change, slice, role) resolves to the same path; the
 			// runtime opens in append mode and writes a section header per Turn.
 			let secondPath: string | null = null
 			const deps2: SpawnTurnDeps = {
@@ -197,7 +197,7 @@ if (import.meta.vitest) {
 		test('passes runAgent a TurnWorktree handle pointing at the persistent worktree path', async () => {
 			let observedWorktreePath: string | null = null
 			const deps: SpawnTurnDeps = {
-				prdId: '142',
+				changeId: '142',
 				projectRoot,
 				copyToWorktree: [],
 				git,
@@ -215,7 +215,7 @@ if (import.meta.vitest) {
 
 		test('resets the worktree between turns (uncommitted file from a prior turn is gone)', async () => {
 			const deps: SpawnTurnDeps = {
-				prdId: '142',
+				changeId: '142',
 				projectRoot,
 				copyToWorktree: [],
 				git,
@@ -243,7 +243,7 @@ if (import.meta.vitest) {
 
 		test('reuses the same worktree across turns (no second checkout)', async () => {
 			const deps: SpawnTurnDeps = {
-				prdId: '142',
+				changeId: '142',
 				projectRoot,
 				copyToWorktree: [],
 				git,

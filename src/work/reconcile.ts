@@ -2,14 +2,14 @@ import type { Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 
 /**
- * Identifies the entity to reconcile. PRDs and Fixes both have a single "Close-out PR" against
+ * Identifies the entity to reconcile. Changes and Fixes both have a single "Close-out PR" against
  * their targetBranch; when that PR shows as merged on GitHub, the storage record flips to CLOSED.
  * See ADR `2026-05-17-fix-entity-unified-close-out.md`,
  * `2026-05-17-reads-acquire-mutation-lock.md`, and
  * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
  */
 export type LoopEntityRef =
-	| { kind: 'prd'; id: string; branch: string }
+	| { kind: 'change'; id: string; branch: string }
 	| { kind: 'fix'; id: string; branch: string }
 
 export type ReconcileDeps = {
@@ -35,7 +35,7 @@ export async function reconcileEntity(entity: LoopEntityRef, deps: ReconcileDeps
 }
 
 async function entityAlreadyClosed(entity: LoopEntityRef, deps: ReconcileDeps): Promise<boolean> {
-	const current = entity.kind === 'prd' ? await deps.storage.findPrd(entity.id) : await deps.storage.findFix(entity.id)
+	const current = entity.kind === 'change' ? await deps.storage.findChange(entity.id) : await deps.storage.findFix(entity.id)
 	return !current || current.state === 'CLOSED'
 }
 
@@ -52,7 +52,7 @@ function isMergedPr(pr: CloseOutPr | null): pr is CloseOutPr {
 }
 
 async function closeEntity(entity: LoopEntityRef, deps: ReconcileDeps): Promise<void> {
-	if (entity.kind === 'prd') await deps.storage.closePrd(entity.id)
+	if (entity.kind === 'change') await deps.storage.closeChange(entity.id)
 	else await deps.storage.closeFix(entity.id)
 }
 
@@ -62,7 +62,7 @@ if (import.meta.vitest) {
 	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function fakeStorage(overrides: Partial<Storage>): Storage {
-		return fakeSliceStorage([], null, { findPrd: async () => null, ...overrides })
+		return fakeSliceStorage([], null, { findChange: async () => null, ...overrides })
 	}
 
 	function openFix(id: string) {
@@ -81,16 +81,16 @@ if (import.meta.vitest) {
 	}
 
 	describe('reconcileEntity', () => {
-		test('PRD: PR merged → closePrd called', async () => {
+		test('Change: PR merged → closeChange called', async () => {
 			let closed: string | null = null
 			const storage = fakeStorage({
-				findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
-				closePrd: async (id) => { closed = id },
+				findChange: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
+				closeChange: async (id) => { closed = id },
 			})
 			const { gh } = recordingGhOps({
 				findAnyPrByHead: async () => ({ number: 7, state: 'MERGED' }),
 			})
-			await reconcileEntity({ kind: 'prd', id: '42', branch: 'b' }, { storage, gh })
+			await reconcileEntity({ kind: 'change', id: '42', branch: 'b' }, { storage, gh })
 			expect(closed).toBe('42')
 		})
 
@@ -114,11 +114,11 @@ if (import.meta.vitest) {
 		test('no PR exists → no-op', async () => {
 			let called = false
 			const storage = fakeStorage({
-				findPrd: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
-				closePrd: async () => { called = true },
+				findChange: async (id) => ({ id, branch: 'b', title: 't', state: 'OPEN' }),
+				closeChange: async () => { called = true },
 			})
 			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
-			await reconcileEntity({ kind: 'prd', id: '1', branch: 'b' }, { storage, gh })
+			await reconcileEntity({ kind: 'change', id: '1', branch: 'b' }, { storage, gh })
 			expect(called).toBe(false)
 		})
 

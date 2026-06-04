@@ -4,7 +4,7 @@ import type { Storage } from '../../storages/types.ts'
 import type { LoopEntity } from '../../work/entity-loop.ts'
 import { buildLoopWiring } from '../_loop-wiring.ts'
 
-export type WorkScope = 'prd' | 'fix'
+export type WorkScope = 'change' | 'fix'
 
 type WorkRuntime = {
 	storage: Storage
@@ -15,7 +15,7 @@ type WorkRuntime = {
 type WorkHandler = (id: string, rt: WorkRuntime) => Promise<void>
 
 const WORK_HANDLERS: Record<WorkScope, WorkHandler> = {
-	prd: runPrdWork,
+	change: runChangeWork,
 	fix: runFixWork,
 }
 
@@ -23,10 +23,10 @@ async function runWork(scope: WorkScope, id: string, rt: WorkRuntime): Promise<v
 	await WORK_HANDLERS[scope](id, rt)
 }
 
-async function runPrdWork(id: string, rt: WorkRuntime): Promise<void> {
-	const prd = await rt.storage.findPrd(id)
-	if (!prd) throw new Error(`PRD '${id}' not found`)
-	await rt.runEntity({ kind: 'prd', id, integrationBranch: prd.branch, targetBranch: prd.targetBranch, title: prd.title })
+async function runChangeWork(id: string, rt: WorkRuntime): Promise<void> {
+	const change = await rt.storage.findChange(id)
+	if (!change) throw new Error(`Change '${id}' not found`)
+	await rt.runEntity({ kind: 'change', id, integrationBranch: change.branch, targetBranch: change.targetBranch, title: change.title })
 }
 
 async function runFixWork(id: string, rt: WorkRuntime): Promise<void> {
@@ -53,19 +53,19 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 
-	function makeStorage(state: { prd?: { id: string; branch: string; targetBranch?: string; title: string }; fix?: { id: string; branch: string; targetBranch?: string; title: string } }): Storage {
+	function makeStorage(state: { change?: { id: string; branch: string; targetBranch?: string; title: string }; fix?: { id: string; branch: string; targetBranch?: string; title: string } }): Storage {
 		return fakeSliceStorage([], null, {
-			findPrd: async (id) => (state.prd && state.prd.id === id ? { id, branch: state.prd.branch, targetBranch: state.prd.targetBranch, title: state.prd.title, state: 'OPEN' } : null),
+			findChange: async (id) => (state.change && state.change.id === id ? { id, branch: state.change.branch, targetBranch: state.change.targetBranch, title: state.change.title, state: 'OPEN' } : null),
 			findFix: async (id) => (state.fix && state.fix.id === id ? { id, branch: state.fix.branch, targetBranch: state.fix.targetBranch, title: state.fix.title, body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null } : null),
 		})
 	}
 
 	describe('runWork', () => {
-		test('prd scope dispatches with the PRD\'s integration and target branches', async () => {
-			const storage = makeStorage({ prd: { id: 'abc123', branch: 'prd/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' } })
+		test('change scope dispatches with the Change\'s integration and target branches', async () => {
+			const storage = makeStorage({ change: { id: 'abc123', branch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' } })
 			const calls: LoopEntity[] = []
-			await runWork('prd', 'abc123', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
-			expect(calls).toEqual([{ kind: 'prd', id: 'abc123', integrationBranch: 'prd/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' }])
+			await runWork('change', 'abc123', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
+			expect(calls).toEqual([{ kind: 'change', id: 'abc123', integrationBranch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' }])
 		})
 
 		test('fix scope dispatches with the Fix branch and target branch', async () => {
@@ -75,9 +75,9 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([{ kind: 'fix', id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X' }])
 		})
 
-		test('throws when PRD is not found', async () => {
+		test('throws when Change is not found', async () => {
 			const storage = makeStorage({})
-			await expect(runWork('prd', 'zzz', { storage, runEntity: async () => {}, stdout: () => {} })).rejects.toThrow(/PRD 'zzz' not found/)
+			await expect(runWork('change', 'zzz', { storage, runEntity: async () => {}, stdout: () => {} })).rejects.toThrow(/Change 'zzz' not found/)
 		})
 
 		test('throws when Fix is not found', async () => {
