@@ -1,3 +1,4 @@
+import { MERGE_CHANGE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from './merge-worktree.ts'
 import type { DeleteBranchPolicy, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
@@ -9,8 +10,9 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
  *   doesn't already exist), then marks it ready. Entity stays OPEN; **Reconciliation** flips OPEN →
  *   CLOSED when GitHub reports the PR merged.
- * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch via
- *   `git merge --no-ff`, then writes CLOSED on the storage record immediately.
+ * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch from a
+ *   reserved detached merge worktree when projectRoot is available, then writes CLOSED on the
+ *   storage record immediately.
  *
  * Branch deletion under `usePrs: false` is gated by `config.abort.deleteBranch`. The `'prompt'`
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
@@ -91,6 +93,23 @@ async function closeOutViaMergeLocked(entity: CloseOutEntity, deps: CloseOutDeps
 }
 
 async function mergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string): Promise<void> {
+	if (deps.projectRoot) {
+		await mergeBranchIntoDestinationWithWorktree({
+			projectRoot: deps.projectRoot,
+			changeId: entity.id,
+			reservation: MERGE_CHANGE_WORKTREE,
+			destinationBranch: targetBranch,
+			sourceBranch: entity.branch,
+			git: deps.git,
+			mergeNoVerify: deps.config.mergeNoVerify,
+			log: deps.log,
+		})
+		return
+	}
+	await legacyMergeCloseOutBranch(entity, deps, targetBranch)
+}
+
+async function legacyMergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string): Promise<void> {
 	const current = await deps.git.currentBranch()
 	await deps.git.checkout(targetBranch)
 	try {
