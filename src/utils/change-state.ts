@@ -62,22 +62,11 @@ async function closeOutPrStateFor(change: ChangeRecord, gh: GhOps): Promise<Clos
 async function repositoryMergeProven(change: ChangeRecord, slices: ClassifiedSlice[], deps: ChangeStateDeps, closeOutPrState: CloseOutPrState): Promise<boolean> {
 	if (closeOutPrState === 'MERGED') return true
 	if (!worthCheckingBranchMerge(change, slices)) return false
-	const targetBranch = await targetBranchFor(change, deps.git)
-	if (!targetBranch) return false
-	return await branchMergeProven(change.changeBranch, targetBranch, deps.git)
+	return await branchMergeProven(change.changeBranch, change.targetBranch, deps.git)
 }
 
 function worthCheckingBranchMerge(change: ChangeRecord, slices: ClassifiedSlice[]): boolean {
 	return rawClosedAt(change) !== null || allSlicesDone(slices)
-}
-
-async function targetBranchFor(change: ChangeRecord, git: ReadOnlyGitFacts): Promise<string | null> {
-	if (change.targetBranch) return change.targetBranch
-	try {
-		return await git.baseBranch()
-	} catch {
-		return null
-	}
 }
 
 async function branchMergeProven(branch: string, targetBranch: string, git: ReadOnlyGitFacts): Promise<boolean> {
@@ -155,6 +144,33 @@ if (import.meta.vitest) {
 			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
 			const git = noopGitOps({ remoteBranchExists: async () => true, commitsAhead: async () => 0 })
 			expect(await classifyChange(change(), [doneSlice()], { gh, git })).toBe('landed')
+		})
+
+		test('repository merge proof uses stored Change and Target branches without base fallback', async () => {
+			const calls: string[] = []
+			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
+			const git = noopGitOps({
+				baseBranch: async () => {
+					calls.push('baseBranch')
+					throw new Error('baseBranch must not be used for Change state classification')
+				},
+				remoteBranchExists: async (branch) => {
+					calls.push(`remoteBranchExists(${branch})`)
+					return true
+				},
+				fetch: async (branch) => { calls.push(`fetch(${branch})`) },
+				commitsAhead: async (branch, base) => {
+					calls.push(`commitsAhead(${branch},${base})`)
+					return 0
+				},
+			})
+			expect(await classifyChange(change({ changeBranch: 'stored/change', targetBranch: 'release/1.2' }), [doneSlice()], { gh, git })).toBe('landed')
+			expect(calls).toEqual([
+				'remoteBranchExists(stored/change)',
+				'fetch(stored/change)',
+				'fetch(release/1.2)',
+				'commitsAhead(origin/stored/change,origin/release/1.2)',
+			])
 		})
 
 		test('missing remote does not prove merge unless local fallback is merged', async () => {
