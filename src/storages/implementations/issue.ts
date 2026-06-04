@@ -111,12 +111,14 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function findChange(id: string): Promise<ChangeRecord | null> {
 		const issue = await deps.gh.viewIssue(id)
 		if (!issue) return null
+		const closedAt = issue.closedAt ?? null
 		return {
 			id: String(issue.number),
 			branch: changeBranchFor(String(issue.number), issue.title),
 			targetBranch: targetBranchFromBody(issue.body),
 			title: issue.title,
-			state: issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
+			state: closedAt === null && issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
+			closedAt,
 		}
 	}
 
@@ -703,7 +705,7 @@ if (import.meta.vitest) {
 				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN', body: 'body\n\n<!-- trowel:{"targetBranch":"release/1.2"} -->' }),
 			})
 			const storage = createIssueStorage(deps)
-			expect(await storage.findChange('42')).toEqual({ id: '42', branch: 'change-42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN' })
+			expect(await storage.findChange('42')).toEqual({ id: '42', branch: 'change-42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN', closedAt: null })
 		})
 
 		test('maps "CLOSED" GitHub state to CLOSED', async () => {

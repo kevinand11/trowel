@@ -294,6 +294,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				targetBranch: store.targetBranch,
 				title: store.title,
 				state: store.closedAt === null ? 'OPEN' : 'CLOSED',
+				closedAt: store.closedAt,
 			}
 		} catch {
 			return null
@@ -1040,7 +1041,7 @@ if (import.meta.vitest) {
 		test('returns ChangeRecord with state=OPEN for an open Change', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id, branch } = await storage.createChange({ title: 'Alpha', body: 'a' })
-			expect(await storage.findChange(id)).toEqual({ id, branch, targetBranch: 'main', title: 'Alpha', state: 'OPEN' })
+			expect(await storage.findChange(id)).toEqual({ id, branch, targetBranch: 'main', title: 'Alpha', state: 'OPEN', closedAt: null })
 		})
 
 		test('returns ChangeRecord with state=CLOSED after close', async () => {
@@ -1048,7 +1049,8 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(deps)
 			const { id, branch } = await storage.createChange({ title: 'Beta', body: 'b' })
 			await storage.closeChange(id)
-			expect(await storage.findChange(id)).toEqual({ id, branch, targetBranch: 'main', title: 'Beta', state: 'CLOSED' })
+			expect(await storage.findChange(id)).toMatchObject({ id, branch, targetBranch: 'main', title: 'Beta', state: 'CLOSED' })
+			expect((await storage.findChange(id))!.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 	})
 

@@ -6,7 +6,7 @@ import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
-import { list, type ListState } from './commands/list/index.ts'
+import { list } from './commands/list/index.ts'
 import { review } from './commands/review.ts'
 import { shipChange } from './commands/ship/index.ts'
 import { start } from './commands/start.ts'
@@ -33,13 +33,6 @@ async function pipedStdin(): Promise<string> {
 	return Buffer.concat(chunks).toString('utf8').trim()
 }
 
-function parseListState(commandName: string, raw: string): ListState {
-	const validStates: ListState[] = ['open', 'closed', 'all']
-	if (validStates.includes(raw as ListState)) return raw as ListState
-	process.stderr.write(`trowel ${commandName}: invalid --state '${raw}' (expected open | closed | all)\n`)
-	process.exit(1)
-}
-
 export function run(): void {
 	const program = new Command()
 
@@ -59,11 +52,10 @@ export function run(): void {
 
 	changeCmd
 		.command('list')
-		.description('List Changes in this project')
-		.option('--state <kind>', 'Filter by state: open | closed | all', 'open')
+		.description('List all Changes in this project, newest first')
 		.option('--storage <kind>', 'Override project storage')
-		.action(async (opts: { state: string; storage?: string }) => {
-			await list(parseListState('change list', opts.state), { storage: opts.storage })
+		.action(async (opts: { storage?: string }) => {
+			await list({ storage: opts.storage })
 		})
 
 	changeCmd

@@ -28,14 +28,18 @@ export type ChangeSummary = {
 	createdAt: string
 }
 
-export type ChangeState = 'OPEN' | 'CLOSED'
+export type RawChangeState = 'OPEN' | 'CLOSED'
+export type ChangeState = 'open' | 'ready' | 'in-flight' | 'landed' | 'done' | 'aborted'
 
 export type ChangeRecord = {
 	id: string
 	branch: string
 	targetBranch?: string
 	title: string
-	state: ChangeState
+	/** Legacy raw issue/storage lifecycle, retained for command paths that have not moved to closedAt yet. */
+	state: RawChangeState
+	/** Raw terminal timestamp. `null` means the Change has not been finalized/aborted. */
+	closedAt?: string | null
 }
 
 /**

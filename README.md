@@ -14,8 +14,8 @@ Personal CLI for orchestrating Change-driven feature work — start, slice, and 
 | Command | Purpose |
 | --- | --- |
 | `trowel start [--storage <kind>] [--harness <kind>]` | Understand a user request by grilling, plan repository work, and create a Change when needed. |
-| `trowel change list [--state open\|closed\|all] [--storage <kind>]` | List Changes. |
-| `trowel change status <change-id> [--storage <kind>]` | Show one Change and its Slice buckets. |
+| `trowel change list [--storage <kind>]` | List all Changes newest first with computed state. |
+| `trowel change status <change-id> [--storage <kind>]` | Show one Change and its Slice states. |
 | `trowel change work <change-id> [--storage <kind>] [--harness <kind>]` | Run the AFK loop for a Change. |
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |

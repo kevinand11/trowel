@@ -1,25 +1,25 @@
 import type { StorageKind } from '../../storages/registry.ts'
-import type { ClassifiedSlice, ChangeSummary, SliceState, Storage } from '../../storages/types.ts'
+import type { ClassifiedSlice, ChangeState, ChangeSummary, SliceState, Storage } from '../../storages/types.ts'
+import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
+import type { GitOps } from '../../utils/git-ops.ts'
 import { emptySliceStateCounts, formatSliceStateCounts } from '../../utils/slice-state-format.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, loadCommandBase } from '../runtime.ts'
 
-export type ListState = 'open' | 'closed' | 'all'
+type ListRuntime = { storage: Storage; usePrs: boolean; gh: ReturnType<typeof createGh>; git: GitOps }
+type ChangeListRow = ChangeSummary & { state: ChangeState; slices: ClassifiedSlice[] }
 
-type ListRuntime = { storage: Storage; usePrs: boolean; gh: ReturnType<typeof createGh>; state: ListState }
-type ChangeListRow = ChangeSummary & { state: string; slices: ClassifiedSlice[] }
-
-export async function list(state: ListState = 'open', opts: { storage?: string } = {}): Promise<void> {
+export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
 	const storage = buildStorage(base, (opts.storage as StorageKind | undefined) ?? base.config.storage)
-	const rows = await listChangeRows({ storage, usePrs: base.config.work.usePrs, gh: base.gh, state })
+	const rows = await listChangeRows({ storage, usePrs: base.config.work.usePrs, gh: base.gh, git: base.git })
 	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }
 
 function formatChangeRow(row: ChangeListRow): string {
 	const idCol = row.id.padEnd(6)
-	const stateCol = row.state.padEnd(8)
+	const stateCol = row.state.padEnd(9)
 	const titleCol = row.title.padEnd(24)
 	return `${idCol}  ${stateCol}  ${titleCol}  ${changeSliceSummary(row.slices)}`
 }
@@ -35,7 +35,7 @@ function stateCounts(slices: ClassifiedSlice[]): Record<SliceState, number> {
 }
 
 async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
-	const summaries = await rt.storage.listChanges({ state: rt.state })
+	const summaries = await rt.storage.listChanges({ state: 'all' })
 	const rows = await Promise.all(summaries.map((summary) => listChangeRow(rt, summary)))
 	return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
@@ -43,13 +43,14 @@ async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
 async function listChangeRow(rt: ListRuntime, summary: ChangeSummary): Promise<ChangeListRow> {
 	const change = await rt.storage.findChange(summary.id)
 	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: summary.id, usePrs: rt.usePrs })
-	return { ...summary, state: change?.state ?? 'UNKNOWN', slices }
+	return { ...summary, state: change ? await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) : 'open', slices }
 }
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 
 	function fakeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
@@ -73,11 +74,11 @@ if (import.meta.vitest) {
 				title: 'Add parser',
 				branch: 'change-1-add-parser',
 				createdAt: '2026-05-12T00:00:00Z',
-				state: 'OPEN',
+				state: 'open',
 				slices: [fakeSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })],
 			})
 			expect(out).toContain('1')
-			expect(out).toContain('OPEN')
+			expect(out).toContain('open')
 			expect(out).toContain('Add parser')
 			expect(out).toContain('1 done')
 		})
@@ -96,25 +97,30 @@ if (import.meta.vitest) {
 	})
 
 	describe('listChangeRows', () => {
-		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[]): Storage {
+		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[], listStates: string[]): Storage {
 			return fakeSliceStorage(slices, null, {
-				listChanges: async () => summaries,
-				findChange: async (id) => ({ id, branch: `change-${id}`, title: id, state: 'OPEN' }),
+				listChanges: async (opts) => {
+					listStates.push(opts.state)
+					return summaries
+				},
+				findChange: async (id) => ({ id, branch: `change-${id}`, title: id, state: 'OPEN', closedAt: null }),
 			})
 		}
 
-		test('sorts newest first by createdAt', async () => {
+		test('sorts newest first by createdAt and requests all Changes', async () => {
 			const { gh } = recordingGhOps()
+			const listStates: string[] = []
 			const rows = await listChangeRows({
 				storage: storageWith([
 					{ id: 'old', title: 'Old', branch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
 					{ id: 'new', title: 'New', branch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
-				], []),
+				], [], listStates),
 				usePrs: false,
 				gh,
-				state: 'all',
+				git: noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false }),
 			})
 			expect(rows.map((r) => r.id)).toEqual(['new', 'old'])
+			expect(listStates).toEqual(['all'])
 		})
 	})
 }
