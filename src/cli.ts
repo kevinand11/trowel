@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { address } from './commands/address.ts'
-import { closeChange, closeSlice } from './commands/close/index.ts'
+import { abortChange, abortSlice } from './commands/abort/index.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
@@ -70,7 +70,7 @@ export function run(): void {
 		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (changeId: string, opts) => {
-			await closeChange(changeId, opts)
+			await abortChange(changeId, opts)
 		})
 
 	const sliceCmd = program.command('slice').description('Manage Slices')
@@ -90,7 +90,7 @@ export function run(): void {
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (sliceId: string, opts) => {
-			await closeSlice(sliceId, opts)
+			await abortSlice(sliceId, opts)
 		})
 
 	sliceCmd
