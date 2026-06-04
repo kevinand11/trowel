@@ -20,7 +20,6 @@ Personal CLI for orchestrating Change-driven feature work — start, slice, and 
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
 | `trowel slice status <slice-id> [--storage <kind>]` | Show one Slice. |
-| `trowel slice abort <slice-id> [--storage <kind>]` | Abort one Slice. |
 | `trowel slice implement <slice-id> [--storage <kind>] [--harness <kind>]` | Run implementer for one Slice. |
 | `trowel slice review <slice-id> [--storage <kind>] [--harness <kind>]` | Run reviewer for one Slice PR. |
 | `trowel slice address <slice-id> [--storage <kind>] [--harness <kind>]` | Run addresser for one Slice PR. |
