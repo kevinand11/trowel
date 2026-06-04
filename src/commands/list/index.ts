@@ -2,18 +2,19 @@ import type { StorageKind } from '../../storages/registry.ts'
 import type { ClassifiedSlice, ChangeState, ChangeSummary, SliceState, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
-import type { GitOps } from '../../utils/git-ops.ts'
+import { branchStableGitFacts, branchStableGitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
 import { emptySliceStateCounts, formatSliceStateCounts } from '../../utils/slice-state-format.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, loadCommandBase } from '../runtime.ts'
 
-type ListRuntime = { storage: Storage; usePrs: boolean; gh: ReturnType<typeof createGh>; git: GitOps }
+type ListRuntime = { storage: Storage; usePrs: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts }
 type ChangeListRow = ChangeSummary & { state: ChangeState; slices: ClassifiedSlice[] }
 
 export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
-	const storage = buildStorage(base, (opts.storage as StorageKind | undefined) ?? base.config.storage)
-	const rows = await listChangeRows({ storage, usePrs: base.config.work.usePrs, gh: base.gh, git: base.git })
+	const git = branchStableGitOps(base.git)
+	const storage = buildStorage({ ...base, git }, (opts.storage as StorageKind | undefined) ?? base.config.storage)
+	const rows = await listChangeRows({ storage, usePrs: base.config.work.usePrs, gh: base.gh, git: branchStableGitFacts(git) })
 	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }
 
@@ -107,6 +108,36 @@ if (import.meta.vitest) {
 			})
 		}
 
+		function branchSensitiveGit(calls: string[]) {
+			return branchStableGitFacts(noopGitOps({
+				remoteBranchExists: async (branch) => {
+					calls.push(`remoteBranchExists(${branch})`)
+					return true
+				},
+				fetch: async (branch) => { calls.push(`fetch(${branch})`) },
+				commitsAhead: async (branch, base) => {
+					calls.push(`commitsAhead(${branch},${base})`)
+					return 0
+				},
+				checkout: async (branch) => {
+					calls.push(`checkout(${branch})`)
+					throw new Error('checkout must not run during change list')
+				},
+				createLocalBranch: async (branch, base) => {
+					calls.push(`createLocalBranch(${branch},${base})`)
+					throw new Error('createLocalBranch must not run during change list')
+				},
+				createRemoteBranch: async (branch, base) => {
+					calls.push(`createRemoteBranch(${branch},${base})`)
+					throw new Error('createRemoteBranch must not run during change list')
+				},
+				deleteBranch: async (branch) => {
+					calls.push(`deleteBranch(${branch})`)
+					throw new Error('deleteBranch must not run during change list')
+				},
+			}))
+		}
+
 		test('sorts newest first by createdAt and requests all Changes', async () => {
 			const { gh } = recordingGhOps()
 			const listStates: string[] = []
@@ -117,10 +148,31 @@ if (import.meta.vitest) {
 				], [], listStates),
 				usePrs: false,
 				gh,
-				git: noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false }),
+				git: branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })),
 			})
 			expect(rows.map((r) => r.id)).toEqual(['new', 'old'])
 			expect(listStates).toEqual(['all'])
+		})
+
+		test('computes landed state through branch-stable git facts without mutating checkout', async () => {
+			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
+			const listStates: string[] = []
+			const gitCalls: string[] = []
+			const slices = [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })]
+
+			const rows = await listChangeRows({
+				storage: storageWith([{ id: '1', title: 'Done', branch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }], slices, listStates),
+				usePrs: false,
+				gh,
+				git: branchSensitiveGit(gitCalls),
+			})
+
+			expect(rows[0]?.state).toBe('landed')
+			expect(gitCalls).toContain('remoteBranchExists(change-1)')
+			expect(gitCalls).toContain('fetch(change-1)')
+			expect(gitCalls).toContain('fetch(fake-base)')
+			expect(gitCalls).toContain('commitsAhead(origin/change-1,origin/fake-base)')
+			expect(gitCalls.filter((call) => /^(checkout|createLocalBranch|createRemoteBranch|deleteBranch)\(/.test(call))).toEqual([])
 		})
 	})
 }

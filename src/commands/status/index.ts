@@ -6,18 +6,18 @@ import { getStorage } from '../../storages/registry.ts'
 import type { ClassifiedSlice, ChangeRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
-import { createRepoGit, type GitOps } from '../../utils/git-ops.ts'
+import { branchStableGitFacts, branchStableGitOps, createRepoGit, type GitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 
 type StatusRuntime = {
 	storage: Storage
 	gh: GhOps
-	git: GitOps
+	git: ReadOnlyGitFacts
 	usePrs: boolean
 	stdout: (s: string) => void
 }
 
-type BuiltStatusStorage = { storage: Storage; projectRoot: string; gh: GhOps; git: GitOps; usePrs: boolean }
+type BuiltStatusStorage = { storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean }
 type StatusCommandDeps = {
 	buildStatusStorage?: (opts: { storage?: string }) => Promise<BuiltStatusStorage>
 	stdout?: (s: string) => void
@@ -32,7 +32,7 @@ async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
 	writeStatusText(rt.stdout, renderStatus({ ...change, targetBranch, state }, slices))
 }
 
-async function fallbackTargetBranch(git: GitOps): Promise<string | undefined> {
+async function fallbackTargetBranch(git: ReadOnlyGitFacts): Promise<string | undefined> {
 	try {
 		return await git.baseBranch()
 	} catch {
@@ -40,7 +40,7 @@ async function fallbackTargetBranch(git: GitOps): Promise<string | undefined> {
 	}
 }
 
-async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; git: GitOps; usePrs: boolean }> {
+async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean }> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel status: no project root found\n')
@@ -48,7 +48,7 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 	}
 	const storageKind = opts.storage ?? config.storage
 	const gh = createGh()
-	const git = createRepoGit(projectRoot)
+	const git = branchStableGitOps(createRepoGit(projectRoot))
 	const storageDeps: StorageDeps = {
 		gh,
 		git,
@@ -58,10 +58,10 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 		labels: config.labels,
 		abortOptions: config.abort,
 	}
-	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git, usePrs: config.work.usePrs }
+	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git: branchStableGitFacts(git), usePrs: config.work.usePrs }
 }
 
-function statusRuntime(storage: Storage, gh: GhOps, git: GitOps, usePrs: boolean, stdout: (s: string) => void = (s) => process.stdout.write(s)): StatusRuntime {
+function statusRuntime(storage: Storage, gh: GhOps, git: ReadOnlyGitFacts, usePrs: boolean, stdout: (s: string) => void = (s) => process.stdout.write(s)): StatusRuntime {
 	return { storage, gh, git, usePrs, stdout }
 }
 
@@ -87,7 +87,7 @@ export async function statusSlice(sliceId: string, opts: { storage?: string }, d
 type StatusSliceRuntime = {
 	storage: Storage
 	gh: GhOps
-	git: GitOps
+	git: ReadOnlyGitFacts
 	usePrs: boolean
 	stdout: (s: string) => void
 }
@@ -163,7 +163,7 @@ if (import.meta.vitest) {
 
 	const change: ChangeRecord = { id: 'ab12cd', branch: 'change/ab12cd-feature', targetBranch: 'main', title: 'Add SSO', state: 'OPEN', closedAt: null }
 	const renderedChange = { ...change, state: 'open' as const }
-	const unmergedGit = () => noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })
+	const unmergedGit = () => branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false }))
 	const rawStatusSlice = (overrides: Partial<Slice> = {}): Slice => ({
 		id: '42',
 		title: 'Implement tab parser',
@@ -209,6 +209,44 @@ if (import.meta.vitest) {
 		await new Promise((resolve) => setTimeout(resolve, ms))
 	}
 
+	function branchSensitiveGit(calls: string[]): GitOps {
+		const mutate = async (op: string): Promise<void> => {
+			calls.push(op)
+			throw new Error(`${op} must not run during entity read commands`)
+		}
+		return noopGitOps({
+			remoteBranchExists: async (branch) => {
+				calls.push(`remoteBranchExists(${branch})`)
+				return true
+			},
+			fetch: async (branch) => { calls.push(`fetch(${branch})`) },
+			commitsAhead: async (branch, base) => {
+				calls.push(`commitsAhead(${branch},${base})`)
+				return 0
+			},
+			branchExists: async (branch) => {
+				calls.push(`branchExists(${branch})`)
+				return true
+			},
+			isMerged: async (branch, base) => {
+				calls.push(`isMerged(${branch},${base})`)
+				return true
+			},
+			baseBranch: async () => {
+				calls.push('baseBranch')
+				return 'main'
+			},
+			checkout: async (branch) => { await mutate(`checkout(${branch})`) },
+			createLocalBranch: async (branch, base) => { await mutate(`createLocalBranch(${branch},${base})`) },
+			createRemoteBranch: async (branch, base) => { await mutate(`createRemoteBranch(${branch},${base})`) },
+			deleteBranch: async (branch) => { await mutate(`deleteBranch(${branch})`) },
+		})
+	}
+
+	function expectNoBranchMutations(calls: string[]): void {
+		expect(calls.filter((call) => /^(checkout|createLocalBranch|createRemoteBranch|deleteBranch)\(/.test(call))).toEqual([])
+	}
+
 	describe('status commands are entity reads', () => {
 		test('change status completes while the Mutation lock is held elsewhere', async () => {
 			const storage = fakeStorage({ change, rawSlices: [] })
@@ -244,6 +282,51 @@ if (import.meta.vitest) {
 				})
 			})
 			expect(buf).toContain(`Slice ${rawSlice.id}  ${rawSlice.title}`)
+		})
+
+		test('change status uses branch-stable git facts without mutating the checkout', async () => {
+			const doneSlice = rawStatusSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })
+			const storage = fakeStorage({ change, rawSlices: [doneSlice] })
+			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
+			const gitCalls: string[] = []
+			let buf = ''
+
+			await statusChange(change.id, {}, {
+				buildStatusStorage: async () => ({ storage, projectRoot: process.cwd(), gh, git: branchStableGitFacts(branchSensitiveGit(gitCalls)), usePrs: false }),
+				stdout: (s) => (buf += s),
+			})
+
+			expect(buf).toContain('State:               landed')
+			expect(gitCalls).toContain(`remoteBranchExists(${change.branch})`)
+			expect(gitCalls).toContain(`fetch(${change.branch})`)
+			expect(gitCalls).toContain('fetch(main)')
+			expect(gitCalls).toContain(`commitsAhead(origin/${change.branch},origin/main)`)
+			expectNoBranchMutations(gitCalls)
+		})
+
+		test('slice status does not mutate branches while reading Slice state', async () => {
+			const rawSlice = rawStatusSlice()
+			const storage: Storage = {
+				createChange: async () => { throw new Error('nyi') },
+				findChange: async (id) => (id === change.id ? change : null),
+				listChanges: async () => [],
+				closeChange: async () => {},
+				createSlice: async () => { throw new Error('nyi') },
+				findSlices: async () => [rawSlice],
+				findSlice: async (sliceId) => (sliceId === rawSlice.id ? { changeId: change.id, slice: rawSlice } : null),
+				updateSlice: async () => {},
+			}
+			const { gh } = recordingGhOps()
+			const gitCalls: string[] = []
+			let buf = ''
+
+			await statusSlice(rawSlice.id, {}, {
+				buildStatusStorage: async () => ({ storage, projectRoot: process.cwd(), gh, git: branchStableGitFacts(branchSensitiveGit(gitCalls)), usePrs: false }),
+				stdout: (s) => (buf += s),
+			})
+
+			expect(buf).toContain(`Slice ${rawSlice.id}  ${rawSlice.title}`)
+			expectNoBranchMutations(gitCalls)
 		})
 
 		test('change status shows landed for a merged Close-out PR without finalizing the Change', async () => {
