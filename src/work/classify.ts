@@ -50,6 +50,7 @@ if (import.meta.vitest) {
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: 'change-p1/slice-s1-t',
 			prState: null,
 			...overrides,
 		}

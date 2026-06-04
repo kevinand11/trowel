@@ -53,7 +53,7 @@ function allSlicesDone(slices: ClassifiedSlice[]): boolean {
 
 async function closeOutPrStateFor(change: ChangeRecord, gh: GhOps): Promise<CloseOutPrState> {
 	try {
-		return (await gh.findAnyPrByHead(change.branch))?.state ?? null
+		return (await gh.findAnyPrByHead(change.changeBranch))?.state ?? null
 	} catch {
 		return null
 	}
@@ -64,7 +64,7 @@ async function repositoryMergeProven(change: ChangeRecord, slices: ClassifiedSli
 	if (!worthCheckingBranchMerge(change, slices)) return false
 	const targetBranch = await targetBranchFor(change, deps.git)
 	if (!targetBranch) return false
-	return await branchMergeProven(change.branch, targetBranch, deps.git)
+	return await branchMergeProven(change.changeBranch, targetBranch, deps.git)
 }
 
 function worthCheckingBranchMerge(change: ChangeRecord, slices: ClassifiedSlice[]): boolean {
@@ -105,7 +105,7 @@ if (import.meta.vitest) {
 
 	const change = (overrides: Partial<ChangeRecord> = {}): ChangeRecord => ({
 		id: '42',
-		branch: 'change-42-x',
+		changeBranch: 'change-42-x',
 		targetBranch: 'main',
 		title: 'X',
 		state: 'OPEN',
@@ -121,6 +121,7 @@ if (import.meta.vitest) {
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
+		sliceBranch: 'change-42/slice-s1-s',
 		prState: null,
 		...overrides,
 	})
@@ -150,7 +151,7 @@ if (import.meta.vitest) {
 			expect(await classifyChange(change(), [doneSlice()], { gh, git })).toBe('landed')
 		})
 
-		test('remote integration branch not ahead of target proves landed', async () => {
+		test('remote Change branch not ahead of target proves landed', async () => {
 			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
 			const git = noopGitOps({ remoteBranchExists: async () => true, commitsAhead: async () => 0 })
 			expect(await classifyChange(change(), [doneSlice()], { gh, git })).toBe('landed')

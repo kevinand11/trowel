@@ -15,6 +15,7 @@ export type IssueSummary = {
 	number: number
 	title: string
 	createdAt: string
+	body: string
 }
 
 export type IssueRecord = {
@@ -83,6 +84,7 @@ export type GhOps = {
 	listIssues(opts: { label: string; state: 'open' | 'closed' | 'all' }): Promise<IssueSummary[]>
 	closeIssue(id: string, opts?: { comment?: string }): Promise<void>
 	reopenIssue(id: string): Promise<void>
+	editIssueBody(id: string, body: string): Promise<void>
 	editIssueLabels(id: string, opts: { add?: string[]; remove?: string[] }): Promise<void>
 
 	// Sub-issues & blocker deps
@@ -155,7 +157,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return parsed.state
 		},
 		async listIssues({ label, state }) {
-			const out = await ghOrThrow(['issue', 'list', '--label', label, '--state', state, '--json', 'number,title,createdAt'])
+			const out = await ghOrThrow(['issue', 'list', '--label', label, '--state', state, '--json', 'number,title,createdAt,body'])
 			return JSON.parse(out) as IssueSummary[]
 		},
 		async closeIssue(id, opts) {
@@ -165,6 +167,9 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		},
 		async reopenIssue(id) {
 			await ghOrThrow(['issue', 'reopen', id])
+		},
+		async editIssueBody(id, body) {
+			await ghOrThrow(['issue', 'edit', id, '--body', body])
 		},
 		async editIssueLabels(id, { add = [], remove = [] }) {
 			for (const label of add) await ghOrThrow(['issue', 'edit', id, '--add-label', label])
@@ -387,7 +392,7 @@ if (import.meta.vitest) {
 			])
 			const out = await createGh(runner).listIssues({ label: 'change', state: 'open' })
 			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z' }])
-			expect(calls[0]).toEqual(['issue', 'list', '--label', 'change', '--state', 'open', '--json', 'number,title,createdAt'])
+			expect(calls[0]).toEqual(['issue', 'list', '--label', 'change', '--state', 'open', '--json', 'number,title,createdAt,body'])
 		})
 
 		test('closePr passes --comment when provided and never merges', async () => {

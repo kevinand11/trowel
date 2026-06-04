@@ -79,6 +79,7 @@ if (import.meta.vitest) {
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: 'change-142/slice-145-session-middleware',
 			prState: null,
 		}
 		return {

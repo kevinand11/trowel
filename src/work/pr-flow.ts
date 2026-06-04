@@ -1,7 +1,6 @@
 import type { FeedbackEntry } from './verdict.ts'
 import type { SlicePrState, Slice } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
-import { slug as slugify } from '../utils/slug.ts'
 
 /**
  * PR-flow orchestration that sits above `GhOps`. Single-call `gh` primitives
@@ -11,8 +10,8 @@ import { slug as slugify } from '../utils/slug.ts'
  */
 
 /** Canonical per-slice branch name (storage-agnostic). */
-function sliceBranchFor(changeId: string, slice: Slice): string {
-	return `change-${changeId}/slice-${slice.id}-${slugify(slice.title)}`
+function sliceBranchFor(_changeId: string, slice: Slice): string {
+	return slice.sliceBranch
 }
 
 /**
@@ -123,7 +122,7 @@ if (import.meta.vitest) {
 		const makeSlice = (overrides: Partial<Slice> = {}): Slice => ({
 			id: '57', title: 'Implement Parser', body: 'b',
 			state: 'open', closedAt: null, readyForAgent: true, needsRevision: false,
-			blockedBy: [], prState: null,
+			blockedBy: [], sliceBranch: `change-42/slice-${overrides.id ?? '57'}-implement-parser`, prState: null,
 			...overrides,
 		})
 

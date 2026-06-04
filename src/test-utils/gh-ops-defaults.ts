@@ -18,6 +18,7 @@ export const DEFAULT_GH_OPS: GhOps = {
 	listIssues: emptyList,
 	closeIssue: noop,
 	reopenIssue: noop,
+	editIssueBody: noop,
 	editIssueLabels: noop,
 	listSubIssues: emptyList,
 	getIssueInternalId: internalId,

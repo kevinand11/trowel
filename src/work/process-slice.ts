@@ -7,7 +7,7 @@ import type { ClassifiedSlice, ClassifySliceConfig, PhaseOutcome, ResumeState, S
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
-type LoopPhaseCtx = { changeId: string; integrationBranch: string; config: ClassifySliceConfig }
+type LoopPhaseCtx = { changeId: string; changeBranch: string; config: ClassifySliceConfig }
 type SliceStepResult = { outcome: ProcessOutcome } | { outcome: 'progress' }
 
 const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'review', 'address'])
@@ -32,7 +32,7 @@ export async function processSlice(changeId: string, initial: ClassifiedSlice, d
 function loopPhaseCtx (changeId: string, deps: LoopDeps): LoopPhaseCtx {
 	return {
 		changeId,
-		integrationBranch: deps.integrationBranch,
+		changeBranch: deps.changeBranch,
 		config: { usePrs: deps.config.usePrs, review: deps.config.review, perSliceBranches: deps.config.perSliceBranches },
 	}
 }

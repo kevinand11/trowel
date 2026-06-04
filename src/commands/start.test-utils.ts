@@ -19,7 +19,7 @@ export type FakeGitState = {
 
 export type MakeFakesOpts = {
 	startOut: string | null
-	createChangeResult?: { id: string; branch: string }
+	createChangeResult?: { id: string; changeBranch: string }
 	createSliceIds?: string[]
 	currentBranch?: string
 	cleanTree?: boolean
@@ -38,6 +38,7 @@ function fakeStartSlice(id: string, spec: SliceSpec): Slice {
 		readyForAgent: false,
 		needsRevision: false,
 		blockedBy: [],
+		sliceBranch: `change-pid/slice-${id}-${spec.title.toLowerCase().replace(/\s+/g, '-')}`,
 		prState: null,
 	}
 }
@@ -56,7 +57,7 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		createChange: async (spec) => {
 			calls.createChange.push(spec)
 			if (opts.createChangeThrows) throw opts.createChangeThrows
-			return opts.createChangeResult ?? { id: 'pid', branch: 'pid-branch' }
+			return opts.createChangeResult ?? { id: 'pid', changeBranch: 'pid-branch' }
 		},
 		createSlice: async (changeId, spec) => {
 			calls.createSlice.push({ changeId, spec })
