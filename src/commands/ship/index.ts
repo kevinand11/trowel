@@ -120,7 +120,7 @@ function abortedChangeError(changeId: string): Error {
 async function shipViaMerge(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await runCloseOut(
 		{ kind: 'change', id: change.id, branch: change.branch, targetBranch, title: change.title },
-		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
+		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, projectRoot: rt.projectRoot, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
 	)
 	return true
 }
@@ -245,11 +245,15 @@ if (import.meta.vitest) {
 			baseBranch: async () => 'main',
 			checkout: async (b) => { gitCalls.push(`checkout(${b})`) },
 			mergeNoFf: async (b) => { gitCalls.push(`mergeNoFf(${b})`) },
+			mergeNoFfIn: async (p, b) => { gitCalls.push(`mergeNoFfIn(${p},${b})`) },
 			mergeAbort: async () => { gitCalls.push('mergeAbort') },
 			push: async (b) => { gitCalls.push(`push(${b})`) },
+			pushHeadTo: async (p, b) => { gitCalls.push(`pushHeadTo(${p},${b})`) },
+			updateLocalBranchRef: async (b, ref) => { gitCalls.push(`updateLocalBranchRef(${b},${ref})`) },
 			pushSetUpstream: async (b) => { gitCalls.push(`pushSetUpstream(${b})`) },
 			fetch: async (b) => { gitCalls.push(`fetch(${b})`) },
 			deleteBranch: async (b) => { gitCalls.push(`deleteBranch(${b})`) },
+			worktreeAdd: async (p, b) => { gitCalls.push(`worktreeAdd(${p},${b})`) },
 			branchExists: async () => true,
 			listLocalBranches: async () => ['change-3-x'],
 			remoteBranchExists: async () => true,
@@ -310,7 +314,8 @@ if (import.meta.vitest) {
 		test('non-PR mode merges ready Changes, closes, and applies local delete policy', async () => {
 			const { rt, gitCalls, closed } = makeRt({ deleteBranchPolicy: 'always' })
 			await runShip('3', rt)
-			expect(gitCalls).toContain('mergeNoFf(change-3-x)')
+			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
+			expect(gitCalls).toContain('pushHeadTo(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,main)')
 			expect(closed).toEqual(['3'])
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
