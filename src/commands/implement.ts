@@ -10,7 +10,7 @@ export async function implement(sliceId: string, opts: { storage?: StorageKind; 
 		storage: opts.storage,
 		harness: opts.harness,
 		role: 'implement',
-		requiredBucket: 'ready',
+		requiredState: 'open',
 		reason: (changeId) => `Run \`trowel work ${changeId}\` to drive it through the loop, or address it manually.`,
 	})
 }
@@ -24,12 +24,12 @@ if (import.meta.vitest) {
 			runSlicePhaseCommand({
 				sliceId,
 				runtime,
-				requiredBucket: 'ready',
+				requiredState: 'open',
 				reason: (changeId) => `Run \`trowel work ${changeId}\` to drive it through the loop, or address it manually.`,
 			})
 
 		test('on a ready slice: calls runOnePhase exactly once with that slice', async () => {
-			const slice = fakeClassifiedSlice({ id: 's1', bucket: 'ready' })
+			const slice = fakeClassifiedSlice({ id: 's1', state: 'open' })
 			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
 			const calls: Array<{ changeId: string; slice: Slice }> = []
@@ -58,11 +58,11 @@ if (import.meta.vitest) {
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-implement-a', isDraft: true }],
 			})
-			await expect(runImplement('s1', { storage, gh, usePrs: true, runOnePhase: async () => {} })).rejects.toThrow(/bucket 'in-flight'/)
+			await expect(runImplement('s1', { storage, gh, usePrs: true, runOnePhase: async () => {} })).rejects.toThrow(/state 'in-flight'/)
 		})
 
-		test('refuses when slice bucket is not "ready", naming the actual bucket', async () => {
-			const slice = fakeClassifiedSlice({ id: 's1', bucket: 'draft', readyForAgent: false })
+		test('refuses when slice state is not "open", naming the actual state', async () => {
+			const slice = fakeClassifiedSlice({ id: 's1', state: 'draft', readyForAgent: false })
 			const storage = fakeSliceStorage([slice])
 			let phaseCalled = false
 			const { gh } = recordingGhOps()
@@ -75,7 +75,7 @@ if (import.meta.vitest) {
 						phaseCalled = true
 					},
 				}),
-			).rejects.toThrow(/bucket 'draft'/)
+			).rejects.toThrow(/state 'draft'/)
 			expect(phaseCalled).toBe(false)
 		})
 	})

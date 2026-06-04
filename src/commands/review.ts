@@ -9,7 +9,7 @@ export async function review(sliceId: string, opts: { storage?: StorageKind; har
 		storage: opts.storage,
 		harness: opts.harness,
 		role: 'review',
-		requiredBucket: 'in-flight',
+		requiredState: 'in-flight',
 		reason: () => 'Reviewer only runs against slices with an open draft PR.',
 	})
 }
@@ -23,20 +23,20 @@ if (import.meta.vitest) {
 			runSlicePhaseCommand({
 				sliceId,
 				runtime,
-				requiredBucket: 'in-flight',
+				requiredState: 'in-flight',
 				reason: () => 'Reviewer only runs against slices with an open draft PR.',
 			})
 
 		test('on an in-flight slice (issue storage): calls runOnePhase exactly once', async () => {
-			const calls = await collectRunOnePhaseSlices(runReview, fakeClassifiedSlice({ id: 's1', bucket: 'in-flight', prState: 'draft' }))
+			const calls = await collectRunOnePhaseSlices(runReview, fakeClassifiedSlice({ id: 's1', state: 'in-flight', prState: 'draft' }))
 			expect(calls).toHaveLength(1)
 		})
 
-		test('refuses when slice bucket is not "in-flight"', async () => {
+		test('refuses when slice state is not "in-flight"', async () => {
 			const slice = fakeClassifiedSlice({ id: 's1', prState: null })
 			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
-			await expect(runReview('s1', { storage, gh, usePrs: false, runOnePhase: async () => {} })).rejects.toThrow(/bucket 'ready'/)
+			await expect(runReview('s1', { storage, gh, usePrs: false, runOnePhase: async () => {} })).rejects.toThrow(/state 'open'/)
 		})
 	})
 }

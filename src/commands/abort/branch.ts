@@ -12,13 +12,13 @@ export type CloseBranchRuntime = {
 }
 
 export async function deleteBranchIfPresent(branch: string, targetBranch: string, rt: CloseBranchRuntime): Promise<void> {
-	if (await rt.git.branchExists(branch)) await maybeDeleteBranch(branch, targetBranch, rt)
+	if ((await rt.git.listLocalBranches()).includes(branch)) await maybeDeleteBranch(branch, targetBranch, rt)
 }
 
 export async function restoreStartingBranch(back: string, fallbackBranch: string, rt: CloseBranchRuntime): Promise<void> {
 	const current = await rt.git.currentBranch()
 	if (current === back) return
-	if (await rt.git.branchExists(back)) {
+	if ((await rt.git.listLocalBranches()).includes(back)) {
 		await rt.git.checkout(back)
 	} else {
 		rt.stdout(`Switched to '${fallbackBranch}' (was on deleted branch '${back}')\n`)
@@ -36,7 +36,7 @@ async function maybeDeleteBranch(branch: string, baseBranch: string, rt: CloseBr
 async function confirmBranchDeletePolicy(branch: string, rt: CloseBranchRuntime): Promise<boolean> {
 	if (rt.deleteBranchPolicy === 'never') return false
 	if (rt.deleteBranchPolicy === 'always') return true
-	return rt.confirm(`Delete integration branch '${branch}' (local + origin)? [y/N]`)
+	return rt.confirm(`Delete local branch '${branch}'? [y/N]`)
 }
 
 async function confirmNoBlockingOpenPrs(branch: string, rt: CloseBranchRuntime): Promise<boolean> {

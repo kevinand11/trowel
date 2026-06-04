@@ -14,7 +14,7 @@ import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
 import { spawnTurn } from '../work/turn.ts'
 import type { TurnIn, TurnOut } from '../work/verdict.ts'
-import { ensureTrowelDir, sweepOrphanWorktrees, type TurnWorktree } from '../work/worktrees.ts'
+import { ensureTrowelDir, type TurnWorktree } from '../work/worktrees.ts'
 
 type LoopWiring = {
 	config: Config
@@ -92,16 +92,6 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 	}
 
 	const runEntityLoopFor = async (entity: LoopEntity): Promise<void> => {
-		await sweepOrphanWorktrees({
-			projectRoot,
-			git,
-			cleanupAge: config.work.worktreeCleanupAge,
-			orphanCheck: async (sweptChangeId, sweptBranch) => {
-				if (sweptChangeId !== entity.id) return false
-				return !(await git.branchExists(sweptBranch))
-			},
-		}).catch((e: Error) => log(`sweepOrphanWorktrees failed: ${e.message}`))
-
 		await runEntityLoop(entity, {
 			storage,
 			git,

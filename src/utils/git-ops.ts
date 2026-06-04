@@ -27,6 +27,7 @@ export type GitOps = {
 	branchExists(branch: string): Promise<boolean>
 	isMerged(branch: string, baseBranch: string): Promise<boolean>
 	commitsAhead(branch: string, baseBranch: string): Promise<number>
+	listLocalBranches(): Promise<string[]>
 	deleteBranch(branch: string): Promise<void>
 	// worktree primitives (consumed by src/work/worktrees.ts for per-Turn worktrees)
 	worktreeAdd(worktreePath: string, branch: string): Promise<void>
@@ -115,6 +116,11 @@ export function createRepoGit(projectRoot: string): GitOps {
 			if (!r.ok) return 0
 			const n = parseInt(r.stdout.trim(), 10)
 			return Number.isFinite(n) ? n : 0
+		},
+		listLocalBranches: async () => {
+			const r = await tryExec('git', ['-C', projectRoot, 'branch', '--format=%(refname:short)'])
+			if (!r.ok) return []
+			return r.stdout.split('\n').map((line) => line.trim()).filter(Boolean)
 		},
 		deleteBranch: async (b) => {
 			await tryExec('git', ['-C', projectRoot, 'branch', '-q', '-D', b])

@@ -5,10 +5,10 @@ export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): C
 		id: 's1',
 		title: 'Implement A',
 		body: 'spec',
-		state: 'OPEN',
+		state: 'open',
+		closedAt: null,
 		readyForAgent: true,
 		needsRevision: false,
-		bucket: 'ready',
 		blockedBy: [],
 		prState: null,
 		...overrides,
@@ -35,7 +35,7 @@ export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1'
 }
 
 async function defaultFindChange(id: string): Promise<ChangeRecord> {
-	return { id, branch: 'b', title: 't', state: 'OPEN' }
+	return { id, branch: 'b', title: 't', state: 'OPEN', closedAt: null }
 }
 
 async function unusedCreateSlice(): Promise<Slice> {

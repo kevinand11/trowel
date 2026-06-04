@@ -1,9 +1,9 @@
 import { createEffectiveSliceReader } from './effective-slices.ts'
 import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
-import { reconcileEntity, type LoopEntityRef } from './reconcile.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
+import type { ChangeRecord, ChangeState, ClassifiedSlice, Slice, Storage } from '../storages/types.ts'
+import { classifyChange } from '../utils/change-state.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
@@ -23,28 +23,56 @@ export type EntityLoopDeps = {
 }
 
 /**
- * Top-level dispatch entry for `trowel change work`. Runs Reconciliation, then per-entity processing.
- * Work never runs Close-out; when every Slice is done it points the user to `trowel change ship`.
+ * Top-level dispatch entry for `trowel change work`. Work never runs Reconciliation,
+ * Close-out, or Cleanup; it only runs open Change Slice work/finalization and reports
+ * the next explicit Change-level action for non-open computed states.
  */
 export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): Promise<void> {
-	const ref: LoopEntityRef = { kind: 'change', id: entity.id, branch: entity.integrationBranch }
-	await reconcileEntity(ref, { storage: deps.storage, gh: deps.gh, log: deps.log })
 	await runChangeEntity(entity, deps)
 }
 
 async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
-	const change = await openChangeOrStop(entity, deps)
-	if (!change) return
+	const initial = await readChangeWorkState(entity, deps)
+	if (reportIfNotOpen(initial, deps)) return
 	await runLoop(entity.id, loopDepsForChange(entity, deps))
-	await printShipGuidanceIfReady(entity, deps)
+	const after = await readChangeWorkState(entity, deps)
+	if (reportIfNotOpen(after, deps)) return
+	if (after.slices.length === 0) deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
 }
 
-async function openChangeOrStop(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeRecord | null> {
+type ChangeWorkState = { change: ChangeRecord; slices: ClassifiedSlice[]; state: ChangeState }
+
+async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeWorkState> {
 	const change = await deps.storage.findChange(entity.id)
 	if (!change) throw new Error(`Change '${entity.id}' not found`)
-	if (change.state !== 'CLOSED') return change
-	deps.log(`[work change-${entity.id}] already CLOSED; nothing to do`)
-	return null
+	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs })
+	const slices = await reader.findSlices(entity.id)
+	const state = await classifyChange(change, slices, { gh: deps.gh, git: deps.git })
+	return { change, slices, state }
+}
+
+function reportIfNotOpen(workState: ChangeWorkState, deps: EntityLoopDeps): boolean {
+	if (workState.state === 'open') return false
+	deps.log(nonOpenChangeMessage(workState.change.id, workState.state))
+	return true
+}
+
+function nonOpenChangeMessage(changeId: string, state: ChangeState): string {
+	const ship = `trowel change ship ${changeId}`
+	switch (state) {
+		case 'ready':
+			return `[work change-${changeId}] state=ready; all Slices are done; run: ${ship}`
+		case 'in-flight':
+			return `[work change-${changeId}] state=in-flight; awaiting shipping PR merge; after it merges, run: ${ship}`
+		case 'landed':
+			return `[work change-${changeId}] non-work state=landed; merged to Target branch but not finalized; run: ${ship}`
+		case 'done':
+			return `[work change-${changeId}] non-work state=done; shipped and finalized; no Slice work to run`
+		case 'aborted':
+			return `[work change-${changeId}] non-work state=aborted; Change is aborted; no Slice work to run`
+		case 'open':
+			return `[work change-${changeId}] state=open; work remains`
+	}
 }
 
 function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): LoopDeps {
@@ -60,16 +88,6 @@ function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps
 	}
 }
 
-async function printShipGuidanceIfReady(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
-	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs })
-	const slices = await reader.findSlices(entity.id)
-	if (slices.length === 0) {
-		deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
-		return
-	}
-	if (slices.every((s) => s.state === 'CLOSED')) deps.log(`[work change-${entity.id}] all slices done; run: trowel change ship ${entity.id}`)
-}
-
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
@@ -80,56 +98,114 @@ if (import.meta.vitest) {
 		return fakeSliceStorage([], null, { findChange: async () => null, ...overrides })
 	}
 
-	function noopGit(): GitOps {
-		return noopGitOps({ currentBranch: async () => 'main', baseBranch: async () => 'main' })
+	function unmergedGit(overrides: Partial<GitOps> = {}): GitOps {
+		return noopGitOps({ currentBranch: async () => 'main', baseBranch: async () => 'main', remoteBranchExists: async () => false, branchExists: async () => false, ...overrides })
 	}
 
 	const baseConfig: LoopConfig = {
 		usePrs: false, review: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
 	}
 
-	async function loopLogsForSlices(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<{ changeClosed: boolean; logs: string[] }> {
+	const doneSlice: ClassifiedSlice = {
+		id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null,
+	}
+
+	type LoopFixtureOpts = {
+		change?: ChangeRecord
+		slices?: Slice[]
+		config?: LoopConfig
+		git?: GitOps
+		gh?: GhOps
+		spawnTurn?: EntityLoopDeps['spawnTurn']
+		updateSlice?: Storage['updateSlice']
+	}
+
+	async function runLoopFixture(opts: LoopFixtureOpts = {}): Promise<{ changeClosed: boolean; logs: string[]; spawned: number }> {
 		let changeClosed = false
+		let spawned = 0
 		const logs: string[] = []
+		const change = opts.change ?? { id: '3', branch: '3-feat', title: 'Feat', state: 'OPEN' as const, closedAt: null }
+		const slices = opts.slices ?? []
 		const storage = makeStorage({
-			findChange: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
+			findChange: async (id) => (id === change.id ? change : null),
 			findSlices: async () => slices,
+			updateSlice: opts.updateSlice ?? (async () => {}),
 			closeChange: async () => { changeClosed = true },
 		})
-		const { gh } = recordingGhOps()
+		const { gh: defaultGh } = recordingGhOps()
 		await runEntityLoop(
-			{ kind: 'change', id: '3', integrationBranch: '3-feat', title: 'Feat' },
-			{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: (msg) => logs.push(msg), config },
+			{ kind: 'change', id: change.id, integrationBranch: change.branch, targetBranch: change.targetBranch, title: change.title },
+			{
+				storage,
+				git: opts.git ?? unmergedGit(),
+				gh: opts.gh ?? defaultGh,
+				spawnTurn: async (args) => {
+					spawned++
+					return opts.spawnTurn ? opts.spawnTurn(args) : { verdict: 'partial', commits: 0 }
+				},
+				log: (msg) => logs.push(msg),
+				config: opts.config ?? baseConfig,
+			},
 		)
-		return { changeClosed, logs }
+		return { changeClosed, logs, spawned }
 	}
 
 	describe('runEntityLoop: change', () => {
-		test('all slices already CLOSED → does not Close-out and prints ship guidance', async () => {
-			const result = await loopLogsForSlices([
-				{ id: 's1', title: 'a', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
-			], { ...baseConfig, usePrs: false })
+		test('ready Change → reports ship guidance and runs no Slice work', async () => {
+			const result = await runLoopFixture({ slices: [doneSlice] })
 			expect(result.changeClosed).toBe(false)
+			expect(result.spawned).toBe(0)
+			expect(result.logs.join('\n')).toContain('state=ready')
 			expect(result.logs.join('\n')).toContain('trowel change ship 3')
 		})
 
-		test('empty slices → no ship guidance', async () => {
-			const result = await loopLogsForSlices([], baseConfig)
-			expect(result.changeClosed).toBe(false)
-			expect(result.logs.join('\n')).toContain('no slices; nothing to ship')
+		test('in-flight Change → reports awaiting shipping PR merge and runs no Slice work', async () => {
+			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'OPEN' } : null })
+			const result = await runLoopFixture({ slices: [doneSlice], gh, config: { ...baseConfig, usePrs: true } })
+			expect(result.spawned).toBe(0)
+			expect(result.logs.join('\n')).toContain('state=in-flight')
+			expect(result.logs.join('\n')).toContain('awaiting shipping PR merge')
 		})
 
-		test('Change already CLOSED → no loop, no Close-out', async () => {
-			let spawned = 0
-			const storage = makeStorage({
-				findChange: async (id) => ({ id, branch: 'b', title: 'F', state: 'CLOSED' }),
+		test('landed Change → reports non-work state and does not finalize the Change', async () => {
+			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'MERGED' } : null })
+			const result = await runLoopFixture({ slices: [doneSlice], gh })
+			expect(result.changeClosed).toBe(false)
+			expect(result.spawned).toBe(0)
+			expect(result.logs.join('\n')).toContain('non-work state=landed')
+			expect(result.logs.join('\n')).toContain('trowel change ship 3')
+		})
+
+		test('done and aborted Changes → report non-work states and run no Slice work', async () => {
+			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'MERGED' } : null })
+			const done = await runLoopFixture({ change: { id: '3', branch: '3-feat', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice], gh })
+			const aborted = await runLoopFixture({ change: { id: '3', branch: '3-feat', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice] })
+			expect(done.spawned).toBe(0)
+			expect(done.logs.join('\n')).toContain('non-work state=done')
+			expect(aborted.spawned).toBe(0)
+			expect(aborted.logs.join('\n')).toContain('non-work state=aborted')
+		})
+
+		test('landed Slice finalization still runs and can report the parent Change ready afterward', async () => {
+			const landed: Slice = { ...doneSlice, state: 'landed', closedAt: null, prState: 'merged' }
+			const result = await runLoopFixture({
+				slices: [landed],
+				updateSlice: async (_changeId, sliceId, patch) => {
+					if (sliceId === landed.id && patch.closedAt !== undefined) {
+						landed.closedAt = patch.closedAt
+						landed.state = patch.closedAt === null ? 'landed' : 'done'
+					}
+				},
 			})
-			const { gh } = recordingGhOps()
-			await runEntityLoop(
-				{ kind: 'change', id: '3', integrationBranch: '3-feat', title: 'Feat' },
-				{ storage, git: noopGit(), gh, spawnTurn: async () => { spawned++; return { verdict: 'ready', commits: 1 } }, log: () => {}, config: baseConfig },
-			)
-			expect(spawned).toBe(0)
+			expect(result.spawned).toBe(0)
+			expect(result.logs.join('\n')).toContain('finalized landed slice')
+			expect(result.logs.join('\n')).toContain('state=ready')
+		})
+
+		test('empty slices → no ship guidance', async () => {
+			const result = await runLoopFixture()
+			expect(result.changeClosed).toBe(false)
+			expect(result.logs.join('\n')).toContain('no slices; nothing to ship')
 		})
 	})
 }

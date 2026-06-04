@@ -3,7 +3,7 @@ import { runSlicePhaseCommand } from './slice-phase-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 import type { Role } from '../prompts/load.ts'
 import type { StorageKind } from '../storages/registry.ts'
-import type { Bucket } from '../utils/bucket.ts'
+import type { SliceState } from '../storages/types.ts'
 
 export async function runManualSliceCommand(opts: {
 	commandName: string
@@ -11,7 +11,7 @@ export async function runManualSliceCommand(opts: {
 	storage?: StorageKind
 	harness?: HarnessKind
 	role: Role
-	requiredBucket: Bucket
+	requiredState: SliceState
 	reason: (changeId: string) => string
 }): Promise<void> {
 	try {
@@ -24,7 +24,7 @@ export async function runManualSliceCommand(opts: {
 				usePrs: wiring.config.work.usePrs,
 				runOnePhase: (changeId, slice) => wiring.runOnePhase(changeId, slice, opts.role),
 			},
-			requiredBucket: opts.requiredBucket,
+			requiredState: opts.requiredState,
 			reason: opts.reason,
 		})
 	} catch (e) {
