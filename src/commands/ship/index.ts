@@ -3,13 +3,15 @@ import type { ClassifiedSlice, DeleteBranchPolicy, ShipMergeMethod, Storage } fr
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
+import { cleanupChange } from '../../work/cleanup.ts'
 import { runCloseOut } from '../../work/close-out.ts'
 import { reconcileEntity } from '../../work/reconcile.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
-import { deleteBranchIfPresent, restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
+import { restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
 type ShipRuntime = {
+	projectRoot: string
 	storage: Storage
 	git: GitOps
 	gh: GhOps
@@ -26,12 +28,17 @@ type ShipRuntime = {
 async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 	await requireCleanTree(rt)
 	const backTo = await rt.git.currentBranch()
-	const change = await reconciledOpenChange(changeId, rt)
-	if (!change) return
+	const change = await reconciledChange(changeId, rt)
 	const targetBranch = change.targetBranch ?? await rt.git.baseBranch()
-	await requireShippableSlices(changeId, rt)
 	try {
-		await shipOpenChange(change, targetBranch, rt)
+		if (change.state === 'CLOSED') {
+			rt.stdout(`Change ${changeId} is already CLOSED; running cleanup.\n`)
+			await cleanupAfterShip(change, targetBranch, rt, true)
+			return
+		}
+		await requireShippableSlices(changeId, rt)
+		const branchCleanupAllowed = await shipOpenChange(change, targetBranch, rt)
+		await cleanupAfterShip(change, targetBranch, rt, branchCleanupAllowed)
 	} finally {
 		await restoreStartingBranch(backTo, targetBranch, rt)
 	}
@@ -42,7 +49,7 @@ async function requireShippableSlices(changeId: string, rt: ShipRuntime): Promis
 	if (blockers.length > 0) throw notReadyError(changeId, blockers)
 }
 
-async function shipOpenChange(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<void> {
+async function shipOpenChange(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	return rt.usePrs ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
@@ -50,16 +57,12 @@ async function requireCleanTree(rt: ShipRuntime): Promise<void> {
 	if (!(await rt.git.isWorkingTreeClean())) throw new Error('working tree is dirty; commit or stash before shipping')
 }
 
-async function reconciledOpenChange(changeId: string, rt: ShipRuntime): Promise<Awaited<ReturnType<Storage['findChange']>>> {
+async function reconciledChange(changeId: string, rt: ShipRuntime): Promise<NonNullable<Awaited<ReturnType<Storage['findChange']>>>> {
 	const initial = await rt.storage.findChange(changeId)
 	if (!initial) throw new Error(`Change '${changeId}' not found`)
 	await reconcileEntity({ kind: 'change', id: changeId, branch: initial.branch }, { storage: rt.storage, gh: rt.gh, log: rt.stdout })
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`Change '${changeId}' not found`)
-	if (change.state === 'CLOSED') {
-		rt.stdout(`Change ${changeId} is already CLOSED; nothing to ship.\n`)
-		return null
-	}
 	return change
 }
 
@@ -67,25 +70,42 @@ function notReadyError(changeId: string, blockers: ClassifiedSlice[]): Error {
 	return new Error(`Change ${changeId} is not ready to ship.\n\nNon-terminal slices:\n${blockers.map((s) => `  ${s.id}  ${s.state}  ${s.title}`).join('\n')}\n\nRun: trowel change work ${changeId}`)
 }
 
-async function shipViaMerge(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<void> {
+async function shipViaMerge(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await runCloseOut(
 		{ kind: 'change', id: change.id, branch: change.branch, targetBranch, title: change.title },
 		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
 	)
-	await deleteBranchIfPresent(change.branch, targetBranch, rt)
+	return true
 }
 
-async function shipViaPr(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<void> {
+async function shipViaPr(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await ensureRemoteIntegrationBranch(change.branch, rt)
 	await runCloseOut(
 		{ kind: 'change', id: change.id, branch: change.branch, targetBranch, title: change.title },
 		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, config: { usePrs: true, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
 	)
 	const prNumber = await rt.gh.findPrNumberByHead(change.branch)
-	if (!(await optionalConfirm(rt, `Merge Close-out PR #${prNumber} now? [y/N]`))) return
+	if (!(await optionalConfirm(rt, `Merge Close-out PR #${prNumber} now? [y/N]`))) return false
 	await rt.gh.mergePr(prNumber, rt.mergeMethod)
 	await reconcileEntity({ kind: 'change', id: change.id, branch: change.branch }, { storage: rt.storage, gh: rt.gh, log: rt.stdout })
-	await deleteBranchIfPresent(change.branch, targetBranch, rt)
+	return true
+}
+
+async function cleanupAfterShip(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime, branchCleanupAllowed: boolean): Promise<void> {
+	const slices = await rt.storage.findSlices(change.id)
+	await cleanupChange({
+		change,
+		slices,
+		targetBranch,
+		rt: {
+			projectRoot: rt.projectRoot,
+			git: rt.git,
+			deleteBranchPolicy: branchCleanupAllowed ? rt.deleteBranchPolicy : 'never',
+			interactive: rt.interactive,
+			confirm: rt.confirm,
+			stdout: rt.stdout,
+		},
+	})
 }
 
 async function ensureRemoteIntegrationBranch(branch: string, rt: ShipRuntime): Promise<void> {
@@ -122,6 +142,7 @@ async function buildShipRuntime(opts: { storage?: StorageKind }): Promise<{ base
 	return {
 		base,
 		rt: {
+			projectRoot: base.projectRoot,
 			storage,
 			git: base.git,
 			gh: base.gh,
@@ -171,12 +192,14 @@ if (import.meta.vitest) {
 			fetch: async (b) => { gitCalls.push(`fetch(${b})`) },
 			deleteBranch: async (b) => { gitCalls.push(`deleteBranch(${b})`) },
 			branchExists: async () => true,
+			listLocalBranches: async () => ['change-3-x'],
 			remoteBranchExists: async () => true,
 			commitsAhead: async () => 0,
 		})
 		const { gh, calls } = recordingGhOps({ findPrNumberByHead: async () => 9, findAnyPrByHead: async () => null })
 		return {
 			rt: {
+				projectRoot: '/tmp/trowel-ship-test-project',
 				storage,
 				git,
 				gh,

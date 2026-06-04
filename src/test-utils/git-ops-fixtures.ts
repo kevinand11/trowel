@@ -7,6 +7,7 @@ const trueAsync = async (): Promise<boolean> => true
 const falseAsync = async (): Promise<boolean> => false
 const zeroAsync = async (): Promise<number> => 0
 const emptyWorktreeList = async (): Promise<Awaited<ReturnType<GitOps['worktreeList']>>> => []
+const emptyBranchList = async (): Promise<string[]> => []
 const installedGit = async (): Promise<Awaited<ReturnType<GitOps['detectVersion']>>> => ({ installed: true, version: '0.0.0' })
 const emptyStatus = async (): Promise<string> => ''
 
@@ -18,6 +19,7 @@ export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 		isMerged: falseAsync,
 		checkout: noop,
 		deleteBranch: noop,
+		listLocalBranches: emptyBranchList,
 		fetch: noop,
 		push: noop,
 		mergeNoFf: noop,
