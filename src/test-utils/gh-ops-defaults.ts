@@ -30,6 +30,7 @@ export const DEFAULT_GH_OPS: GhOps = {
 	findPrNumberByHead: zero,
 	listOpenPrs: emptyList,
 	findAnyPrByHead: nullValue,
+	closePr: noop,
 	mergePr: noop,
 	fetchPrLineComments: emptyList,
 	fetchPrReviews: emptyList,

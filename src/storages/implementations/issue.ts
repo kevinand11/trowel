@@ -230,7 +230,12 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function applyIssueClosedAtPatch(sliceId: string, closedAt: SlicePatch['closedAt']): Promise<void> {
 		if (closedAt === undefined) return
 		if (closedAt === null) await deps.gh.reopenIssue(sliceId)
-		else await deps.gh.closeIssue(sliceId)
+		else await closeSliceIssueForAbort(sliceId)
+	}
+
+	async function closeSliceIssueForAbort(sliceId: string): Promise<void> {
+		if (deps.abortOptions.comment === null) await deps.gh.closeIssue(sliceId)
+		else await deps.gh.closeIssue(sliceId, { comment: deps.abortOptions.comment })
 	}
 }
 
@@ -755,6 +760,14 @@ if (import.meta.vitest) {
 				['closeIssue', '57'],
 				['reopenIssue', '57'],
 			])
+		})
+
+		test('state CLOSED passes the configured abort comment when present', async () => {
+			const { deps, calls } = makeDeps()
+			deps.abortOptions.comment = 'Closed via trowel'
+			const storage = createIssueStorage(deps)
+			await storage.updateSlice('42', '57', { closedAt: '2026-06-04T00:00:00Z' })
+			expect(calls).toEqual([['closeIssue', '57', { comment: 'Closed via trowel' }]])
 		})
 
 		test('combined patch fires multiple gh calls in expected order', async () => {

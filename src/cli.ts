@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 
-import { abortChange, abortSlice } from './commands/abort/index.ts'
+import { abortChange } from './commands/abort/index.ts'
 import { address } from './commands/address.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
@@ -104,15 +104,6 @@ export function run(): void {
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (sliceId: string, opts) => {
 			await statusSlice(sliceId, opts)
-		})
-
-	sliceCmd
-		.command('abort')
-		.description('Abort a single Slice; tidy its branch under the project policy')
-		.argument('<slice-id>')
-		.option('--storage <kind>', 'Override project storage')
-		.action(async (sliceId: string, opts) => {
-			await abortSlice(sliceId, opts)
 		})
 
 	sliceCmd

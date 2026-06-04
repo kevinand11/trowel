@@ -103,6 +103,7 @@ export type GhOps = {
 	 * Used by **Reconciliation** to detect that a Close-out PR has been merged on GitHub.
 	 */
 	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>
+	closePr(prNumber: number, opts?: { comment?: string }): Promise<void>
 	mergePr(prNumber: number, method: ShipMergeMethod): Promise<void>
 
 	// PR feedback
@@ -214,6 +215,11 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		async findAnyPrByHead(head) {
 			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state', '--jq', '.[0]'])
 			return r.ok ? parseAnyPrByHead(r.stdout) : null
+		},
+		async closePr(prNumber, opts) {
+			const args = ['pr', 'close', String(prNumber)]
+			if (opts?.comment !== undefined) args.push('--comment', opts.comment)
+			await ghOrThrow(args)
 		},
 		async mergePr(prNumber, method) {
 			await ghOrThrow(['pr', 'merge', String(prNumber), `--${method}`])
@@ -382,6 +388,18 @@ if (import.meta.vitest) {
 			const out = await createGh(runner).listIssues({ label: 'change', state: 'open' })
 			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z' }])
 			expect(calls[0]).toEqual(['issue', 'list', '--label', 'change', '--state', 'open', '--json', 'number,title,createdAt'])
+		})
+
+		test('closePr passes --comment when provided and never merges', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
+			await createGh(runner).closePr(12, { comment: 'aborting' })
+			expect(calls[0]).toEqual(['pr', 'close', '12', '--comment', 'aborting'])
+		})
+
+		test('closePr without comment emits no --comment flag', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
+			await createGh(runner).closePr(12)
+			expect(calls[0]).toEqual(['pr', 'close', '12'])
 		})
 	})
 
