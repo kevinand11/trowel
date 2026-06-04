@@ -4,7 +4,7 @@ import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
-import { cleanupChange } from '../../work/cleanup.ts'
+import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { runCloseOut } from '../../work/close-out.ts'
 import { reconcileEntity } from '../../work/reconcile.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
@@ -37,11 +37,16 @@ async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 	await requireCleanTree(rt)
 	const backTo = await rt.git.currentBranch()
 	const context = await loadShipContext(changeId, rt)
+	if (shipMayRunCleanup(context.state)) await refuseCurrentCleanupBranch({ change: context.change, slices: context.slices, rt })
 	try {
 		await shipByState(context, rt)
 	} finally {
 		await restoreStartingBranch(backTo, context.targetBranch, rt)
 	}
+}
+
+function shipMayRunCleanup(state: ChangeState): boolean {
+	return state === 'ready' || state === 'in-flight' || state === 'landed' || state === 'done'
 }
 
 async function shipByState(context: ShipContext, rt: ShipRuntime): Promise<void> {
@@ -305,6 +310,63 @@ if (import.meta.vitest) {
 			const { rt, gitCalls } = makeRt({ storage, deleteBranchPolicy: 'always' })
 			await expect(runShip('3', rt)).rejects.toThrow(/trowel change abort 3/)
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
+		})
+
+		test('refuses before prompting when the current branch is a Cleanup candidate under ship policy', async () => {
+			let current = 'change-3-x'
+			let confirmCalls = 0
+			const { rt, ghCalls } = makeRt({
+				usePrs: true,
+				deleteBranchPolicy: 'prompt',
+				confirm: async () => {
+					confirmCalls += 1
+					throw new Error('should not prompt')
+				},
+				git: noopGitOps({
+					currentBranch: async () => current,
+					isWorkingTreeClean: async () => true,
+					baseBranch: async () => 'main',
+					listLocalBranches: async () => ['main', 'change-3-x'],
+					remoteBranchExists: async () => true,
+					commitsAhead: async (branch) => branch.startsWith('origin/') ? 1 : 0,
+					checkout: async (branch) => { current = branch },
+				}),
+			})
+
+			await expect(runShip('3', rt)).rejects.toThrow(/Switch branches first/)
+			expect(confirmCalls).toBe(0)
+			expect(ghCalls.map((call) => call[0])).not.toContain('createDraftPr')
+			expect(current).toBe('change-3-x')
+		})
+
+		test('does not refuse the current Cleanup candidate when ship deletion policy is never', async () => {
+			let current = 'change-3-x'
+			let confirmCalls = 0
+			const { rt, ghCalls } = makeRt({
+				usePrs: true,
+				deleteBranchPolicy: 'never',
+				confirm: async () => {
+					confirmCalls += 1
+					return false
+				},
+				git: noopGitOps({
+					currentBranch: async () => current,
+					isWorkingTreeClean: async () => true,
+					baseBranch: async () => 'main',
+					listLocalBranches: async () => ['main', 'change-3-x'],
+					remoteBranchExists: async () => true,
+					fetch: async () => {},
+					commitsAhead: async (branch) => branch.startsWith('origin/') ? 1 : 0,
+					checkout: async (branch) => { current = branch },
+					worktreeList: async () => [],
+				}),
+			})
+
+			await runShip('3', rt)
+
+			expect(confirmCalls).toBe(1)
+			expect(ghCalls.map((call) => call[0])).toContain('createDraftPr')
+			expect(current).toBe('change-3-x')
 		})
 
 		test('non-PR mode merges ready Changes, closes, and applies local delete policy', async () => {
