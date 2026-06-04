@@ -7,12 +7,16 @@ Trowel is a personal CLI that orchestrates Change-driven repository work — sta
 ### Change lifecycle
 
 **Change**:
-A user-visible unit of intended repository work, identified by a unique **Change id**. A Change contains one or more **Slices**, records a **Target branch**, and has an **Integration branch** where Slice work accumulates before Close-out. The artifact type — directory of markdown/JSON files (`file` storage) or GitHub issue (`issue` storage) — is chosen per project via **Storage**. The Change's state is `OPEN | CLOSED`. On file storage, trowel writes Change/Slice files but does not auto-commit them.
+A user-visible unit of intended repository work, identified by a unique **Change id**. A Change contains one or more **Slices**, records a **Target branch**, and has an **Integration branch** where Slice work accumulates before Close-out. The artifact type — directory of markdown/JSON files (`file` storage) or GitHub issue (`issue` storage) — is chosen per project via **Storage**. The Change lifecycle state is computed from raw `closedAt`, Slice states, branch merge status, and Close-out PR state.
 _Avoid_: PRD, Fix, ticket, story.
 
 **Change id**:
 The canonical unique identifier for a **Change**. Form depends on **Storage**: GitHub issue number (`issue`) or a positive integer drawn from a project-wide pool shared with **Slice** ids (`file`). It is used by commands such as `trowel change status <id>` and `trowel change work <id>`.
 _Avoid_: PRD id, slug, name.
+
+**Change state**:
+A lowercase computed Change lifecycle classification with values `open`, `ready`, `in-flight`, `landed`, `done`, and `aborted`. `landed` means the Change has merged to the Target branch but has not been finalized; `done` means Finalization has set `closedAt` after merge; `aborted` means `closedAt` is set without merge.
+_Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums.
 
 **Grill**:
 The interactive questioning process used by `trowel start` to understand a user request and shape repository work before creating a **Change**. A Grill may inspect the codebase when needed, may conclude that an existing **Change** already covers the request, or may conclude that no repository work is needed. Existing-Change and No-Change are successful outcomes and exit 0.
@@ -30,15 +34,15 @@ A user-configurable behavior toggle in `config.work.*`. Current flags:
 _Avoid_: Option, setting.
 
 **Slice**:
-One vertical cut of a **Change** — a discrete piece of work that can be implemented and reviewed independently. Slice ids are globally unique within a project: file storage draws them from the same integer pool as **Change ids**, and issue storage uses GitHub issue numbers. Each Slice has storage fields `{ id, title, body, state: 'OPEN' | 'CLOSED', readyForAgent, needsRevision, blockedBy, prState }`.
+One vertical cut of a **Change** — a discrete piece of work that can be implemented and reviewed independently. Slice ids are globally unique within a project: file storage draws them from the same integer pool as **Change ids**, and issue storage uses GitHub issue numbers. A Slice lifecycle state is computed from raw `closedAt`, readiness, revision, blocker, and PR signals.
 _Avoid_: Sub-issue, task, ticket.
 
-**Bucket**:
-The canonical lifecycle classification of a **Slice**, computed from storage fields plus PR-state queries when `usePrs: true`. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Commands that display or gate behavior on buckets use the same PR-enriched effective slice state as the AFK loop. With `usePrs: true`, enrichment failures surface instead of falling back to raw storage state.
-_Avoid_: Status, phase, stage.
+**Slice state**:
+The canonical lifecycle classification of a **Slice**, computed from storage fields plus PR-state queries when `usePrs: true`. One of `done`, `landed`, `needs-revision`, `in-flight`, `blocked`, `open`, `draft`. Commands that display or gate behavior on Slice state use the same PR-enriched effective Slice state as the AFK loop. With `usePrs: true`, enrichment failures surface instead of falling back to raw storage state. `landed` means merged into the Integration branch but not finalized; `done` means Finalization has set `closedAt`.
+_Avoid_: Bucket, status, phase, stage.
 
 **Blocker**:
-A **Slice** referenced in another **Slice**'s `blockedBy` field. Slice X is blocked by Slice Y means Y must reach the `done` **Bucket** before X is unblocked.
+A **Slice** referenced in another **Slice**'s `blockedBy` field. Slice X is blocked by Slice Y means Y must reach the `done` **Slice state** before X is unblocked.
 _Avoid_: Dependency, parent.
 
 **Target branch**:
@@ -50,20 +54,24 @@ The branch that holds in-flight Change work. Slice commits are merged into it (o
 _Avoid_: Feature branch.
 
 **Close-out**:
-The terminal step that ships a closeable **Change**, invoked only by **Ship**. The **AFK loop** never runs Close-out. A Change becomes closeable when every **Slice** is in the `done` **Bucket** after Reconciliation/effective state is applied. If `config.work.usePrs` is true, Close-out opens/marks-ready a PR from the Integration branch to the Target branch and leaves the Change OPEN until merge reconciliation. If false, Close-out host-merges the Integration branch into the Target branch and marks the Change CLOSED.
-_Avoid_: Abort.
+The success-path operation that ships a closeable **Change**, invoked only by **Ship**. The **AFK loop** never runs Close-out. A Change becomes closeable when every **Slice** is in the `done` **Slice state** after effective state is applied. If `config.work.usePrs` is true, Close-out opens/marks-ready a PR from the Integration branch to the Target branch; the Change may later appear `landed` until Ship runs Finalization. If false, Close-out host-merges the Integration branch into the Target branch and runs Finalization immediately.
+_Avoid_: Abort, Cleanup.
 
 **Ship**:
-The user command that invokes **Close-out** for an already-finished **Change**. `trowel change ship <id>` first requires a clean working tree, then holds the **Mutation lock** for the full operation and runs **Reconciliation**; if the Change is already `CLOSED`, it exits successfully as an idempotent no-op. Otherwise it fails if any **Slice** is not in the `done` **Bucket** after Reconciliation/effective state is applied, listing each non-terminal Slice id, Bucket, and title. Ship does not run the **AFK loop** or agent **Turns**. Shipping is the only path that invokes Close-out. Ship behavior is storage-agnostic and works the same for `file` and `issue` Storage; flags/config decide git/PR behavior, not Storage kind. Ship restores the **BACK_TO branch** after completion/failure when possible. If ship cleanup deletes the BACK_TO branch, deletion wins; ship leaves the user on the safe current branch and reports that BACK_TO was deleted. Ship cleanup may delete local branches according to ship config (`ship.deleteBranch: 'always' | 'prompt' | 'never'`, default `prompt`), but never deletes remote branches. PR-mode merge uses `ship.mergeMethod: 'merge' | 'squash' | 'rebase'`, default `merge`; the first implementation has no ship-specific CLI override flags. Before PR-mode Close-out, ship fetches and checks whether the local Integration branch is ahead of its remote counterpart; if ahead, interactive ship prompts to push with default yes, while non-interactive ship fails. If the remote counterpart is missing, interactive ship prompts to publish it with default yes; declining or running non-interactively fails because a Close-out PR requires a remote head branch. Non-interactive ship is not a primary workflow, but promptless contexts use deterministic safe defaults: required prompts fail, optional merge/delete prompts default to no. In PR mode, ship cleanup deletes the local Integration branch only after `ship` successfully merges the Close-out PR; if the PR is only opened/readied, the local Integration branch is kept. Shipping is Change-level; there is no Slice ship command until Slice-level shipping has a distinct domain meaning.
+The user command that invokes **Close-out** for an already-finished **Change**. `trowel change ship <id>` first requires a clean working tree, then holds the **Mutation lock** for the state-mutating operation. If the Change is `landed`, Ship runs Finalization by setting `closedAt`, then runs Cleanup. If the Change is already `done`, it exits successfully after Cleanup. Otherwise it fails if any **Slice** is not in the `done` **Slice state**, listing each non-terminal Slice id, Slice state, and title. Ship does not run the **AFK loop** or agent **Turns**. Shipping is the only path that invokes Change-level Close-out and Finalization. Ship behavior is storage-agnostic and works the same for `file` and `issue` Storage; flags/config decide git/PR behavior, not Storage kind. Ship restores the **BACK_TO branch** after completion/failure when possible. If ship cleanup deletes the BACK_TO branch, deletion wins; ship leaves the user on the safe current branch and reports that BACK_TO was deleted. Ship cleanup may delete local branches according to ship config (`ship.deleteBranch: 'always' | 'prompt' | 'never'`, default `prompt`), but never deletes remote branches. PR-mode merge uses `ship.mergeMethod: 'merge' | 'squash' | 'rebase'`, default `merge`; the first implementation has no ship-specific CLI override flags. Before PR-mode Close-out, ship fetches and checks whether the local Integration branch is ahead of its remote counterpart; if ahead, interactive ship prompts to push with default yes, while non-interactive ship fails. If the remote counterpart is missing, interactive ship prompts to publish it with default yes; declining or running non-interactively fails because a Close-out PR requires a remote head branch. Non-interactive ship is not a primary workflow, but promptless contexts use deterministic safe defaults: required prompts fail, optional merge/delete prompts default to no. In PR mode, ship cleanup deletes the local Integration branch only after `ship` successfully merges the Close-out PR; if the PR is only opened/readied, the local Integration branch is kept. Shipping is Change-level; there is no Slice ship command until Slice-level shipping has a distinct domain meaning.
 _Avoid_: Work, abort, slice ship.
 
 **Abort**:
 The manual abandon path. `trowel change abort <id>` operates only at the top-level Change lifecycle: it abandons open or ready Changes, requires exact-id confirmation for in-flight Changes, refuses landed or done Changes with Ship guidance, and cleans already aborted Changes. Abort cleanup may delete local branches according to abort config, but never deletes remote branches. There is no Slice abort command.
 _Avoid_: Close (old command name), ship.
 
-**Reconciliation**:
-The act of observing external state — specifically a Close-out PR's merged status on GitHub — and writing it back to storage. Commands that touch Change/Slice state run reconciliation under the **Mutation lock**.
-_Avoid_: Sync, refresh, poll.
+**Entity read command**:
+A command that displays Change or Slice state without acquiring the **Mutation lock**, writing storage, or switching the main working tree branch. Entity read commands are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <slice-id>`.
+_Avoid_: Refresh, reconcile, sync.
+
+**Finalization**:
+The storage write that records landed repository work as done by setting `closedAt`.
+_Avoid_: Reconciliation, status refresh, read repair.
 
 ### Config discovery
 
@@ -79,8 +87,8 @@ The branch the user was on when they invoked a command that switches branches. C
 _Avoid_: Original branch, prior branch.
 
 **Mutation lock**:
-A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by commands that touch Change/Slice state, including read commands because reconciliation may write.
-_Avoid_: Mutex, semaphore.
+A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by state-mutating Change/Slice commands. Entity read commands do not acquire it.
+_Avoid_: Read lock, status lock, Git lock.
 
 ### AFK loop
 
@@ -113,9 +121,11 @@ _Avoid_: Feature branch, task branch.
 - A **Change** has one or more **Slices**.
 - A **Change** has exactly one **Target branch** and one **Integration branch**.
 - Each **Slice** has zero or more **Blockers**.
-- Each **Slice** is in exactly one **Bucket**.
+- Each **Slice** is in exactly one **Slice state**.
 - Each **Turn** produces exactly one **Verdict**.
 - Storage is chosen per project; flags apply uniformly across storages.
+- Entity read commands may report `landed` but never acquire the Mutation lock, write storage, run Finalization, create/delete branches, or switch the main working tree branch.
+- Only **Ship** runs Change-level Finalization for a landed **Change** after a merged Close-out PR.
 
 ## Repo conventions
 
