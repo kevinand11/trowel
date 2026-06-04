@@ -34,7 +34,7 @@ function buildStorageDeps(base: CommandBase, overrides: Partial<StorageDeps> = {
 		projectRoot: base.projectRoot,
 		changesDir: path.resolve(base.projectRoot, base.config.docs.changesDir),
 		labels: base.config.labels,
-		closeOptions: base.config.close,
+		abortOptions: base.config.abort,
 		...overrides,
 	}
 }

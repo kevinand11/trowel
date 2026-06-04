@@ -28,7 +28,7 @@ export const partialConfigPipe = () =>
 				change: v.optional(v.string()),
 			}),
 		),
-		close: v.optional(
+		abort: v.optional(
 			v.object({
 				comment: v.optional(v.nullable(v.string())),
 				deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
@@ -68,7 +68,7 @@ export type Config = {
 		needsRevision: string
 		change: string
 	}
-	close: {
+	abort: {
 		comment: string | null
 		deleteBranch: 'always' | 'never' | 'prompt'
 	}
@@ -107,7 +107,7 @@ export const defaultConfig: Config = {
 		needsRevision: 'needs-revision',
 		change: 'change',
 	},
-	close: {
+	abort: {
 		comment: 'Closed via trowel',
 		deleteBranch: 'prompt',
 	},
@@ -187,8 +187,8 @@ if (import.meta.vitest) {
 		})
 
 		test('close defaults to prompt + "Closed via trowel"', () => {
-			expect(defaultConfig.close.deleteBranch).toBe('prompt')
-			expect(defaultConfig.close.comment).toBe('Closed via trowel')
+			expect(defaultConfig.abort.deleteBranch).toBe('prompt')
+			expect(defaultConfig.abort.comment).toBe('Closed via trowel')
 		})
 
 		test('turn defaults to maxConcurrent: 3 and empty copyToWorktree', () => {
@@ -266,12 +266,12 @@ if (import.meta.vitest) {
 		})
 
 		test('accepts close.deleteBranch with valid policy', () => {
-			const result = v.validate(partialConfigPipe(), { close: { deleteBranch: 'always' } })
+			const result = v.validate(partialConfigPipe(), { abort: { deleteBranch: 'always' } })
 			expect(result.valid).toBe(true)
 		})
 
 		test('rejects close.deleteBranch with invalid policy', () => {
-			const result = v.validate(partialConfigPipe(), { close: { deleteBranch: 'maybe' } })
+			const result = v.validate(partialConfigPipe(), { abort: { deleteBranch: 'maybe' } })
 			expect(result.valid).toBe(false)
 		})
 
@@ -325,7 +325,7 @@ if (import.meta.vitest) {
 		test('emits properties for every top-level config key', () => {
 			const schema = emitJsonSchema() as { properties: Record<string, unknown> }
 			expect(Object.keys(schema.properties)).toEqual(
-				expect.arrayContaining(['$schema', 'storage', 'docs', 'agent', 'labels', 'close', 'turn', 'work']),
+				expect.arrayContaining(['$schema', 'storage', 'docs', 'agent', 'labels', 'abort', 'turn', 'work']),
 			)
 		})
 
@@ -336,9 +336,9 @@ if (import.meta.vitest) {
 
 		test('close.deleteBranch property emits the policy enum', () => {
 			const schema = emitJsonSchema() as {
-				properties: { close: { properties: { deleteBranch: { enum: string[] } } } }
+				properties: { abort: { properties: { deleteBranch: { enum: string[] } } } }
 			}
-			expect(schema.properties.close.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
+			expect(schema.properties.abort.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
 		})
 
 		test('turn.maxConcurrent accepts number or null', () => {

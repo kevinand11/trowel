@@ -138,7 +138,7 @@ async function buildCloseRuntime(opts: { storage?: StorageKind }): Promise<{ bas
 function closeRuntime(base: CommandBase, storage: Storage, confirm: (msg: string) => Promise<boolean>, listOpenPrs: (branch: string) => Promise<OpenPr[]>): CloseRuntime {
 	return {
 		storage,
-		deleteBranchPolicy: base.config.close.deleteBranch,
+		deleteBranchPolicy: base.config.abort.deleteBranch,
 		confirm,
 		stdout: (s) => process.stdout.write(s),
 		git: base.git,

@@ -123,7 +123,7 @@ export type StorageDeps = {
 	projectRoot: string
 	changesDir: string
 	labels: { change: string; readyForAgent: string; needsRevision: string }
-	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
+	abortOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
 	/**
 	 * Optional runtime channels. Read-only call paths (status, list) construct a storage
 	 * without these wired; phase methods and `Storage.close` (which prompts) throw at

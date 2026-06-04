@@ -12,7 +12,7 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch via
  *   `git merge --no-ff`, then writes CLOSED on the storage record immediately.
  *
- * Branch deletion under `usePrs: false` is gated by `config.close.deleteBranch`. The `'prompt'`
+ * Branch deletion under `usePrs: false` is gated by `config.abort.deleteBranch`. The `'prompt'`
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
  */
 export type CloseOutEntity = {

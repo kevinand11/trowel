@@ -27,7 +27,7 @@ if (import.meta.vitest) {
 		projectRoot: '/tmp/x',
 		changesDir: '/tmp/x/docs/changes',
 		labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
-		closeOptions: { comment: null, deleteBranch: 'never' },
+		abortOptions: { comment: null, deleteBranch: 'never' },
 	}
 
 	describe('getStorage', () => {

@@ -39,7 +39,7 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 		projectRoot,
 		changesDir: path.resolve(projectRoot, config.docs.changesDir),
 		labels: config.labels,
-		closeOptions: config.close,
+		abortOptions: config.abort,
 	}
 	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, usePrs: config.work.usePrs }
 }

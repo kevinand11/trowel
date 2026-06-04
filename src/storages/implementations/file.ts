@@ -427,7 +427,7 @@ if (import.meta.vitest) {
 			projectRoot: work,
 			changesDir,
 			labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
-			closeOptions: { comment: null, deleteBranch: 'never' },
+			abortOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git,
 			log: (m) => {
@@ -1045,7 +1045,7 @@ if (import.meta.vitest) {
 		})
 
 		test('returns ChangeRecord with state=CLOSED after close', async () => {
-			const deps: StorageDeps = { ...f.deps, closeOptions: { comment: null, deleteBranch: 'never' } }
+			const deps: StorageDeps = { ...f.deps, abortOptions: { comment: null, deleteBranch: 'never' } }
 			const storage = createFileStorage(deps)
 			const { id, branch } = await storage.createChange({ title: 'Beta', body: 'b' })
 			await storage.closeChange(id)

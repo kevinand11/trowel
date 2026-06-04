@@ -11,7 +11,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function closeIssueIfOpen(id: string): Promise<void> {
 		const state = await deps.gh.getIssueState(id)
 		if (state !== null && state.toUpperCase() === 'CLOSED') return
-		const opts = deps.closeOptions.comment !== null ? { comment: deps.closeOptions.comment } : undefined
+		const opts = deps.abortOptions.comment !== null ? { comment: deps.abortOptions.comment } : undefined
 		await deps.gh.closeIssue(id, opts)
 	}
 
@@ -253,7 +253,7 @@ if (import.meta.vitest) {
 			projectRoot: '/tmp/x',
 			changesDir: '/tmp/x/docs/changes',
 				labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
-			closeOptions: { comment: null, deleteBranch: 'never' },
+			abortOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git: noopGitOps({
 				fetch: async (b) => { gitCalls.push(['fetch', b]) },
@@ -809,11 +809,11 @@ if (import.meta.vitest) {
 			expect(calls.find((c) => c[0] === 'closeIssue')).toBeUndefined()
 		})
 
-		test('passes the comment through to closeIssue when config.close.comment is set', async () => {
+		test('passes the comment through to closeIssue when config.abort.comment is set', async () => {
 			const { deps, calls } = makeDeps({
 				getIssueState: async () => 'OPEN',
 			})
-			deps.closeOptions.comment = 'Closed via trowel'
+			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
 			await storage.closeChange('42')
 			expect(calls).toContainEqual(['closeIssue', '42', { comment: 'Closed via trowel' }])
