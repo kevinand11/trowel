@@ -7,8 +7,6 @@ import type { ClassifiedSlice, ChangeRecord, Slice, Storage, StorageDeps } from 
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
 import { createRepoGit, type GitOps } from '../../utils/git-ops.ts'
-import { withMutationLock } from '../../utils/mutation-lock.ts'
-import { reconcileEntity } from '../../work/reconcile.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 
 type StatusRuntime = {
@@ -17,6 +15,12 @@ type StatusRuntime = {
 	git: GitOps
 	usePrs: boolean
 	stdout: (s: string) => void
+}
+
+type BuiltStatusStorage = { storage: Storage; projectRoot: string; gh: GhOps; git: GitOps; usePrs: boolean }
+type StatusCommandDeps = {
+	buildStatusStorage?: (opts: { storage?: string }) => Promise<BuiltStatusStorage>
+	stdout?: (s: string) => void
 }
 
 async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
@@ -57,8 +61,8 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git, usePrs: config.work.usePrs }
 }
 
-function statusRuntime(storage: Storage, gh: GhOps, git: GitOps, usePrs: boolean): StatusRuntime {
-	return { storage, gh, git, usePrs, stdout: (s) => process.stdout.write(s) }
+function statusRuntime(storage: Storage, gh: GhOps, git: GitOps, usePrs: boolean, stdout: (s: string) => void = (s) => process.stdout.write(s)): StatusRuntime {
+	return { storage, gh, git, usePrs, stdout }
 }
 
 async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
@@ -70,20 +74,14 @@ async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
 	}
 }
 
-export async function statusChange(changeId: string, opts: { storage?: string }): Promise<void> {
-	const { storage, projectRoot, gh, git, usePrs } = await buildStatusStorage(opts)
-	await exitOnStatusError(() =>
-		withMutationLock(projectRoot, async () => {
-			const found = await storage.findChange(changeId)
-			if (found) await reconcileEntity({ kind: 'change', id: changeId, branch: found.branch }, { storage, gh })
-			await runStatus(changeId, statusRuntime(storage, gh, git, usePrs))
-		}),
-	)
+export async function statusChange(changeId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
+	const { storage, gh, git, usePrs } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
+	await exitOnStatusError(() => runStatus(changeId, statusRuntime(storage, gh, git, usePrs, deps.stdout)))
 }
 
-export async function statusSlice(sliceId: string, opts: { storage?: string }): Promise<void> {
-	const { storage, projectRoot, gh, git, usePrs } = await buildStatusStorage(opts)
-	await exitOnStatusError(() => withMutationLock(projectRoot, () => runStatusSlice(sliceId, statusRuntime(storage, gh, git, usePrs))))
+export async function statusSlice(sliceId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
+	const { storage, gh, git, usePrs } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
+	await exitOnStatusError(() => runStatusSlice(sliceId, statusRuntime(storage, gh, git, usePrs, deps.stdout)))
 }
 
 type StatusSliceRuntime = {
@@ -133,8 +131,10 @@ function writeStatusText(stdout: (s: string) => void, text: string): void {
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+	const { mkdir, mkdtemp, rm } = await import('node:fs/promises')
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
+	const { withMutationLock } = await import('../../utils/mutation-lock.ts')
 
 	type FakeStorageState = {
 		change: ChangeRecord | null
@@ -164,6 +164,105 @@ if (import.meta.vitest) {
 	const change: ChangeRecord = { id: 'ab12cd', branch: 'change/ab12cd-feature', targetBranch: 'main', title: 'Add SSO', state: 'OPEN', closedAt: null }
 	const renderedChange = { ...change, state: 'open' as const }
 	const unmergedGit = () => noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })
+	const rawStatusSlice = (overrides: Partial<Slice> = {}): Slice => ({
+		id: '42',
+		title: 'Implement tab parser',
+		body: '',
+		state: 'open',
+		closedAt: null,
+		readyForAgent: true,
+		needsRevision: false,
+		blockedBy: [],
+		prState: null,
+		...overrides,
+	})
+
+	async function expectCompletesWhileMutationLockHeld(action: (projectRoot: string) => Promise<void>): Promise<void> {
+		const testTmpRoot = path.join(process.cwd(), '.trowel')
+		await mkdir(testTmpRoot, { recursive: true })
+		const projectRoot = await mkdtemp(path.join(testTmpRoot, 'status-lock-'))
+		let releaseHeldLock: (() => void) | undefined
+		let held: Promise<void> | undefined
+		const lockAcquired = new Promise<void>((resolve) => {
+			held = withMutationLock(projectRoot, async () => {
+				resolve()
+				await new Promise<void>((release) => {
+					releaseHeldLock = release
+				})
+			})
+		})
+		try {
+			await lockAcquired
+			const completed = action(projectRoot).then(() => 'completed' as const)
+			const result = await Promise.race([completed, delay(150).then(() => 'blocked' as const)])
+			releaseHeldLock?.()
+			await completed
+			expect(result).toBe('completed')
+		} finally {
+			releaseHeldLock?.()
+			await held?.catch(() => undefined)
+			await rm(projectRoot, { recursive: true, force: true })
+		}
+	}
+
+	async function delay(ms: number): Promise<void> {
+		await new Promise((resolve) => setTimeout(resolve, ms))
+	}
+
+	describe('status commands are entity reads', () => {
+		test('change status completes while the Mutation lock is held elsewhere', async () => {
+			const storage = fakeStorage({ change, rawSlices: [] })
+			const { gh } = recordingGhOps()
+			let buf = ''
+			await expectCompletesWhileMutationLockHeld(async (projectRoot) => {
+				await statusChange(change.id, {}, {
+					buildStatusStorage: async () => ({ storage, projectRoot, gh, git: unmergedGit(), usePrs: false }),
+					stdout: (s) => (buf += s),
+				})
+			})
+			expect(buf).toContain('State:               open')
+		})
+
+		test('slice status completes while the Mutation lock is held elsewhere', async () => {
+			const rawSlice = rawStatusSlice()
+			const storage: Storage = {
+				createChange: async () => { throw new Error('nyi') },
+				findChange: async (id) => (id === change.id ? change : null),
+				listChanges: async () => [],
+				closeChange: async () => {},
+				createSlice: async () => { throw new Error('nyi') },
+				findSlices: async () => [rawSlice],
+				findSlice: async (sliceId) => (sliceId === rawSlice.id ? { changeId: change.id, slice: rawSlice } : null),
+				updateSlice: async () => {},
+			}
+			const { gh } = recordingGhOps()
+			let buf = ''
+			await expectCompletesWhileMutationLockHeld(async (projectRoot) => {
+				await statusSlice(rawSlice.id, {}, {
+					buildStatusStorage: async () => ({ storage, projectRoot, gh, git: unmergedGit(), usePrs: false }),
+					stdout: (s) => (buf += s),
+				})
+			})
+			expect(buf).toContain(`Slice ${rawSlice.id}  ${rawSlice.title}`)
+		})
+
+		test('change status shows landed for a merged Close-out PR without finalizing the Change', async () => {
+			const storage = fakeStorage({ change, rawSlices: [] })
+			const closed: string[] = []
+			storage.closeChange = async (id) => { closed.push(id) }
+			const { gh } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 7, state: 'MERGED' }) })
+			let buf = ''
+
+			await statusChange(change.id, {}, {
+				buildStatusStorage: async () => ({ storage, projectRoot: process.cwd(), gh, git: unmergedGit(), usePrs: false }),
+				stdout: (s) => (buf += s),
+			})
+
+			expect(buf).toContain('State:               landed')
+			expect(buf).toContain(`Guidance:            merged to Target branch but not finalized; run trowel change ship ${change.id}`)
+			expect(closed).toEqual([])
+		})
+	})
 
 	describe('status: tracer (no slices)', () => {
 		test('renders header + "(no slices)" summary', async () => {
