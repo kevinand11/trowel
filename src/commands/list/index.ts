@@ -63,6 +63,7 @@ if (import.meta.vitest) {
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: `change-1/slice-${overrides.id ?? 's1'}-slice`,
 			prState: null,
 			...overrides,
 		}
@@ -73,7 +74,7 @@ if (import.meta.vitest) {
 			const out = formatChangeRow({
 				id: '1',
 				title: 'Add parser',
-				branch: 'change-1-add-parser',
+				changeBranch: 'change-1-add-parser',
 				createdAt: '2026-05-12T00:00:00Z',
 				state: 'open',
 				slices: [fakeSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })],
@@ -104,7 +105,7 @@ if (import.meta.vitest) {
 					listStates.push(opts.state)
 					return summaries
 				},
-				findChange: async (id) => ({ id, branch: `change-${id}`, title: id, state: 'OPEN', closedAt: null }),
+				findChange: async (id) => ({ id, changeBranch: `change-${id}`, targetBranch: 'fake-base', title: id, state: 'OPEN', closedAt: null }),
 			})
 		}
 
@@ -143,8 +144,8 @@ if (import.meta.vitest) {
 			const listStates: string[] = []
 			const rows = await listChangeRows({
 				storage: storageWith([
-					{ id: 'old', title: 'Old', branch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
-					{ id: 'new', title: 'New', branch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
+					{ id: 'old', title: 'Old', changeBranch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
+					{ id: 'new', title: 'New', changeBranch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
 				], [], listStates),
 				usePrs: false,
 				gh,
@@ -161,7 +162,7 @@ if (import.meta.vitest) {
 			const slices = [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })]
 
 			const rows = await listChangeRows({
-				storage: storageWith([{ id: '1', title: 'Done', branch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }], slices, listStates),
+				storage: storageWith([{ id: '1', title: 'Done', changeBranch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }], slices, listStates),
 				usePrs: false,
 				gh,
 				git: branchSensitiveGit(gitCalls),

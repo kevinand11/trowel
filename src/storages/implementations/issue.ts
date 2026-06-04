@@ -2,10 +2,11 @@ import { parseGhIssueNumber } from '../../utils/gh-ops.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeRecord, ChangeSpec, ChangeSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeMetadataPatch, ChangeRecord, ChangeSpec, ChangeSummary, Slice, SliceMetadataPatch, SlicePatch, SliceSpec } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean; needsRevision?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
+type TrowelMetadata = Record<string, unknown>
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function closeIssueIfOpen(id: string): Promise<void> {
@@ -28,14 +29,15 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	function labelPatchOptions(label: string, value: boolean): { add: string[] } | { remove: string[] } {
 		return value ? { add: [label] } : { remove: [label] }
 	}
-	async function createChange(spec: ChangeSpec): Promise<{ id: string; branch: string }> {
+	async function createChange(spec: ChangeSpec): Promise<{ id: string; changeBranch: string }> {
 		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithTargetBranch(spec.body, targetBranch), labels: [deps.labels.change] })
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithMetadata(spec.body, { targetBranch }), labels: [deps.labels.change] })
 		const id = parseGhIssueNumber(createOut)
-		const branch = changeBranchFor(id, spec.title)
-		await deps.git.createLocalBranch(branch, targetBranch)
-		await deps.git.pushSetUpstream(branch)
-		return { id, branch }
+		const changeBranch = changeBranchFor(id, spec.title)
+		await deps.git.createLocalBranch(changeBranch, targetBranch)
+		await deps.git.pushSetUpstream(changeBranch)
+		await deps.gh.editIssueBody(id, bodyWithMetadata(spec.body, { targetBranch, changeBranch }))
+		return { id, changeBranch }
 	}
 
 	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
@@ -56,12 +58,13 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return {
 			id: String(issue.number),
 			title: issue.title,
-			body: issue.body,
+			body: bodyWithoutMetadata(issue.body),
 			state: closedAt === null ? 'draft' : 'done',
 			closedAt,
 			readyForAgent: hasIssueLabel(issue, deps.labels.readyForAgent),
 			needsRevision: hasIssueLabel(issue, deps.labels.needsRevision),
 			blockedBy: await blockedByForIssue(issue),
+			sliceBranch: requiredSliceBranch(issue.body, `issue #${issue.number}`),
 			prState: null,
 		}
 	}
@@ -83,6 +86,8 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		// trailer needed. See ADR `storage-behavior-separation` step 4.
 		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body })
 		const sliceNumber = parseGhIssueNumber(createOut)
+		const sliceBranch = sliceBranchFor(changeId, sliceNumber, spec.title)
+		await deps.gh.editIssueBody(sliceNumber, bodyWithMetadata(spec.body, { sliceBranch }))
 		const internalId = await deps.gh.getIssueInternalId(sliceNumber)
 		await deps.gh.addSubIssue(changeId, internalId)
 
@@ -100,6 +105,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			readyForAgent: false,
 			needsRevision: false,
 			blockedBy: [...spec.blockedBy],
+			sliceBranch,
 			prState: null,
 		}])[0]!
 	}
@@ -114,8 +120,8 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		const closedAt = issue.closedAt ?? null
 		return {
 			id: String(issue.number),
-			branch: changeBranchFor(String(issue.number), issue.title),
-			targetBranch: targetBranchFromBody(issue.body),
+			changeBranch: requiredChangeBranch(issue.body, `issue #${issue.number}`),
+			targetBranch: requiredTargetBranch(issue.body, `issue #${issue.number}`),
 			title: issue.title,
 			state: closedAt === null && issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 			closedAt,
@@ -126,21 +132,22 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return `change-${id}-${slugify(title)}`
 	}
 
-	async function listIssueSummaries(label: string, opts: { state: 'open' | 'closed' | 'all' }, branchFor: (id: string, title: string) => string): Promise<Array<{ id: string; title: string; branch: string; createdAt: string }>> {
+	function sliceBranchFor(changeId: string, sliceId: string, title: string): string {
+		return `change-${changeId}/slice-${sliceId}-${slugify(title)}`
+	}
+
+	async function listIssueSummaries(label: string, opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]> {
 		const issues = await deps.gh.listIssues({ label, state: opts.state })
-		return issues.map((issue) => {
-			const id = String(issue.number)
-			return {
-				id,
-				title: issue.title,
-				branch: branchFor(id, issue.title),
-				createdAt: issue.createdAt,
-			}
-		})
+		return issues.map((issue) => ({
+			id: String(issue.number),
+			title: issue.title,
+			changeBranch: requiredChangeBranch(issue.body, `issue #${issue.number}`),
+			createdAt: issue.createdAt,
+		}))
 	}
 
 	async function listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]> {
-		return listIssueSummaries(deps.labels.change, opts, changeBranchFor)
+		return listIssueSummaries(deps.labels.change, opts)
 	}
 
 	async function findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null> {
@@ -154,29 +161,38 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return null
 	}
 
-	function bodyWithTargetBranch(body: string, targetBranch: string): string {
-		return `${body}\n\n<!-- trowel:${JSON.stringify({ targetBranch })} -->`
+	function bodyWithMetadata(body: string, patch: TrowelMetadata): string {
+		return replaceOrAppendMetadata(body, { ...metadataFromBody(body), ...patch })
 	}
 
-	function targetBranchFromBody(body: string | null | undefined): string | undefined {
+	function requiredTargetBranch(body: string | null | undefined, source: string): string {
+		return requiredMetadataString(body, source, 'targetBranch')
+	}
+
+	function requiredChangeBranch(body: string | null | undefined, source: string): string {
+		return requiredMetadataString(body, source, 'changeBranch')
+	}
+
+	function requiredSliceBranch(body: string | null | undefined, source: string): string {
+		return requiredMetadataString(body, source, 'sliceBranch')
+	}
+
+	function requiredMetadataString(body: string | null | undefined, source: string, key: string): string {
+		const value = metadataFromBody(body)[key]
+		if (typeof value !== 'string' || value.length === 0) throw new Error(`${source} is missing required Trowel metadata: ${key}`)
+		return value
+	}
+
+	function metadataFromBody(body: string | null | undefined): TrowelMetadata {
 		const raw = trowelMetadataFromBody(body)
-		return raw ? targetBranchFromMetadataJson(raw) : undefined
-	}
-
-	function targetBranchFromMetadataJson(raw: string): string | undefined {
+		if (!raw) return {}
 		try {
-			return targetBranchFromMetadata(JSON.parse(raw) as { targetBranch?: unknown })
+			const parsed = JSON.parse(raw) as unknown
+			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as TrowelMetadata
 		} catch {
-			return undefined
+			// Fall through to loud read/update failure below.
 		}
-	}
-
-	function targetBranchFromMetadata(parsed: { targetBranch?: unknown }): string | undefined {
-		return isTargetBranch(parsed.targetBranch) ? parsed.targetBranch : undefined
-	}
-
-	function isTargetBranch(value: unknown): value is string {
-		return typeof value === 'string' && value.length > 0
+		throw new Error('issue body contains invalid Trowel metadata JSON')
 	}
 
 	function trowelMetadataFromBody(body: string | null | undefined): string | null {
@@ -184,15 +200,45 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return match?.[1]?.trim() ?? null
 	}
 
+	function bodyWithoutMetadata(body: string): string {
+		return body.replace(/\n?\n?<!--\s*trowel:.*?-->/s, '').trimEnd()
+	}
+
+	function replaceOrAppendMetadata(body: string, metadata: TrowelMetadata): string {
+		const serialized = `<!-- trowel:${JSON.stringify(metadata)} -->`
+		const publicBody = bodyWithoutMetadata(body)
+		return publicBody ? `${publicBody}\n\n${serialized}` : serialized
+	}
+
 	return {
 		createChange,
 		findChange,
 		listChanges,
 		closeChange,
+		updateChangeMetadata,
 		createSlice,
 		findSlices,
 		findSlice,
 		updateSlice,
+		updateSliceMetadata,
+	}
+
+	async function updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void> {
+		await updateIssueMetadata(changeId, patch)
+	}
+
+	async function updateSliceMetadata(_changeId: string, sliceId: string, patch: SliceMetadataPatch): Promise<void> {
+		await updateIssueMetadata(sliceId, patch)
+	}
+
+	async function updateIssueMetadata(issueId: string, patch: TrowelMetadata): Promise<void> {
+		const issue = await deps.gh.viewIssue(issueId)
+		if (!issue) throw new Error(`issue #${issueId} not found while updating Trowel metadata`)
+		await deps.gh.editIssueBody(issueId, bodyWithMetadata(issue.body, withoutUndefined(patch)))
+	}
+
+	function withoutUndefined(patch: TrowelMetadata): TrowelMetadata {
+		return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
 	}
 
 	async function updateSlice(_changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -249,6 +295,10 @@ if (import.meta.vitest) {
 	type GhOverrides = Partial<import('../../utils/gh-ops.ts').GhOps>
 	type GitCall = [string, ...string[]]
 
+	function trowelBody(body: string, metadata: Record<string, string>): string {
+		return `${body}\n\n<!-- trowel:${JSON.stringify(metadata)} -->`
+	}
+
 	function makeDeps(overrides: GhOverrides = {}): {
 		deps: StorageDeps
 		calls: Array<[string, ...unknown[]]>
@@ -295,6 +345,7 @@ if (import.meta.vitest) {
 				readyForAgent: true,
 				needsRevision: false,
 				blockedBy: [],
+				sliceBranch: `change-142/slice-${overrides.id ?? '145'}-session-middleware`,
 				prState: null,
 				...overrides,
 			}
@@ -311,7 +362,7 @@ if (import.meta.vitest) {
 		}
 
 		function phaseContext(config = { usePrs: true, review: false, perSliceBranches: true }) {
-			return { changeId: '142', integrationBranch: 'changes-issue-142', config }
+			return { changeId: '142', changeBranch: 'changes-issue-142', config }
 		}
 
 		function reviewContext() {
@@ -354,7 +405,7 @@ if (import.meta.vitest) {
 			])
 		})
 
-		test('landImplement + usePrs=false + ready: pushes slice, checks out integration, merges --no-ff, pushes integration, retains slice branch, closes sub-issue; returns done', async () => {
+		test('landImplement + usePrs=false + ready: pushes slice, checks out Change branch, merges --no-ff, pushes Change branch, retains slice branch, closes sub-issue; returns done', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
 			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: true }))
 			expect(outcome).toBe('done')
@@ -368,7 +419,7 @@ if (import.meta.vitest) {
 			expectClosedWithoutDraftPr(calls)
 		})
 
-		test('landImplement + perSliceBranches:false + ready: pushes integration directly, closes sub-issue via updateSlice; returns done', async () => {
+		test('landImplement + perSliceBranches:false + ready: pushes Change branch directly, closes sub-issue via updateSlice; returns done', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
 			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
 			expect(outcome).toBe('done')
@@ -376,7 +427,7 @@ if (import.meta.vitest) {
 			expectClosedWithoutDraftPr(calls)
 		})
 
-		test('prepareImplement + perSliceBranches:false: runs on the integration branch; no git ops', async () => {
+		test('prepareImplement + perSliceBranches:false: runs on the Change branch; no git ops', async () => {
 			const { phase, gitCalls } = makeIssueFixture()
 			const prep = await prepareImplement(phase, makeOpenSlice(), phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
 			expect(prep.branch).toBe('changes-issue-142')
@@ -468,22 +519,23 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: createChange', () => {
-		test('creates the issue then creates the integration branch locally and pushes it upstream', async () => {
+		test('creates the issue then creates the Change branch locally and pushes it upstream', async () => {
 			const { deps, calls, gitCalls } = makeDeps({
 				createIssue: async () => 'https://github.com/o/r/issues/42\n',
 			})
 			const storage = createIssueStorage(deps)
 			const result = await storage.createChange({ title: 'Fix Tabs on macOS', body: 'the spec' })
-			expect(result).toEqual({ id: '42', branch: 'change-42-fix-tabs-on-macos' })
-			expect(calls).toEqual([['createIssue', { title: 'Fix Tabs on macOS', body: expect.stringContaining('the spec'), labels: ['change'] }]])
+			expect(result).toEqual({ id: '42', changeBranch: 'change-42-fix-tabs-on-macos' })
+			expect(calls[0]).toEqual(['createIssue', { title: 'Fix Tabs on macOS', body: expect.stringContaining('the spec'), labels: ['change'] }])
 			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"develop"')
+			expect(calls).toContainEqual(['editIssueBody', '42', expect.stringContaining('"changeBranch":"change-42-fix-tabs-on-macos"')])
 			expect(gitCalls).toEqual([
 				['createLocalBranch', 'change-42-fix-tabs-on-macos', 'develop'],
 				['pushSetUpstream', 'change-42-fix-tabs-on-macos'],
 			])
 		})
 
-		test('stores explicit targetBranch metadata and creates the integration branch from it', async () => {
+		test('stores explicit targetBranch metadata and creates the Change branch from it', async () => {
 			const { deps, calls, gitCalls } = makeDeps({
 				createIssue: async () => 'https://github.com/o/r/issues/99\n',
 			})
@@ -491,7 +543,7 @@ if (import.meta.vitest) {
 
 			const result = await storage.createChange({ title: 'Release Feature', body: 'body', targetBranch: 'release/1.2' })
 
-			expect(result).toEqual({ id: '99', branch: 'change-99-release-feature' })
+			expect(result).toEqual({ id: '99', changeBranch: 'change-99-release-feature' })
 			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"release/1.2"')
 			expect(gitCalls).toEqual([
 				['createLocalBranch', 'change-99-release-feature', 'release/1.2'],
@@ -506,7 +558,7 @@ if (import.meta.vitest) {
 			deps.labels.change = 'roadmap'
 			const storage = createIssueStorage(deps)
 			const result = await storage.createChange({ title: 'Add ORM', body: 'b' })
-			expect(result).toEqual({ id: '7', branch: 'change-7-add-orm' })
+			expect(result).toEqual({ id: '7', changeBranch: 'change-7-add-orm' })
 			const [name, args] = calls[0]!
 			expect(name).toBe('createIssue')
 			expect((args as { labels: string[] }).labels).toEqual(['roadmap'])
@@ -550,20 +602,20 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([['listIssues', { label: 'change', state: 'all' }]])
 		})
 
-		test('returns one ChangeSummary per matching issue with branch composed from id+title (one gh call total)', async () => {
+		test('returns one ChangeSummary per matching issue with stored Change branch metadata', async () => {
 			const { deps, calls } = makeDeps({
 				listIssues: async () => [
-					{ number: 42, title: 'Fix Tabs', createdAt: '2026-05-12T00:00:00Z' },
-					{ number: 7, title: 'Add ORM', createdAt: '2026-05-11T00:00:00Z' },
+					{ number: 42, title: 'Fix Tabs', createdAt: '2026-05-12T00:00:00Z', body: '<!-- trowel:{"changeBranch":"change-42-fix-tabs","targetBranch":"main"} -->' },
+					{ number: 7, title: 'Add ORM', createdAt: '2026-05-11T00:00:00Z', body: '<!-- trowel:{"changeBranch":"change-7-add-orm","targetBranch":"main"} -->' },
 				],
 			})
 			const storage = createIssueStorage(deps)
 			const result = await storage.listChanges({ state: 'open' })
 			expect(result).toEqual([
-				{ id: '42', title: 'Fix Tabs', branch: 'change-42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
-				{ id: '7', title: 'Add ORM', branch: 'change-7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
+				{ id: '42', title: 'Fix Tabs', changeBranch: 'change-42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
+				{ id: '7', title: 'Add ORM', changeBranch: 'change-7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
 			])
-			// No per-issue lookups — branch is derived from the list response.
+			// No per-issue lookups — Change branch is read from the list response metadata.
 			expect(calls.filter((c) => c[0] === 'viewIssue')).toEqual([])
 		})
 	})
@@ -586,11 +638,13 @@ if (import.meta.vitest) {
 				readyForAgent: false,
 				needsRevision: false,
 				blockedBy: [],
+				sliceBranch: 'change-42/slice-57-implement-tab-parser',
 				prState: null,
 			})
 			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: 'the slice spec' }])
-			expect(calls[1]).toEqual(['getIssueInternalId', '57'])
-			expect(calls[2]).toEqual(['addSubIssue', '42', '12345678'])
+			expect(calls[1]).toEqual(['editIssueBody', '57', expect.stringContaining('"sliceBranch":"change-42/slice-57-implement-tab-parser"')])
+			expect(calls[2]).toEqual(['getIssueInternalId', '57'])
+			expect(calls[3]).toEqual(['addSubIssue', '42', '12345678'])
 		})
 	})
 
@@ -622,23 +676,23 @@ if (import.meta.vitest) {
 		test('queries sub-issues endpoint and maps to Slice[]', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 57, title: 'Implement Parser', body: 'parser spec', state: 'open', labels: [{ name: 'ready-for-agent' }] },
-					{ number: 58, title: 'Wire CLI', body: 'cli spec', state: 'closed', closed_at: '2026-06-04T00:00:00Z', labels: [{ name: 'needs-revision' }, { name: 'other' }] },
+					{ number: 57, title: 'Implement Parser', body: trowelBody('parser spec', { sliceBranch: 'change-42/slice-57-implement-parser' }), state: 'open', labels: [{ name: 'ready-for-agent' }] },
+					{ number: 58, title: 'Wire CLI', body: trowelBody('cli spec', { sliceBranch: 'change-42/slice-58-wire-cli' }), state: 'closed', closed_at: '2026-06-04T00:00:00Z', labels: [{ name: 'needs-revision' }, { name: 'other' }] },
 				],
 			})
 			const storage = createIssueStorage(deps)
 			const slices = classifySlices(await storage.findSlices('42'))
 			expect(calls[0]).toEqual(['listSubIssues', '42'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], prState: null },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'done', closedAt: '2026-06-04T00:00:00Z', readyForAgent: false, needsRevision: true, blockedBy: [], prState: null },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: 'change-42/slice-57-implement-parser', prState: null },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'done', closedAt: '2026-06-04T00:00:00Z', readyForAgent: false, needsRevision: true, blockedBy: [], sliceBranch: 'change-42/slice-58-wire-cli', prState: null },
 			])
 		})
 
 		test('uses configured label names to compute booleans', async () => {
 			const { deps } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 9, title: 't', body: 'b', state: 'open', labels: [{ name: 'CUSTOM-ready' }, { name: 'CUSTOM-needs' }] },
+					{ number: 9, title: 't', body: trowelBody('b', { sliceBranch: 'change-42/slice-9-t' }), state: 'open', labels: [{ name: 'CUSTOM-ready' }, { name: 'CUSTOM-needs' }] },
 				],
 			})
 			deps.labels.readyForAgent = 'CUSTOM-ready'
@@ -654,7 +708,7 @@ if (import.meta.vitest) {
 		test('open slice with readyForAgent label and no blockers → open state', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 57, title: 'Implement Parser', body: 'b', state: 'open', labels: [{ name: 'ready-for-agent' }] },
+					{ number: 57, title: 'Implement Parser', body: trowelBody('b', { sliceBranch: 'change-42/slice-57-implement-parser' }), state: 'open', labels: [{ name: 'ready-for-agent' }] },
 				],
 			})
 			const storage = createIssueStorage(deps)
@@ -667,7 +721,7 @@ if (import.meta.vitest) {
 		test('open slice with needsRevision label → needs-revision state (classifier precedence)', async () => {
 			const { deps } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 57, title: 'P', body: 'b', state: 'open', labels: [{ name: 'needs-revision' }] },
+					{ number: 57, title: 'P', body: trowelBody('b', { sliceBranch: 'change-42/slice-57-p' }), state: 'open', labels: [{ name: 'needs-revision' }] },
 				],
 			})
 			const storage = createIssueStorage(deps)
@@ -678,8 +732,8 @@ if (import.meta.vitest) {
 		test('open slice with total_blocked_by > 0 → fetches dependencies + populates blockedBy + blocked state', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 57, title: 'A', body: 'spec', state: 'open', labels: [], issue_dependencies_summary: { total_blocked_by: 0 } },
-					{ number: 58, title: 'B', body: 'spec', state: 'open', labels: [{ name: 'ready-for-agent' }], issue_dependencies_summary: { total_blocked_by: 1 } },
+					{ number: 57, title: 'A', body: trowelBody('spec', { sliceBranch: 'change-42/slice-57-a' }), state: 'open', labels: [], issue_dependencies_summary: { total_blocked_by: 0 } },
+					{ number: 58, title: 'B', body: trowelBody('spec', { sliceBranch: 'change-42/slice-58-b' }), state: 'open', labels: [{ name: 'ready-for-agent' }], issue_dependencies_summary: { total_blocked_by: 1 } },
 				],
 				listBlockedBy: async (id) => (id === '58' ? [{ id: 1, number: 57 }] : []),
 			})
@@ -694,7 +748,7 @@ if (import.meta.vitest) {
 		test('closed slice → done state; no listOpenPrs call (findSlices does not issue PR queries)', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 57, title: 'A', body: 'spec', state: 'closed', closed_at: '2026-06-04T00:00:00Z', labels: [] },
+					{ number: 57, title: 'A', body: trowelBody('spec', { sliceBranch: 'change-42/slice-57-a' }), state: 'closed', closed_at: '2026-06-04T00:00:00Z', labels: [] },
 				],
 			})
 			const storage = createIssueStorage(deps)
@@ -705,17 +759,17 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: findChange', () => {
-		test('returns ChangeRecord with branch, targetBranch, and state for an existing issue', async () => {
+		test('returns ChangeRecord with changeBranch, targetBranch, and state for an existing issue', async () => {
 			const { deps } = makeDeps({
-				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN', body: 'body\n\n<!-- trowel:{"targetBranch":"release/1.2"} -->' }),
+				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN', body: 'body\n\n<!-- trowel:{"targetBranch":"release/1.2","changeBranch":"change-42-fix-tabs"} -->' }),
 			})
 			const storage = createIssueStorage(deps)
-			expect(await storage.findChange('42')).toEqual({ id: '42', branch: 'change-42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN', closedAt: null })
+			expect(await storage.findChange('42')).toEqual({ id: '42', changeBranch: 'change-42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN', closedAt: null })
 		})
 
 		test('maps "CLOSED" GitHub state to CLOSED', async () => {
 			const { deps } = makeDeps({
-				viewIssue: async () => ({ number: 42, title: 'X', state: 'CLOSED', body: '' }),
+				viewIssue: async () => ({ number: 42, title: 'X', state: 'CLOSED', body: '<!-- trowel:{"targetBranch":"main","changeBranch":"change-42-x"} -->' }),
 			})
 			const storage = createIssueStorage(deps)
 			expect((await storage.findChange('42'))!.state).toBe('CLOSED')
@@ -725,6 +779,52 @@ if (import.meta.vitest) {
 			const { deps } = makeDeps({ viewIssue: async () => null })
 			const storage = createIssueStorage(deps)
 			expect(await storage.findChange('999999')).toBeNull()
+		})
+	})
+
+	describe('issue storage: branch metadata', () => {
+		test('updateChangeMetadata merges into the existing hidden JSON object without clobbering unrelated keys', async () => {
+			const { deps, calls } = makeDeps({
+				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN', body: trowelBody('body', { targetBranch: 'main', owner: 'docs' }) }),
+			})
+			const storage = createIssueStorage(deps)
+
+			await storage.updateChangeMetadata('42', { changeBranch: 'change-42-fix-tabs' })
+
+			expect(calls).toEqual([
+				['viewIssue', '42'],
+				['editIssueBody', '42', 'body\n\n<!-- trowel:{"targetBranch":"main","owner":"docs","changeBranch":"change-42-fix-tabs"} -->'],
+			])
+		})
+
+		test('updateSliceMetadata merges into the existing hidden JSON object without clobbering unrelated keys', async () => {
+			const { deps, calls } = makeDeps({
+				viewIssue: async () => ({ number: 57, title: 'Slice', state: 'OPEN', body: trowelBody('body', { reviewer: 'bot', sliceBranch: 'old' }) }),
+			})
+			const storage = createIssueStorage(deps)
+
+			await storage.updateSliceMetadata('42', '57', { sliceBranch: 'change-42/slice-57-slice' })
+
+			expect(calls).toEqual([
+				['viewIssue', '57'],
+				['editIssueBody', '57', 'body\n\n<!-- trowel:{"reviewer":"bot","sliceBranch":"change-42/slice-57-slice"} -->'],
+			])
+		})
+
+		test('findChange fails loudly when required branch metadata is missing', async () => {
+			const { deps } = makeDeps({
+				viewIssue: async () => ({ number: 42, title: 'Missing', state: 'OPEN', body: trowelBody('body', { targetBranch: 'main' }) }),
+			})
+			const storage = createIssueStorage(deps)
+			await expect(storage.findChange('42')).rejects.toThrow(/missing required Trowel metadata: changeBranch/)
+		})
+
+		test('findSlices fails loudly when required Slice branch metadata is missing', async () => {
+			const { deps } = makeDeps({
+				listSubIssues: async () => [{ number: 57, title: 'Slice', body: 'body', state: 'open', labels: [] }],
+			})
+			const storage = createIssueStorage(deps)
+			await expect(storage.findSlices('42')).rejects.toThrow(/missing required Trowel metadata: sliceBranch/)
 		})
 	})
 

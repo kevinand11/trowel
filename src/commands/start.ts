@@ -20,7 +20,7 @@ export type StartRuntime = {
 
 type StartSpec = CreateChangeStartOut
 type StartGrillResult = GrillSpecResult<StartOut>
-type CreatedStartChange = { changeId: string; branch: string; realIds: string[]; spec: StartSpec }
+type CreatedStartChange = { changeId: string; changeBranch: string; realIds: string[]; spec: StartSpec }
 
 export async function runStart(rt: StartRuntime): Promise<void> {
 	const result = await resolveStartSpec(rt)
@@ -66,13 +66,13 @@ async function handleStartOutcome(rt: StartRuntime, result: StartGrillResult): P
 }
 
 async function materialiseStartChange(rt: StartRuntime, result: StartGrillResult, spec: StartSpec): Promise<CreatedStartChange> {
-	const { id: changeId, branch } = await rt.storage.createChange({ ...spec.change, targetBranch: result.targetBranch })
+	const { id: changeId, changeBranch } = await rt.storage.createChange({ ...spec.change, targetBranch: result.targetBranch })
 	result.markMaterialised()
-	await rt.git.checkout(branch)
+	await rt.git.checkout(changeBranch)
 	if (result.stashed) await rt.git.stashPop()
 	const realIds = await createStartSlices(rt, changeId, spec)
 	await updateStartSliceLinks(rt, changeId, spec, realIds)
-	return { changeId, branch, realIds, spec }
+	return { changeId, changeBranch, realIds, spec }
 }
 
 async function createStartSlices(rt: StartRuntime, changeId: string, spec: StartSpec): Promise<string[]> {
@@ -95,7 +95,7 @@ async function updateStartSliceLinks(rt: StartRuntime, changeId: string, spec: S
 
 function printCreatedStartChange(rt: StartRuntime, created: CreatedStartChange): void {
 	rt.stdout(`\nCreated Change ${created.changeId}\n`)
-	rt.stdout(`Branch: ${created.branch} (you are now on it)\n`)
+	rt.stdout(`Change branch: ${created.changeBranch} (you are now on it)\n`)
 	printCreatedStartSlices(rt, created)
 	rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the Change/slice artifacts). Commit at your discretion.\n')
 	rt.stdout(`\nNext: trowel change work ${created.changeId}\n`)
@@ -269,7 +269,7 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeFakes({
 					startOut: null,
-					createChangeResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -303,7 +303,7 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeFakes({
 					startOut: null,
-					createChangeResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -382,7 +382,7 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeAttachedFakes(tmp, {
 					startOut: null, // not used — readStartOut overridden below
-					createChangeResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -408,7 +408,7 @@ if (import.meta.vitest) {
 
 				const { rt, calls } = makeAttachedFakes(tmp, {
 					startOut: null,
-					createChangeResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 					preflightFailures: ['working tree dirty'],
@@ -501,7 +501,7 @@ if (import.meta.vitest) {
 				}
 				const { rt } = makeFakes({
 					startOut: JSON.stringify(spec),
-					createChangeResult: { id: 'pid', branch: 'pid-branch' },
+					createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 					createSliceIds: ['s1'],
 					currentBranch: 'main',
 				})
@@ -558,11 +558,11 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: stash dance', () => {
-		test('dirty tree → stashPush before createChange, then checkout integration, then stashPop (in that order)', async () => {
+		test('dirty tree → stashPush before createChange, then checkout Change branch, then stashPop (in that order)', async () => {
 			const startOut = minimalStartOutJson()
 			const { rt, calls } = makeFakes({
 				startOut,
-				createChangeResult: { id: 'pid', branch: 'pid-branch' },
+				createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 				createSliceIds: ['s1'],
 				currentBranch: 'main',
 				cleanTree: false,
@@ -575,7 +575,7 @@ if (import.meta.vitest) {
 			const startOut = minimalStartOutJson()
 			const { rt, calls } = makeFakes({
 				startOut,
-				createChangeResult: { id: 'pid', branch: 'pid-branch' },
+				createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 				createSliceIds: ['s1'],
 				currentBranch: 'main',
 				cleanTree: true,
@@ -586,11 +586,11 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: stash-pop conflict', () => {
-		test('stashPop throws → user stays on integration branch (no restore), error surfaces', async () => {
+		test('stashPop throws → user stays on Change branch (no restore), error surfaces', async () => {
 			const startOut = minimalStartOutJson()
 			const { rt, gitState } = makeFakes({
 				startOut,
-				createChangeResult: { id: 'pid', branch: 'pid-branch' },
+				createChangeResult: { id: 'pid', changeBranch: 'pid-branch' },
 				createSliceIds: ['s1'],
 				currentBranch: 'main',
 				cleanTree: false,
@@ -633,7 +633,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStart: summary', () => {
-		test('prints Change id, integration branch, slice ids, and a commit-reminder hint after success', async () => {
+		test('prints Change id, Change branch, slice ids, and a commit-reminder hint after success', async () => {
 			const startOut = JSON.stringify({
 				outcome: 'create-change' as const,
 				change: { title: 'Rename Foo', body: 'b' },
@@ -644,7 +644,7 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls } = makeFakes({
 				startOut,
-				createChangeResult: { id: 'abc123', branch: 'abc123-rename-foo' },
+				createChangeResult: { id: 'abc123', changeBranch: 'abc123-rename-foo' },
 				createSliceIds: ['s1', 's2'],
 				currentBranch: 'main',
 			})
@@ -668,7 +668,7 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls } = makeFakes({
 				startOut: startOutJson,
-				createChangeResult: { id: 'abc123', branch: 'abc123-target-develop' },
+				createChangeResult: { id: 'abc123', changeBranch: 'abc123-target-develop' },
 				currentBranch: 'develop',
 			})
 
@@ -688,7 +688,7 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls, gitState } = makeFakes({
 				startOut: startOutJson,
-				createChangeResult: { id: 'abc123', branch: 'abc123-rename-foo' },
+				createChangeResult: { id: 'abc123', changeBranch: 'abc123-rename-foo' },
 				createSliceIds: ['slice-a', 'slice-b'],
 				currentBranch: 'main',
 			})

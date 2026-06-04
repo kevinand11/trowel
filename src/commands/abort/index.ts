@@ -7,7 +7,6 @@ import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
-import { slug as slugify } from '../../utils/slug.ts'
 import { cleanupChange } from '../../work/cleanup.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
@@ -51,8 +50,8 @@ async function classifiedChangeOrThrow(changeId: string, rt: AbortRuntime): Prom
 	return { change, slices, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) }
 }
 
-async function changeTargetBranch(change: ChangeRecord, rt: AbortRuntime): Promise<string> {
-	return change.targetBranch ?? await rt.git.baseBranch()
+async function changeTargetBranch(change: ChangeRecord, _rt: AbortRuntime): Promise<string> {
+	return change.targetBranch
 }
 
 async function abortChangeByState(target: ClassifiedChange, targetBranch: string, rt: AbortRuntime): Promise<void> {
@@ -100,7 +99,7 @@ async function confirmAbortInFlightChange(changeId: string, rt: AbortRuntime): P
 
 async function closeOpenSlicePrs(changeId: string, slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
 	if (!rt.usePrs) return
-	const canonicalHeads = new Set(slices.map((slice) => sliceBranchName(changeId, slice)))
+	const canonicalHeads = new Set(slices.map((slice) => slice.sliceBranch))
 	for (const pr of await rt.gh.listOpenPrs()) {
 		if (canonicalHeads.has(pr.headRefName) || pr.headRefName.startsWith(sliceBranchPrefix(changeId))) await closePrWithoutMerging(pr.number, rt)
 	}
@@ -111,7 +110,7 @@ function sliceBranchPrefix(changeId: string): string {
 }
 
 async function closeOpenCloseOutPr(change: ChangeRecord, rt: AbortRuntime): Promise<void> {
-	const pr = await rt.gh.findAnyPrByHead(change.branch)
+	const pr = await rt.gh.findAnyPrByHead(change.changeBranch)
 	if (pr?.state === 'OPEN') await closePrWithoutMerging(pr.number, rt)
 }
 
@@ -141,10 +140,6 @@ async function cleanupAfterAbort(change: ChangeRecord, slices: ClassifiedSlice[]
 			stdout: rt.stdout,
 		},
 	})
-}
-
-function sliceBranchName(changeId: string, slice: Pick<ClassifiedSlice, 'id' | 'title'>): string {
-	return `change-${changeId}/slice-${slice.id}-${slugify(slice.title)}`
 }
 
 function listOpenPrsFor(base: CommandBase): (branch: string) => Promise<OpenPr[]> {
@@ -208,7 +203,7 @@ if (import.meta.vitest) {
 	function fakeChange(overrides: Partial<ChangeRecord> = {}): ChangeRecord {
 		return {
 			id: '42',
-			branch: 'change-42-feature',
+			changeBranch: 'change-42-feature',
 			targetBranch: 'main',
 			title: 'Feature',
 			state: 'OPEN',
@@ -227,6 +222,7 @@ if (import.meta.vitest) {
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: `change-42/slice-${overrides.id ?? 's1'}-first-slice`,
 			prState: null,
 			...overrides,
 		}
@@ -241,6 +237,7 @@ if (import.meta.vitest) {
 				return state.change && state.change.id === id ? { ...state.change } : null
 			},
 			listChanges: async () => [],
+			updateChangeMetadata: async () => {},
 			closeChange: async (id) => {
 				calls.push(`closeChange(${id})`)
 				if (state.change && state.change.id === id) {
@@ -254,6 +251,7 @@ if (import.meta.vitest) {
 				return state.slices.map((slice) => ({ ...slice }))
 			},
 			findSlice: async () => null,
+			updateSliceMetadata: async () => {},
 			updateSlice: async (_changeId, sliceId, patch) => {
 				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)
 				const slice = state.slices.find((s) => s.id === sliceId)

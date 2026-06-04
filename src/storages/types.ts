@@ -19,7 +19,7 @@ export type SliceSpec = {
 export type ChangeSummary = {
 	id: string
 	title: string
-	branch: string
+	changeBranch: string
 	/**
 	 * ISO 8601 creation timestamp. Issue storage uses the underlying GitHub issue's `createdAt`;
 	 * file storage uses the Change's `store.json:createdAt`. Consumers sort by this (e.g. `trowel
@@ -33,8 +33,8 @@ export type ChangeState = 'open' | 'ready' | 'in-flight' | 'landed' | 'done' | '
 
 export type ChangeRecord = {
 	id: string
-	branch: string
-	targetBranch?: string
+	changeBranch: string
+	targetBranch: string
 	title: string
 	/** Legacy raw issue/storage lifecycle, retained for command paths that have not moved to closedAt yet. */
 	state: RawChangeState
@@ -43,7 +43,7 @@ export type ChangeRecord = {
 }
 
 /**
- * The state of the slice's PR on the integration branch.
+ * The state of the slice's PR on the Change branch.
  *
  * - `'draft'`: an open draft PR exists (the reviewer phase fires).
  * - `'ready'`: an open non-draft PR exists, awaiting merge.
@@ -67,6 +67,8 @@ export type Slice = {
 	needsRevision: boolean
 	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
 	blockedBy: string[]
+	/** Stored branch this Slice's Turns run on. */
+	sliceBranch: string
 	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. Always null on the file storage. */
 	prState: SlicePrState
 }
@@ -74,6 +76,8 @@ export type Slice = {
 export type ClassifiedSlice = Slice
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'closedAt' | 'blockedBy'>>
+export type ChangeMetadataPatch = Partial<Pick<ChangeRecord, 'targetBranch' | 'changeBranch'>>
+export type SliceMetadataPatch = Partial<Pick<Slice, 'sliceBranch'>>
 
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
@@ -113,11 +117,11 @@ export type ClassifySliceConfig = { usePrs: boolean; review: boolean; perSliceBr
 
 /**
  * Per-loop-invocation context passed to storage methods that need to act against a specific Change's
- * integration branch. Same shape across all phase methods so the call sites stay uniform.
+ * Change branch. Same shape across all phase methods so the call sites stay uniform.
  */
 export type PhaseCtx = {
 	changeId: string
-	integrationBranch: string
+	changeBranch: string
 	config: ClassifySliceConfig
 }
 
@@ -142,10 +146,11 @@ export type StorageFactory = (deps: StorageDeps) => Storage
 
 export interface Storage {
 	// Change lifecycle
-	createChange(spec: ChangeSpec): Promise<{ id: string; branch: string }>
+	createChange(spec: ChangeSpec): Promise<{ id: string; changeBranch: string }>
 	findChange(id: string): Promise<ChangeRecord | null>
 	listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]>
 	closeChange(id: string): Promise<void>
+	updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void>
 
 	// Slice lifecycle
 	createSlice(changeId: string, spec: SliceSpec): Promise<Slice>
@@ -157,4 +162,5 @@ export interface Storage {
 	 */
 	findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null>
 	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>
+	updateSliceMetadata(changeId: string, sliceId: string, patch: SliceMetadataPatch): Promise<void>
 }

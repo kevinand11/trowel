@@ -13,7 +13,7 @@ type WorkRuntime = {
 async function runWork(id: string, rt: WorkRuntime): Promise<void> {
 	const change = await rt.storage.findChange(id)
 	if (!change) throw new Error(`Change '${id}' not found`)
-	await rt.runEntity({ kind: 'change', id, integrationBranch: change.branch, targetBranch: change.targetBranch, title: change.title })
+	await rt.runEntity({ kind: 'change', id, changeBranch: change.changeBranch, targetBranch: change.targetBranch, title: change.title })
 }
 
 export async function work(id: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
@@ -34,18 +34,18 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 
-	function makeStorage(state: { change?: { id: string; branch: string; targetBranch?: string; title: string } }): Storage {
+	function makeStorage(state: { change?: { id: string; changeBranch: string; targetBranch: string; title: string } }): Storage {
 		return fakeSliceStorage([], null, {
-			findChange: async (id) => (state.change && state.change.id === id ? { id, branch: state.change.branch, targetBranch: state.change.targetBranch, title: state.change.title, state: 'OPEN' } : null),
+			findChange: async (id) => (state.change && state.change.id === id ? { id, changeBranch: state.change.changeBranch, targetBranch: state.change.targetBranch, title: state.change.title, state: 'OPEN' } : null),
 		})
 	}
 
 	describe('runWork', () => {
-		test('dispatches with the Change\'s integration and target branches', async () => {
-			const storage = makeStorage({ change: { id: 'abc123', branch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' } })
+		test('dispatches with the Change\'s Change and target branches', async () => {
+			const storage = makeStorage({ change: { id: 'abc123', changeBranch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' } })
 			const calls: LoopEntity[] = []
 			await runWork('abc123', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
-			expect(calls).toEqual([{ kind: 'change', id: 'abc123', integrationBranch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' }])
+			expect(calls).toEqual([{ kind: 'change', id: 'abc123', changeBranch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' }])
 		})
 
 		test('throws when Change is not found', async () => {

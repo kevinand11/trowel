@@ -20,7 +20,7 @@ export type LoopDeps = {
 	storage: Storage
 	git: GitOps
 	gh: GhOps
-	integrationBranch: string
+	changeBranch: string
 	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
@@ -32,7 +32,7 @@ export type LoopDeps = {
  *
  * - `perSliceBranches: true` — slices land on their own branches, so parallel implementers
  *   are safe; the user's `config.turn.maxConcurrent` is the only cap.
- * - `perSliceBranches: false` — implementers commit directly on the integration branch, so
+ * - `perSliceBranches: false` — implementers commit directly on the Change branch, so
  *   any concurrency would race; force a cap of 1 regardless of user config.
  */
 function effectiveConcurrency(perSliceBranches: boolean, configCap: number | null): number {
@@ -145,7 +145,7 @@ if (import.meta.vitest) {
 
 	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
 		return {
-			createChange: async () => ({ id: 'x', branch: 'x' }),
+			createChange: async () => ({ id: 'x', changeBranch: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
 			closeChange: async () => {},
@@ -154,9 +154,11 @@ if (import.meta.vitest) {
 			},
 			findSlices: async () => state.slices.map((s) => ({ ...s })),
 			findSlice: async () => null,
+			updateChangeMetadata: async () => {},
 			updateSlice: async (_p, sliceId, patch) => {
 				applyTestSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
 			},
+			updateSliceMetadata: async () => {},
 			...overrides,
 		}
 	}
@@ -195,6 +197,7 @@ if (import.meta.vitest) {
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: `change-p1/slice-${overrides.id ?? 's1'}-a`,
 			prState: null,
 			...overrides,
 		}
@@ -240,7 +243,7 @@ if (import.meta.vitest) {
 			storage,
 			git: noopGit(),
 			gh,
-			integrationBranch: 'integration',
+			changeBranch: 'change-branch',
 			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
 			config: { usePrs: false, review: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
@@ -392,7 +395,7 @@ if (import.meta.vitest) {
 			expect(logs.some((m) => /slice-a\] error: docker unreachable/.test(m))).toBe(true)
 		})
 
-		test('perSliceBranches:false forces serial implementers even when config allows 3 (parallel implementers on integration would race)', async () => {
+		test('perSliceBranches:false forces serial implementers even when config allows 3 (parallel implementers on Change branch would race)', async () => {
 			expect(await peakConcurrentImplementers(false, 3)).toBe(1)
 		})
 
