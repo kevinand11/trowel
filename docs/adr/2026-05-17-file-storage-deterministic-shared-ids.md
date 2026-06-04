@@ -1,6 +1,6 @@
 # File storage: deterministic, project-wide shared-pool integer ids; lock-guarded compute-on-demand allocation
 
-> **Note:** the read-lock posture in this ADR ("Read-only commands … do **not** acquire it") is **amended by `2026-05-17-reads-acquire-mutation-lock.md`**. Reads now acquire the lock too, because Reconciliation may write. Concurrent trowel invocations are out of scope; `trowel busy` is the documented contention failure mode.
+> **Note:** the read-lock posture in this ADR is historical. It was amended by `2026-05-17-reads-acquire-mutation-lock.md`, and that amendment is now superseded by [2026-06-04-read-commands-do-not-finalize.md](./2026-06-04-read-commands-do-not-finalize.md): entity read commands do not acquire the Mutation lock and never run Finalization.
 
 The `file` storage today mints **PRD ids** as 10-character base-36 random strings via `src/utils/id.ts:generateId`, with slice ids drawn from the same generator. Slice ids are namespaced under their PRD directory (`<prdsDir>/<prdId>-<slug>/slices/<sliceId>-<slug>/`) — two different PRDs can in principle hold slices that share the same id without conflict, because the lookup path always carries the PRD context. Random ids carry no information beyond uniqueness, are awkward to type, and force every slice-addressed command (`status`, `close`, `implement`, `address`, `review`) to also name the PRD.
 

@@ -1,5 +1,7 @@
 # Reads acquire the mutation lock for reconciliation; concurrent invocations are out of scope
 
+> **Superseded by:** [2026-06-04-read-commands-do-not-finalize.md](./2026-06-04-read-commands-do-not-finalize.md). Entity read commands are now lock-free and never run Finalization; only `trowel change ship <id>` finalizes a landed Change after a merged Close-out PR. The text below is historical context.
+
 ADR `2026-05-17-file-storage-deterministic-shared-ids.md` locked the posture that read-only commands (`status`, `list`, `config`, `doctor`) do not acquire the **Mutation lock**. Its reasoning: reads-that-don't-write don't risk corruption and shouldn't pay the lock cost or risk `trowel busy` failures under contention. The original ADR also explicitly weighed "backgrounded `trowel work` plus an interactive `trowel status` in another shell" as a real case the read-free posture protected.
 
 This ADR amends that posture in light of the unified **Close-out** model and the **Reconciliation** discipline it introduces (see ADR `2026-05-17-fix-entity-unified-close-out.md`). Reconciliation is the act of observing an external PR's `merged` status on GitHub and writing it back to the storage record (OPEN → CLOSED). Under `config.work.usePrs: true`, a PRD or Fix stays OPEN after Close-out opens its PR; the entity transitions CLOSED only when GitHub reports the PR merged. For `status` and `list` output to honour the CLOSED-means-merged-into-baseBranch invariant, reads must *observe* that external transition — and observing means writing.

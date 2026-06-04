@@ -1,5 +1,7 @@
 # Fix as a slice-without-PRD; unified Close-out for PRDs and Fixes
 
+> **Historical note:** the Reconciliation/read-command behavior described below is superseded by [2026-06-04-read-commands-do-not-finalize.md](./2026-06-04-read-commands-do-not-finalize.md). Entity read commands are lock-free and never run Finalization; Ship owns Change-level Finalization after a landed Close-out.
+
 Trowel today has two top-level entities: the **PRD** (heavyweight, sliced, run by `trowel work`) and the slice (sub-entity of a PRD). Bug-fix work has no canonical surface — the `trowel fix` stub was a one-shot agent run with no entity tracking, no symmetry with PRD/slice machinery, and no shared shipping logic.
 
 This ADR introduces a third first-class entity, **Fix**, and a shared **Close-out** step that ships both PRDs and Fixes through the same code path. The two pieces are entwined: Fix is defined as "a slice without a PRD," and that definition is what makes a unified Close-out tractable.
@@ -34,7 +36,7 @@ Branch deletion at Close-out is gated by `config.close.deleteBranch`. `'always'`
 - **Fix as degenerate PRD** (one entity kind, slice-less PRDs are fixes, distinguished by a `kind` field). Rejected: collapses CLI ergonomics (`trowel list prd --kind fix` instead of `trowel list fix`), forces a single filesystem area to hold conceptually-different artifacts, and creates a `findPrds`-without-filter foot-gun.
 - **Fix as its own entity but no shared Close-out** (each entity has bespoke shipping logic). Rejected: duplicates the `usePrs`-branching merge/PR logic in two places. The shared Close-out is the payoff for the entity-symmetry framing.
 - **Fix shares the PRD's integration branch model** (each Fix has a "fix integration branch" with the agent committing on a sub-branch that PRs into it). Rejected: adds a layer for no benefit. Fix has no sub-entities to merge in; the extra branch level is bookkeeping.
-- **Auto Close-out fires PR-merge-then-CLOSED in one transaction** under `usePrs: true`. Rejected: GitHub merge is external; trowel cannot transact it. The CLOSED-only-at-merge invariant requires Reconciliation as a separate observation step (see ADR `2026-05-17-reads-acquire-mutation-lock.md`).
+- **Auto Close-out fires PR-merge-then-CLOSED in one transaction** under `usePrs: true`. Rejected: GitHub merge is external; trowel cannot transact it. This historical option's read/write posture was later superseded by ADR `2026-06-04-read-commands-do-not-finalize.md`.
 - **`trowel close` does double duty** (manual abort + force-ship). Rejected: collapsing "abort" and "ship" under one verb makes the dangerous case (accidental ship) as easy as the safe case (abort).
 - **Co-locate Fixes under `prdsDir/`** with a `kind` marker. Rejected: `prdsDir` is named for PRDs; layering violation. Separate `fixesDir` keeps the filesystem semantics clean.
 - **Fix gets a separate id pool** (fix ids count from 1 independently). Rejected: reintroduces the cross-entity ambiguity the shared-pool ADR retired (a directory named `5-tabs-fix/` could collide with `5-add-sso/`). Shared pool keeps "an integer prefix is an entity number" unambiguous.
@@ -46,4 +48,4 @@ Branch deletion at Close-out is gated by `config.close.deleteBranch`. `'always'`
 - `trowel fix` becomes a *create-only* interactive grill (mirror of `trowel start`); execution flows through `trowel work fix <id>`.
 - `runLoop` is refactored to operate over `LoopEntity = { kind: 'prd' | 'fix'; ... }`; today's PRD-only signature retires.
 - Close-out is a new phase between "last actionable unit done" and "loop exits"; it is idempotent (re-running `trowel work` on an already-shipped entity is a no-op or a Reconciliation-only pass).
-- Reconciliation (see companion ADR `2026-05-17-reads-acquire-mutation-lock.md`) runs in every entity-touching command and is the only mechanism that flips OPEN → CLOSED for `usePrs: true` entities post-PR-merge.
+- Historical Reconciliation behavior was later superseded by ADR `2026-06-04-read-commands-do-not-finalize.md`; Ship now owns Change-level Finalization after a landed Close-out.

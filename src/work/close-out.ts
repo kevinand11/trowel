@@ -8,11 +8,11 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * Terminal step that ships a closeable Change. Branches on `config.work.usePrs`:
  *
  * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
- *   doesn't already exist), then marks it ready. Entity stays OPEN; **Reconciliation** flips OPEN →
- *   CLOSED when GitHub reports the PR merged.
+ *   doesn't already exist), then marks it ready. The Change remains unfinalized until Ship later
+ *   observes the merged PR as a landed state and runs Finalization.
  * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch from a
- *   reserved detached merge worktree when projectRoot is available, then writes CLOSED on the
- *   storage record immediately.
+ *   reserved detached merge worktree when projectRoot is available, then runs Finalization
+ *   immediately.
  *
  * Branch deletion under `usePrs: false` is gated by `config.abort.deleteBranch`. The `'prompt'`
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
@@ -87,8 +87,8 @@ function closeOutViaMerge(entity: CloseOutEntity, deps: CloseOutDeps, targetBran
 async function closeOutViaMergeLocked(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
 	await mergeCloseOutBranch(entity, deps, targetBranch)
 	deps.log(`${tag} host-merged ${entity.branch} into ${targetBranch}`)
-	await markEntityClosed(entity, deps)
-	deps.log(`${tag} marked CLOSED`)
+	await finalizeEntity(entity, deps)
+	deps.log(`${tag} finalized Change`)
 	await deleteAutoBranchIfAllowed(entity, deps, tag)
 }
 
@@ -126,7 +126,7 @@ async function restoreAfterFailedCloseOutMerge(current: string, targetBranch: st
 	if (current !== targetBranch && (await deps.git.branchExists(current))) await deps.git.checkout(current)
 }
 
-async function markEntityClosed(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
+async function finalizeEntity(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
 	await deps.storage.closeChange(entity.id)
 }
 
@@ -189,7 +189,7 @@ if (import.meta.vitest) {
 	}
 
 	describe('runCloseOut', () => {
-		test('Change + usePrs:false: host-merges integration to targetBranch, marks Change CLOSED, retains branch on never', async () => {
+		test('Change + usePrs:false: host-merges integration to targetBranch, finalizes the Change, retains branch on never', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()

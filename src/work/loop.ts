@@ -24,11 +24,6 @@ export type LoopDeps = {
 	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
-	/**
-	 * Project root used by the phase primitives' land step to acquire the **Mutation lock** around
-	 * their git+storage mutations. Optional only so existing test fixtures don't have to thread it
-	 * through; production wiring always supplies it.
-	 */
 	projectRoot?: string
 }
 

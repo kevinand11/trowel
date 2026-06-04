@@ -1,5 +1,5 @@
 import type { GhOps } from './gh-ops.ts'
-import type { GitOps } from './git-ops.ts'
+import type { ReadOnlyGitFacts } from './git-ops.ts'
 import type { ClassifiedSlice, ChangeRecord, ChangeState } from '../storages/types.ts'
 
 export type CloseOutPrState = 'OPEN' | 'CLOSED' | 'MERGED' | null
@@ -11,7 +11,7 @@ export type ChangeStateFacts = {
 
 export type ChangeStateDeps = {
 	gh: GhOps
-	git: GitOps
+	git: ReadOnlyGitFacts
 }
 
 export async function classifyChange(change: ChangeRecord, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeState> {
@@ -71,7 +71,7 @@ function worthCheckingBranchMerge(change: ChangeRecord, slices: ClassifiedSlice[
 	return rawClosedAt(change) !== null || allSlicesDone(slices)
 }
 
-async function targetBranchFor(change: ChangeRecord, git: GitOps): Promise<string | null> {
+async function targetBranchFor(change: ChangeRecord, git: ReadOnlyGitFacts): Promise<string | null> {
 	if (change.targetBranch) return change.targetBranch
 	try {
 		return await git.baseBranch()
@@ -80,7 +80,7 @@ async function targetBranchFor(change: ChangeRecord, git: GitOps): Promise<strin
 	}
 }
 
-async function branchMergeProven(branch: string, targetBranch: string, git: GitOps): Promise<boolean> {
+async function branchMergeProven(branch: string, targetBranch: string, git: ReadOnlyGitFacts): Promise<boolean> {
 	try {
 		return (await git.remoteBranchExists(branch)) ? await remoteBranchMerged(branch, targetBranch, git) : await localBranchMerged(branch, targetBranch, git)
 	} catch {
@@ -88,12 +88,12 @@ async function branchMergeProven(branch: string, targetBranch: string, git: GitO
 	}
 }
 
-async function remoteBranchMerged(branch: string, targetBranch: string, git: GitOps): Promise<boolean> {
+async function remoteBranchMerged(branch: string, targetBranch: string, git: ReadOnlyGitFacts): Promise<boolean> {
 	await Promise.all([git.fetch(branch), git.fetch(targetBranch)])
 	return (await git.commitsAhead(`origin/${branch}`, `origin/${targetBranch}`)) === 0
 }
 
-async function localBranchMerged(branch: string, targetBranch: string, git: GitOps): Promise<boolean> {
+async function localBranchMerged(branch: string, targetBranch: string, git: ReadOnlyGitFacts): Promise<boolean> {
 	if (!(await git.branchExists(branch))) return false
 	return await git.isMerged(branch, targetBranch)
 }

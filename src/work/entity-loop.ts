@@ -23,9 +23,9 @@ export type EntityLoopDeps = {
 }
 
 /**
- * Top-level dispatch entry for `trowel change work`. Work never runs Reconciliation,
- * Close-out, or Cleanup; it only runs open Change Slice work/finalization and reports
- * the next explicit Change-level action for non-open computed states.
+ * Top-level dispatch entry for `trowel change work`. Work never runs Close-out,
+ * Change finalization, or Cleanup; it only runs open Change Slice work/finalization
+ * and reports the next explicit Change-level action for non-open computed states.
  */
 export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): Promise<void> {
 	await runChangeEntity(entity, deps)

@@ -56,6 +56,18 @@ _Avoid_: Close, merge, deploy
 The success-path operation that merges or opens a shipping PR for a completed Change.
 _Avoid_: Cleanup, abort, close
 
+**Entity read command**:
+A command that displays Change or Slice state without acquiring the Mutation lock, writing storage, or switching the main working tree branch.
+_Avoid_: Refresh, reconcile, sync
+
+**Mutation lock**:
+The project-wide advisory lock at `.trowel/lock` that serializes state-mutating Change and Slice commands.
+_Avoid_: Read lock, status lock, Git lock
+
+**Finalization**:
+The storage write that records landed repository work as done by setting `closedAt`.
+_Avoid_: Reconciliation, status refresh, read repair
+
 **Slice state**:
 A lowercase computed Slice lifecycle classification with values `draft`, `open`, `blocked`, `in-flight`, `needs-revision`, `landed`, and `done`, evaluated as `done → landed → needs-revision → in-flight → blocked → open → draft`, where `landed` means the Slice has merged into the Integration branch but has not been finalized, and `done` means finalization has set `closedAt`.
 _Avoid_: Bucket, ready, raw state, status, uppercase lifecycle enums
@@ -70,6 +82,8 @@ _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums
 - A **Change state** is computed rather than stored directly; repository merge is proven by a merged Close-out PR, or by the remote Integration branch not being ahead of the Target branch, or by local fallback when the remote is missing; a missing branch only proves merge when a merged Close-out PR exists.
 - `landed` is the shared transient state for merged-but-not-finalized Slices and Changes.
 - Slice finalization runs in the work loop when it encounters a landed Slice; after finalization the loop refetches and may report the parent Change as ready in the same invocation. Status/list may report `landed` but do not finalize Slices.
+- Only **Ship** runs **Finalization** for a landed **Change** after a merged Close-out PR; **Entity read commands** may report `landed` but never finalize.
+- **Entity read commands** are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <slice-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
 - A **Slice** may have one **Slice branch** when per-slice branches are enabled.
 - A **Slice state** is computed from Slice metadata and external PR/blocker relationships rather than stored directly; Slice `open` is the old ready-for-agent bucket renamed, while `readyForAgent` remains the raw opt-in signal.
@@ -96,7 +110,7 @@ _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums
 - **Abort** uses `abort.comment` when closing GitHub issues, Slice PRs, and in-flight Close-out PRs; if the comment is `null`, it closes silently.
 - **Ship** and **Abort** are Change-level operations only; individual Slices are not shipped or aborted directly, and there is no Slice abort command.
 - Slice phase commands remain as execution overrides: implement, review, and address are not terminal lifecycle commands.
-- **Work** never runs Cleanup; when a Change state is `ready`, `in-flight`, `landed`, `done`, or `aborted`, Work reports the state and exits.
+- **Work** never runs Cleanup or Change-level Finalization; when a Change state is `ready`, `in-flight`, `landed`, `done`, or `aborted`, Work reports the state and exits.
 - **Cleanup** considers the Change's Integration branch and all Slice branches, removes all trowel-managed Worktrees, and never removes remote branches.
 - When a Change is `in-flight`, **Ship** may run worktree-only Cleanup while keeping local branches until the Close-out PR is merged.
 - Under a `prompt` branch deletion policy, **Cleanup** asks once for the full local branch set; without an interactive terminal, it skips local branch deletion but still removes Worktrees.
@@ -105,8 +119,8 @@ _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums
 
 ## Example dialogue
 
-> **Dev:** "When the last **Slice** is done, should `trowel change work` delete the **Slice branch**?"
-> **Domain expert:** "No. **Work** never cleans branches. `trowel change ship` or `trowel change abort` runs **Cleanup**, which removes local branches and all trowel-managed **Worktrees** for the **Change**. If the **Change** is already CLOSED, `ship` only runs **Cleanup**."
+> **Dev:** "When `trowel change status` sees that the **Close-out** PR was merged, should it finalize the **Change** or switch branches to inspect it?"
+> **Domain expert:** "No. `status` is an **Entity read command**: it may report the **Change state** as `landed`, but only **Ship** runs **Finalization** for the **Change** and then runs **Cleanup**."
 
 ## Flagged ambiguities
 

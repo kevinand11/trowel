@@ -47,10 +47,10 @@ export type ChangeRecord = {
  *
  * - `'draft'`: an open draft PR exists (the reviewer phase fires).
  * - `'ready'`: an open non-draft PR exists, awaiting merge.
- * - `'merged'`: the PR is merged (the slice's `state` should also be `'CLOSED'` in most cases).
+ * - `'merged'`: the PR is merged; the computed Slice state is `landed` until Finalization sets `closedAt`.
  * - `null`: no PR exists, or the storage has no PR concept (file storage always emits `null`).
  *
- * Populated by `findSlices`. See ADR `afk-loop-asymmetric-across-storages`.
+ * Populated by PR-state enrichment after storage reads raw Slice records.
  */
 export type SlicePrState = 'draft' | 'ready' | 'merged' | null
 export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'needs-revision' | 'landed' | 'done'

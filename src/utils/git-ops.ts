@@ -51,6 +51,68 @@ export type GitOps = {
 	stashPop(): Promise<void>
 }
 
+// Branch-stable inspection surface for entity read commands. These methods may fetch
+// remote refs, but they cannot checkout, create, or delete local branches.
+export type ReadOnlyGitFacts = Pick<GitOps, 'baseBranch' | 'branchExists' | 'commitsAhead' | 'fetch' | 'isMerged' | 'remoteBranchExists'>
+
+export function branchStableGitFacts(git: GitOps): ReadOnlyGitFacts {
+	return {
+		baseBranch: git.baseBranch,
+		branchExists: git.branchExists,
+		commitsAhead: git.commitsAhead,
+		fetch: git.fetch,
+		isMerged: git.isMerged,
+		remoteBranchExists: git.remoteBranchExists,
+	}
+}
+
+export function branchStableGitOps(git: GitOps): GitOps {
+	return {
+		detectVersion: git.detectVersion,
+		fetch: git.fetch,
+		push: forbiddenGitMutation('push'),
+		checkout: forbiddenGitMutation('checkout'),
+		mergeNoFf: forbiddenGitMutation('mergeNoFf'),
+		mergeAbort: forbiddenGitMutation('mergeAbort'),
+		mergeNoFfIn: forbiddenGitMutation('mergeNoFfIn'),
+		mergeAbortIn: forbiddenGitMutation('mergeAbortIn'),
+		deleteRemoteBranch: forbiddenGitMutation('deleteRemoteBranch'),
+		remoteBranchExists: git.remoteBranchExists,
+		createRemoteBranch: forbiddenGitMutation('createRemoteBranch'),
+		createLocalBranch: forbiddenGitMutation('createLocalBranch'),
+		pushSetUpstream: forbiddenGitMutation('pushSetUpstream'),
+		currentBranch: git.currentBranch,
+		baseBranch: git.baseBranch,
+		branchExists: git.branchExists,
+		localBranchExists: git.localBranchExists,
+		isMerged: git.isMerged,
+		commitsAhead: git.commitsAhead,
+		listLocalBranches: git.listLocalBranches,
+		deleteBranch: forbiddenGitMutation('deleteBranch'),
+		resolveRef: git.resolveRef,
+		checkoutDetached: forbiddenGitMutation('checkoutDetached'),
+		resetHard: forbiddenGitMutation('resetHard'),
+		pushHeadTo: forbiddenGitMutation('pushHeadTo'),
+		updateLocalBranchRef: forbiddenGitMutation('updateLocalBranchRef'),
+		worktreeAdd: forbiddenGitMutation('worktreeAdd'),
+		worktreeRemove: forbiddenGitMutation('worktreeRemove'),
+		worktreeList: git.worktreeList,
+		restoreAll: forbiddenGitMutation('restoreAll'),
+		cleanUntracked: forbiddenGitMutation('cleanUntracked'),
+		cleanAll: forbiddenGitMutation('cleanAll'),
+		isWorkingTreeClean: git.isWorkingTreeClean,
+		statusShort: git.statusShort,
+		stashPush: forbiddenGitMutation('stashPush'),
+		stashPop: forbiddenGitMutation('stashPop'),
+	}
+}
+
+function forbiddenGitMutation(name: string): (...args: unknown[]) => Promise<never> {
+	return async () => {
+		throw new Error(`git.${name} is not allowed during entity read commands`)
+	}
+}
+
 export function createRepoGit(projectRoot: string): GitOps {
 	const gitOrThrow = async (args: string[], cwd = projectRoot): Promise<string> => {
 		const r = await tryExec('git', ['-C', cwd, ...args])
@@ -260,6 +322,27 @@ if (import.meta.vitest) {
 	const path = await import('node:path')
 	const { writeFile, readFile, stat, mkdir } = await import('node:fs/promises')
 	const { setupTestRepo } = await import('../test-utils/git-repo.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
+
+	describe('branchStableGitOps', () => {
+		test('allows branch-stable fact reads but rejects checkout/create/delete operations', async () => {
+			const calls: string[] = []
+			const git = branchStableGitOps(noopGitOps({
+				fetch: async (branch) => { calls.push(`fetch(${branch})`) },
+				remoteBranchExists: async (branch) => {
+					calls.push(`remoteBranchExists(${branch})`)
+					return true
+				},
+			}))
+
+			await git.fetch('change-1')
+			expect(await git.remoteBranchExists('change-1')).toBe(true)
+			await expect(git.checkout('change-1')).rejects.toThrow(/git\.checkout is not allowed/)
+			await expect(git.createLocalBranch('change-1', 'main')).rejects.toThrow(/git\.createLocalBranch is not allowed/)
+			await expect(git.deleteBranch('change-1')).rejects.toThrow(/git\.deleteBranch is not allowed/)
+			expect(calls).toEqual(['fetch(change-1)', 'remoteBranchExists(change-1)'])
+		})
+	})
 
 	describe('GitOps environment probe', () => {
 		test('detectVersion reports installed:true and parses the semver from real `git --version`', async () => {

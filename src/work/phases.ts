@@ -21,11 +21,6 @@ export type PhaseDeps = {
 	gh: GhOps
 	log: (msg: string) => void
 	mergeNoVerify: boolean
-	/**
-	 * Project root used by `landX` to acquire the project-wide **Mutation lock** around the
-	 * git+storage mutations that follow the agent's Turn. Optional only because some test
-	 * fixtures don't construct a real one; production wiring always supplies it.
-	 */
 	projectRoot?: string
 }
 
