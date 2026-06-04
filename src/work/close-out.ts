@@ -7,8 +7,8 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * Terminal step that ships a closeable Change. Branches on `config.work.usePrs`:
  *
  * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
- *   doesn't already exist), then marks it ready. Entity stays OPEN; **Reconciliation** flips OPEN →
- *   CLOSED when GitHub reports the PR merged.
+ *   doesn't already exist), then marks it ready. The Change remains unfinalized until Ship later
+ *   observes the merged PR as a landed state and closes the storage record.
  * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch via
  *   `git merge --no-ff`, then writes CLOSED on the storage record immediately.
  *
