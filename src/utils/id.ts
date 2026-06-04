@@ -3,24 +3,21 @@ import path from 'node:path'
 
 /**
  * Allocate the next id from the file-storage shared pool. Scans every Change directory under
- * `changesDir`, every slice directory under each Change's `slices/`, and every Fix directory under
- * `fixesDir`. Finds the maximum positive integer prefix (the `42` in `42-some-slug/`) and
- * returns `max + 1`. Returns `1` when no existing entities are found.
+ * `changesDir` and every slice directory under each Change's `slices/`. Finds the maximum positive
+ * integer prefix (the `42` in `42-some-slug/`) and returns `max + 1`. Returns `1` when no existing
+ * entities are found.
  *
  * Compute-on-demand; no persisted counter. Callers must hold the **Mutation lock** so that the
  * scan + mkdir of the new entity directory happen atomically. See ADR
- * `2026-05-17-file-storage-deterministic-shared-ids.md` and
- * `2026-05-17-fix-entity-unified-close-out.md`.
+ * `2026-05-17-file-storage-deterministic-shared-ids.md`.
  */
-export async function allocateNextId(changesDir: string, fixesDir?: string): Promise<string> {
-	const seen = await collectUsedIds(changesDir, fixesDir)
+export async function allocateNextId(changesDir: string): Promise<string> {
+	const seen = await collectUsedIds(changesDir)
 	return String(nextIdAfter(seen))
 }
 
-async function collectUsedIds(changesDir: string, fixesDir?: string): Promise<number[]> {
-	const changeIds = await collectChangeAndSliceIds(changesDir)
-	const fixIds = fixesDir ? await collectDirectoryIds(fixesDir) : []
-	return [...changeIds, ...fixIds]
+async function collectUsedIds(changesDir: string): Promise<number[]> {
+	return collectChangeAndSliceIds(changesDir)
 }
 
 async function collectChangeAndSliceIds(changesDir: string): Promise<number[]> {

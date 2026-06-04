@@ -139,8 +139,8 @@ if (import.meta.vitest) {
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
-	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { change: string[]; fix: string[] } } {
-		const closed = { change: [] as string[], fix: [] as string[] }
+	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { change: string[] } } {
+		const closed = { change: [] as string[] }
 		const storage: Storage = {
 			createChange: async () => ({ id: 'x', branch: 'x' }),
 			findChange: async () => null,
@@ -150,11 +150,6 @@ if (import.meta.vitest) {
 			findSlices: async () => [],
 			findSlice: async () => null,
 			updateSlice: async () => {},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async (id) => { closed.fix.push(id) },
 			...overrides,
 		}
 		return { storage, closed }

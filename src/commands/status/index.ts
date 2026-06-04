@@ -38,7 +38,6 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 		repoRoot: projectRoot,
 		projectRoot,
 		changesDir: path.resolve(projectRoot, config.docs.changesDir),
-		fixesDir: path.resolve(projectRoot, config.docs.fixesDir),
 		labels: config.labels,
 		closeOptions: config.close,
 	}
@@ -144,11 +143,6 @@ if (import.meta.vitest) {
 			findSlices: async () => state.rawSlices,
 			findSlice: async () => null,
 			updateSlice: async () => {},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
 		}
 	}
 
@@ -285,11 +279,6 @@ if (import.meta.vitest) {
 					return s ? { changeId: change.id, slice: s } : null
 				},
 				updateSlice: async () => {},
-				createFix: async () => ({ id: 'x', branch: 'x' }),
-				findFix: async () => null,
-				listFixes: async () => [],
-				updateFix: async () => {},
-				closeFix: async () => {},
 			}
 		}
 

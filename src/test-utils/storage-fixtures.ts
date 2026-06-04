@@ -18,8 +18,6 @@ export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): C
 const noop = async (): Promise<void> => {}
 const defaultCreatedEntity = async (): Promise<{ id: string; branch: string }> => ({ id: 'x', branch: 'x' })
 const emptyChangeSummaries = async (): Promise<Awaited<ReturnType<Storage['listChanges']>>> => []
-const emptyFixSummaries = async (): Promise<Awaited<ReturnType<Storage['listFixes']>>> => []
-const nullFix = async (): Promise<Awaited<ReturnType<Storage['findFix']>>> => null
 
 export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1', overrides: Partial<Storage> = {}): Storage {
 	const sliceById = new Map(slices.map((s) => [s.id, s]))
@@ -32,11 +30,6 @@ export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1'
 		findSlices: async () => slices,
 		findSlice: async (sliceId) => findFakeSlice(changeId, sliceById, sliceId),
 		updateSlice: noop,
-		createFix: defaultCreatedEntity,
-		findFix: nullFix,
-		listFixes: emptyFixSummaries,
-		updateFix: noop,
-		closeFix: noop,
 		...overrides,
 	}
 }

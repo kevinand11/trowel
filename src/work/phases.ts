@@ -348,11 +348,6 @@ if (import.meta.vitest) {
 				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
 				if (patch.needsRevision !== undefined) storageState.needsRevision = patch.needsRevision
 			},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
 		}
 		const gh: GhOps = {
 			findPrNumberByHead: async (head) => { calls.push({ method: 'findPrNumberByHead', args: [head] }); return 132 },

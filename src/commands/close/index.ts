@@ -210,11 +210,6 @@ if (import.meta.vitest) {
 				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)
 				applyFakeSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
 			},
-			createFix: async () => ({ id: 'unused-fix', branch: 'unused-fix' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => undefined,
-			closeFix: async () => undefined,
 		}
 		return { storage, calls }
 	}

@@ -16,10 +16,6 @@ import {
 } from '../../work/phases.ts'
 import type {
 	ClassifiedSlice,
-	FixPatch,
-	FixRecord,
-	FixSpec,
-	FixSummary,
 	ChangeRecord,
 	ChangeSpec,
 	ChangeSummary,
@@ -33,12 +29,11 @@ import type {
 
 type ChangeStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null; targetBranch?: string }
 type SliceStore = ChangeStore & { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
-type FixStore = SliceStore & { body: string }
 type MutableStore = { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[]; closedAt: string | null }
 type StateFilter = { state: 'open' | 'closed' | 'all' }
 type SliceHit = { changeId: string; slice: Slice }
 
-function applyMutablePatch(store: MutableStore, patch: SlicePatch | FixPatch): void {
+function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
 	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
 	applyOptionalPatchValue(store, 'needsRevision', patch.needsRevision)
 	applyBlockedByPatch(store, patch.blockedBy)
@@ -53,7 +48,7 @@ function applyBlockedByPatch(store: MutableStore, blockedBy: string[] | undefine
 	if (blockedBy !== undefined) store.blockedBy = [...blockedBy]
 }
 
-function applyStatePatch(store: MutableStore, state: SlicePatch['state'] | FixPatch['state']): void {
+function applyStatePatch(store: MutableStore, state: SlicePatch['state']): void {
 	if (state === 'CLOSED') closeMutableStore(store)
 	if (state === 'OPEN') store.closedAt = null
 }
@@ -113,7 +108,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		try {
 			entries = await readdir(root)
 		} catch {
-			throw new Error(`no ${kind} directory found for id '${id}' (${kind === 'Change' ? 'changesDir' : 'fixesDir'} does not exist)`)
+			throw new Error(`no ${kind} directory found for id '${id}' (changesDir does not exist)`)
 		}
 		const match = entries.find((e) => e.startsWith(`${id}-`))
 		if (!match) throw new Error(`no ${kind} directory found for id '${id}'`)
@@ -149,7 +144,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 
 	async function allocateEntity(title: string, root: string): Promise<{ id: string; slug: string; dir: string }> {
 		const slug = slugify(title)
-		const id = await allocateNextId(deps.changesDir, deps.fixesDir)
+		const id = await allocateNextId(deps.changesDir)
 		return { id, slug, dir: path.join(root, `${id}-${slug}`) }
 	}
 
@@ -189,7 +184,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	async function createSlice(changeId: string, spec: SliceSpec): Promise<Slice> {
 		return withMutationLock(deps.projectRoot, async () => {
 			const slug = slugify(spec.title)
-			const id = await allocateNextId(deps.changesDir, deps.fixesDir)
+			const id = await allocateNextId(deps.changesDir)
 			const slicesPath = await slicesDir(changeId)
 			const dir = path.join(slicesPath, `${id}-${slug}`)
 
@@ -240,7 +235,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 	}
 
-	async function updateStore<T extends MutableStore>(dir: string, patch: SlicePatch | FixPatch): Promise<void> {
+	async function updateStore<T extends MutableStore>(dir: string, patch: SlicePatch): Promise<void> {
 		const storePath = path.join(dir, 'store.json')
 		const store: T = JSON.parse(await readFile(storePath, 'utf8'))
 		applyMutablePatch(store, patch)
@@ -305,70 +300,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		}
 	}
 
-	async function findFixDir(id: string): Promise<string> {
-		return findEntityDir(deps.fixesDir, 'fix', id)
-	}
-
-	async function readFixStore(id: string): Promise<FixStore> {
-		const dir = await findFixDir(id)
-		return JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
-	}
-
-	function fixBranchFor(id: string, slug: string): string {
-		return `fix/${id}-${slug}`
-	}
-
-	function fixFromStore(store: FixStore): FixRecord {
-		return {
-			id: store.id,
-			branch: fixBranchFor(store.id, store.slug),
-			targetBranch: store.targetBranch,
-			title: store.title,
-			body: store.body,
-			state: store.closedAt === null ? 'OPEN' : 'CLOSED',
-			readyForAgent: store.readyForAgent,
-			needsRevision: store.needsRevision,
-			blockedBy: store.blockedBy ?? [],
-			prState: null,
-		}
-	}
-
-	async function createFix(spec: FixSpec): Promise<{ id: string; branch: string }> {
-		return withMutationLock(deps.projectRoot, async () => {
-			const { id, slug, dir } = await allocateEntity(spec.title, deps.fixesDir)
-			const branch = fixBranchFor(id, slug)
-			const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
-
-			await mkdir(dir, { recursive: true })
-			await writeFile(path.join(dir, 'store.json'), jsonWithNewline({ ...baseStore(id, slug, spec.title), body: spec.body, targetBranch, readyForAgent: true, needsRevision: false, blockedBy: [] }))
-
-			await deps.git.createLocalBranch(branch, targetBranch)
-			await deps.git.pushSetUpstream(branch)
-
-			return { id, branch }
-		})
-	}
-
-	async function findFix(id: string): Promise<FixRecord | null> {
-		try {
-			return fixFromStore(await readFixStore(id))
-		} catch {
-			return null
-		}
-	}
-
-	async function listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]> {
-		return listStoreSummaries<FixStore>(deps.fixesDir, opts, (store) => fixBranchFor(store.id, store.slug))
-	}
-
-	async function updateFix(id: string, patch: FixPatch): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => updateStore<FixStore>(await findFixDir(id), patch))
-	}
-
-	async function closeFix(id: string): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => closeStore(await findFixDir(id)))
-	}
-
 	return {
 		createChange,
 		findChange,
@@ -378,11 +309,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		findSlices,
 		findSlice,
 		updateSlice,
-		createFix,
-		findFix,
-		listFixes,
-		updateFix,
-		closeFix,
 	}
 }
 
@@ -496,8 +422,7 @@ if (import.meta.vitest) {
 			repoRoot: work,
 			projectRoot: work,
 			changesDir,
-			fixesDir: path.join(work, 'docs', 'fixes'),
-			labels: { change: 'change', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+			labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git,
@@ -850,27 +775,6 @@ if (import.meta.vitest) {
 			const store = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
 			expect(store.targetBranch).toBe('release/1.2')
 			expect((await storage.findChange(result.id))?.targetBranch).toBe('release/1.2')
-		})
-	})
-
-	describe('file storage: createFix', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('stores targetBranch and creates the Fix branch from it', async () => {
-			await exec('git', ['-C', f.work, 'checkout', '-q', '-b', 'hotfix/base'])
-			await exec('git', ['-C', f.work, 'checkout', '-q', 'main'])
-			const storage = createFileStorage(f.deps)
-
-			const result = await storage.createFix({ title: 'Fix Tabs', body: 'body', targetBranch: 'hotfix/base' })
-
-			expect(f.calls.git).toContainEqual(['createLocalBranch', result.branch, 'hotfix/base'])
-			expect((await storage.findFix(result.id))?.targetBranch).toBe('hotfix/base')
 		})
 	})
 

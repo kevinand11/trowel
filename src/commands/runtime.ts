@@ -33,7 +33,6 @@ function buildStorageDeps(base: CommandBase, overrides: Partial<StorageDeps> = {
 		repoRoot: base.projectRoot,
 		projectRoot: base.projectRoot,
 		changesDir: path.resolve(base.projectRoot, base.config.docs.changesDir),
-		fixesDir: path.resolve(base.projectRoot, base.config.docs.fixesDir),
 		labels: base.config.labels,
 		closeOptions: base.config.close,
 		...overrides,

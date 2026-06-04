@@ -26,8 +26,7 @@ if (import.meta.vitest) {
 		repoRoot: '/tmp/x',
 		projectRoot: '/tmp/x',
 		changesDir: '/tmp/x/docs/changes',
-		fixesDir: '/tmp/x/docs/fixes',
-		labels: { change: 'change', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+		labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 		closeOptions: { comment: null, deleteBranch: 'never' },
 	}
 

@@ -73,45 +73,6 @@ export type ClassifiedSlice = Slice & { bucket: Bucket }
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
 
-/**
- * A **Fix** is structurally a Slice without a parent Change: same Turn machinery (implement →
- * optionally review → address), same readiness flags, but lives on its own `fix/<id>-<slug>`
- * branch off its targetBranch (no Integration branch). See ADR
- * `2026-05-17-fix-entity-unified-close-out.md` and
- * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
- *
- * `blockedBy` is on the record for symmetry with Slice but no current use case populates it —
- * default `[]`. `prState` mirrors Slice's PR-state field; the loop populates it before
- * classification under `usePrs: true`.
- */
-export type FixSpec = {
-	title: string
-	body: string
-	targetBranch?: string
-}
-
-export type FixSummary = {
-	id: string
-	title: string
-	branch: string
-	createdAt: string
-}
-
-export type FixRecord = {
-	id: string
-	branch: string
-	targetBranch?: string
-	title: string
-	body: string
-	state: ChangeState
-	readyForAgent: boolean
-	needsRevision: boolean
-	blockedBy: string[]
-	prState: SlicePrState
-}
-
-export type FixPatch = Partial<Pick<FixRecord, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
-
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 
 /**
@@ -161,8 +122,7 @@ export type StorageDeps = {
 	repoRoot: string
 	projectRoot: string
 	changesDir: string
-	fixesDir: string
-	labels: { change: string; fix: string; readyForAgent: string; needsRevision: string }
+	labels: { change: string; readyForAgent: string; needsRevision: string }
 	closeOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
 	/**
 	 * Optional runtime channels. Read-only call paths (status, list) construct a storage
@@ -193,11 +153,4 @@ export interface Storage {
 	 */
 	findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null>
 	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>
-
-	// Fix lifecycle. See ADR `2026-05-17-fix-entity-unified-close-out.md`.
-	createFix(spec: FixSpec): Promise<{ id: string; branch: string }>
-	findFix(id: string): Promise<FixRecord | null>
-	listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]>
-	updateFix(id: string, patch: FixPatch): Promise<void>
-	closeFix(id: string): Promise<void>
 }

@@ -2,7 +2,7 @@ import { classifySlices } from '../../utils/bucket.ts'
 import { parseGhIssueNumber } from '../../utils/gh-ops.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice, FixPatch, FixRecord, FixSpec, FixSummary, Storage, StorageDeps, StorageFactory, ChangeRecord, ChangeSpec, ChangeSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeRecord, ChangeSpec, ChangeSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean; needsRevision?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
@@ -145,10 +145,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return null
 	}
 
-	function fixBranchFor(id: string, title: string): string {
-		return `fix/${id}-${slugify(title)}`
-	}
-
 	function bodyWithTargetBranch(body: string, targetBranch: string): string {
 		return `${body}\n\n<!-- trowel:${JSON.stringify({ targetBranch })} -->`
 	}
@@ -174,54 +170,9 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return typeof value === 'string' && value.length > 0
 	}
 
-	function bodyWithoutTrowelMetadata(body: string | null | undefined): string {
-		return (body ?? '').replace(/\n?\n?<!--\s*trowel:.*?-->/s, '').trimEnd()
-	}
-
 	function trowelMetadataFromBody(body: string | null | undefined): string | null {
 		const match = /<!--\s*trowel:(.*?)-->/s.exec(body ?? '')
 		return match?.[1]?.trim() ?? null
-	}
-
-	async function createFix(spec: FixSpec): Promise<{ id: string; branch: string }> {
-		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithTargetBranch(spec.body, targetBranch), labels: [deps.labels.fix] })
-		const id = parseGhIssueNumber(createOut)
-		const branch = fixBranchFor(id, spec.title)
-		await deps.git.createLocalBranch(branch, targetBranch)
-		await deps.git.pushSetUpstream(branch)
-		return { id, branch }
-	}
-
-	async function findFix(id: string): Promise<FixRecord | null> {
-		const issue = await deps.gh.viewIssue(id)
-		if (!issue) return null
-		return {
-			id: String(issue.number),
-			branch: fixBranchFor(String(issue.number), issue.title),
-			targetBranch: targetBranchFromBody(issue.body),
-			title: issue.title,
-			body: bodyWithoutTrowelMetadata(issue.body),
-			state: issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
-			readyForAgent: false,
-			needsRevision: false,
-			blockedBy: [],
-			prState: null,
-		}
-	}
-
-	async function listFixes(opts: { state: 'open' | 'closed' | 'all' }): Promise<FixSummary[]> {
-		return listIssueSummaries(deps.labels.fix, opts, fixBranchFor)
-	}
-
-	async function updateFix(id: string, patch: FixPatch): Promise<void> {
-		await applyLabelPatch(id, patch)
-		if (patch.state === 'CLOSED') await deps.gh.closeIssue(id)
-		else if (patch.state === 'OPEN') await deps.gh.reopenIssue(id)
-	}
-
-	async function closeFix(id: string): Promise<void> {
-		await closeIssueIfOpen(id)
 	}
 
 	return {
@@ -233,11 +184,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		findSlices,
 		findSlice,
 		updateSlice,
-		createFix,
-		findFix,
-		listFixes,
-		updateFix,
-		closeFix,
 	}
 
 	async function updateSlice(_changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
@@ -302,8 +248,7 @@ if (import.meta.vitest) {
 			repoRoot: '/tmp/x',
 			projectRoot: '/tmp/x',
 			changesDir: '/tmp/x/docs/changes',
-			fixesDir: '/tmp/x/docs/fixes',
-			labels: { change: 'change', fix: 'fix', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+				labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
 			closeOptions: { comment: null, deleteBranch: 'never' },
 			confirm: async () => false,
 			git: noopGitOps({
@@ -565,38 +510,6 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			await expect(storage.createChange({ title: 'Fix', body: 'b' })).rejects.toThrow(/rate limited/)
-		})
-	})
-
-	describe('issue storage: createFix/findFix', () => {
-		test('stores explicit targetBranch metadata and creates the Fix branch from it', async () => {
-			const { deps, calls, gitCalls } = makeDeps({
-				createIssue: async () => 'https://github.com/o/r/issues/5\n',
-			})
-			const storage = createIssueStorage(deps)
-
-			const result = await storage.createFix({ title: 'Fix Tabs', body: 'body', targetBranch: 'hotfix/base' })
-
-			expect(result).toEqual({ id: '5', branch: 'fix/5-fix-tabs' })
-			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"hotfix/base"')
-			expect(gitCalls).toEqual([
-				['createLocalBranch', 'fix/5-fix-tabs', 'hotfix/base'],
-				['pushSetUpstream', 'fix/5-fix-tabs'],
-			])
-		})
-
-		test('findFix parses targetBranch metadata and strips it from body', async () => {
-			const { deps } = makeDeps({
-				viewIssue: async () => ({ number: 5, title: 'Fix Tabs', state: 'OPEN', body: 'visible body\n\n<!-- trowel:{"targetBranch":"hotfix/base"} -->' }),
-			})
-			const storage = createIssueStorage(deps)
-
-			expect(await storage.findFix('5')).toMatchObject({
-				id: '5',
-				branch: 'fix/5-fix-tabs',
-				targetBranch: 'hotfix/base',
-				body: 'visible body',
-			})
 		})
 	})
 

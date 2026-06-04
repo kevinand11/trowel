@@ -157,11 +157,6 @@ if (import.meta.vitest) {
 			updateSlice: async (_p, sliceId, patch) => {
 				applyTestSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
 			},
-			createFix: async () => ({ id: 'x', branch: 'x' }),
-			findFix: async () => null,
-			listFixes: async () => [],
-			updateFix: async () => {},
-			closeFix: async () => {},
 			...overrides,
 		}
 	}
