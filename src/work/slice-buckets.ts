@@ -1,4 +1,4 @@
-import { enrichSlicePrStates } from './pr-flow.ts'
+import { createEffectiveSliceReader } from './effective-slices.ts'
 import type { ClassifiedSlice, Storage } from '../storages/types.ts'
 import { classifySlices } from '../utils/bucket.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
@@ -9,9 +9,8 @@ export async function classifySlicesForPrd(args: {
 	prdId: string
 	usePrs: boolean
 }): Promise<ClassifiedSlice[]> {
-	const raw = await args.storage.findSlices(args.prdId)
-	const enriched = args.usePrs ? await enrichSlicePrStates(args.gh, args.prdId, raw) : raw
-	return classifySlices(enriched)
+	const reader = createEffectiveSliceReader({ storage: args.storage, gh: args.gh, usePrs: args.usePrs })
+	return classifySlices(await reader.findSlices(args.prdId))
 }
 
 if (import.meta.vitest) {

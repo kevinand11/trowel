@@ -24,7 +24,7 @@ function sliceBranchFor(prdId: string, slice: Slice): string {
  * with `prState: null`; the loop calls this when `config.work.usePrs` is true to populate the
  * field before classification and reconciliation. No-op for empty slice lists.
  */
-export async function enrichSlicePrStates(gh: GhOps, prdId: string, slices: Slice[]): Promise<Slice[]> {
+export async function enrichSlicesFromOpenPrs(gh: GhOps, prdId: string, slices: Slice[]): Promise<Slice[]> {
 	const openSlices = slices.filter((s) => s.state === 'OPEN')
 	if (openSlices.length === 0) return slices
 	const branches = openSlices.map((s) => sliceBranchFor(prdId, s))
@@ -119,7 +119,7 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 
-	describe('enrichSlicePrStates', () => {
+	describe('enrichSlicesFromOpenPrs', () => {
 		const makeSlice = (overrides: Partial<Slice> = {}): Slice => ({
 			id: '57', title: 'Implement Parser', body: 'b',
 			state: 'OPEN', readyForAgent: true, needsRevision: false,
@@ -132,7 +132,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-42/slice-57-implement-parser', isDraft: true }],
 			})
 			const slices = [makeSlice({ id: '57', title: 'Implement Parser' }), makeSlice({ id: '58', title: 'Wire CLI' })]
-			const out = await enrichSlicePrStates(gh, '42', slices)
+			const out = await enrichSlicesFromOpenPrs(gh, '42', slices)
 			expect(out[0]!.prState).toBe('draft')
 			expect(out[1]!.prState).toBeNull()
 		})
@@ -142,7 +142,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-42/slice-57-implement-parser', isDraft: false }],
 			})
 			const slices = [makeSlice({ id: '57', title: 'Implement Parser' })]
-			const out = await enrichSlicePrStates(gh, '42', slices)
+			const out = await enrichSlicesFromOpenPrs(gh, '42', slices)
 			expect(out[0]!.prState).toBe('ready')
 		})
 
@@ -151,13 +151,13 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [{ number: 1, headRefName: 'prd-42/slice-57-implement-parser', isDraft: false, labels: [{ name: 'needs-revision' }] }],
 			})
 			const slices = [makeSlice({ id: '57', title: 'Implement Parser', needsRevision: false })]
-			const out = await enrichSlicePrStates(gh, '42', slices)
+			const out = await enrichSlicesFromOpenPrs(gh, '42', slices)
 			expect(out[0]!).toMatchObject({ prState: 'ready', needsRevision: true })
 		})
 
 		test('skips the gh call when no OPEN slices exist (CLOSED slices alone → no enrichment)', async () => {
 			const { gh, calls } = recordingGhOps()
-			const out = await enrichSlicePrStates(gh, '42', [makeSlice({ state: 'CLOSED' })])
+			const out = await enrichSlicesFromOpenPrs(gh, '42', [makeSlice({ state: 'CLOSED' })])
 			expect(calls).toEqual([])
 			expect(out[0]!.prState).toBeNull()
 		})
@@ -165,7 +165,7 @@ if (import.meta.vitest) {
 		test('leaves CLOSED slices untouched even when other OPEN slices trigger the gh call', async () => {
 			const { gh } = recordingGhOps({ listOpenPrs: async () => [] })
 			const slices = [makeSlice({ id: '57', state: 'CLOSED', prState: 'merged' }), makeSlice({ id: '58' })]
-			const out = await enrichSlicePrStates(gh, '42', slices)
+			const out = await enrichSlicesFromOpenPrs(gh, '42', slices)
 			expect(out[0]!.prState).toBe('merged')
 			expect(out[1]!.prState).toBeNull()
 		})

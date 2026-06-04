@@ -46,7 +46,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function findSlices(prdId: string): Promise<Slice[]> {
 		const rawIssues = await deps.gh.listSubIssues(prdId)
 		// Storage emits raw slices with `prState: null` for everyone. The loop
-		// calls `enrichSlicePrStates` (and, eventually, branch-ahead detection) before classification.
+		// calls `enrichSlicesFromOpenPrs` (and, eventually, branch-ahead detection) before classification.
 		// See ADR `storage-behavior-separation` step 4.
 		return Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue)))
 	}

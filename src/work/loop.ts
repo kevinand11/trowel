@@ -1,5 +1,5 @@
 import { classify } from './classify.ts'
-import { enrichSlicePrStates } from './pr-flow.ts'
+import { createEffectiveSliceReader } from './effective-slices.ts'
 import { processSlice } from './process-slice.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
@@ -103,16 +103,14 @@ type WorkerLoopState = {
 
 function loopState(prdId: string, deps: LoopDeps): WorkerLoopState {
 	const { storage, config } = deps
+	const effectiveSlices = createEffectiveSliceReader({ storage, gh: deps.gh, usePrs: config.usePrs })
 	return {
 		prdId,
 		tag: `[work prd-${prdId}]`,
 		deps,
 		failed: new Set<string>(),
 		running: new Map<string, Promise<void>>(),
-		fetchEnriched: async () => {
-			const raw = await storage.findSlices(prdId)
-			return config.usePrs ? enrichSlicePrStates(deps.gh, prdId, raw) : raw
-		},
+		fetchEnriched: () => effectiveSlices.findSlices(prdId),
 		config: { usePrs: config.usePrs, review: config.review, perSliceBranches: config.perSliceBranches },
 		limit: effectiveConcurrency(config.perSliceBranches, config.maxConcurrent),
 		claims: 0,

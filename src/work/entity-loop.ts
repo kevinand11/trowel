@@ -1,4 +1,5 @@
 import { runCloseOut } from './close-out.ts'
+import { createEffectiveSliceReader } from './effective-slices.ts'
 import { runFixEntity } from './fix-entity-loop.ts'
 import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
 import { reconcileEntity, type LoopEntityRef } from './reconcile.ts'
@@ -75,7 +76,8 @@ function loopDepsForPrd(entity: Extract<LoopEntity, { kind: 'prd' }>, deps: Enti
 }
 
 async function closeOutPrdIfReady(entity: Extract<LoopEntity, { kind: 'prd' }>, prd: PrdRecord, deps: EntityLoopDeps): Promise<void> {
-	const slices = await deps.storage.findSlices(entity.id)
+	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs })
+	const slices = await reader.findSlices(entity.id)
 	if (!prdReadyForCloseOut(entity, slices, deps)) return
 	deps.log(`[work prd-${entity.id}] all slices CLOSED → running Close-out`)
 	await runCloseOut(
