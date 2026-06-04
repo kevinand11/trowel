@@ -31,36 +31,12 @@ async function tryLoadJson(filePath: string): Promise<unknown | null> {
 }
 
 export function validatePartialConfig(filePath: string, raw: unknown, label = 'Invalid config'): PartialConfig {
-	const retired = retiredConfigKeys(raw)
-	if (retired.length > 0) throw new Error(`${label} at ${filePath}: retired config key(s): ${retired.join(', ')}`)
 	const result = v.validate(partialConfigPipe(), raw)
 	if (!result.valid) {
 		const messages = result.error.messages.map((m) => `  · ${m.message ?? JSON.stringify(m)}`).join('\n')
 		throw new Error(`${label} at ${filePath}:\n${messages}`)
 	}
 	return result.value as PartialConfig
-}
-
-const RETIRED_CONFIG_KEYS: Array<{ path: string; parent?: string; key: string }> = [
-	{ path: 'docs.prdsDir', parent: 'docs', key: 'prdsDir' },
-	{ path: 'docs.fixesDir', parent: 'docs', key: 'fixesDir' },
-	{ path: 'labels.prd', parent: 'labels', key: 'prd' },
-	{ path: 'labels.fix', parent: 'labels', key: 'fix' },
-	{ path: 'close', key: 'close' },
-]
-
-function retiredConfigKeys(raw: unknown): string[] {
-	if (!isRecord(raw)) return []
-	return RETIRED_CONFIG_KEYS.filter((entry) => hasRetiredConfigKey(raw, entry)).map((entry) => entry.path)
-}
-
-function hasRetiredConfigKey(raw: Record<string, unknown>, entry: { parent?: string; key: string }): boolean {
-	const target = entry.parent ? raw[entry.parent] : raw
-	return isRecord(target) && entry.key in target
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null
 }
 
 async function loadAndValidate(filePath: string): Promise<PartialConfig | null> {
@@ -205,15 +181,6 @@ if (import.meta.vitest) {
 			await writeLayer(path.join(home, '.trowel', 'projects', project.replace(/^\//, ''), 'config.json'), { agent: { model: 'private-model' } })
 			const resolved = await loadConfig(project, home)
 			expect(resolved.config.agent.model).toBe('private-model')
-		})
-
-		test('rejects retired config keys from the Change/Fix migration', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), {
-				docs: { prdsDir: 'docs/prds', fixesDir: 'docs/fixes' },
-				labels: { prd: 'prd', fix: 'fix' },
-				close: { deleteBranch: 'never' },
-			})
-			await expect(loadConfig(project, home)).rejects.toThrow(/retired config key\(s\): docs\.prdsDir, docs\.fixesDir, labels\.prd, labels\.fix, close/)
 		})
 
 		test('rejects an invalid storage in a layer file', async () => {
