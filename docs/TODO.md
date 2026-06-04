@@ -6,7 +6,81 @@ Pre-work for every session: read `docs/CONTEXT.md` for vocabulary and repo conve
 
 ---
 
-## 1. `trowel diagnose` flow
+## 1. PRD/Fix retirement and resource-first Change CLI
+
+**Goal.** Deeply rename the container domain from **PRD** to **Change**, keep **Slice**, retire **Fix** entirely, and move resource-scoped commands to singular resource-first grammar. This is pre-v1, so no compatibility aliases or automatic migration are required.
+
+**Locked decisions.**
+
+- **PRD** becomes **Change** everywhere: code, docs, config, storage schema, labels, branch names, CLI help, tests.
+- **Slice** stays **Slice**.
+- **Fix** is removed entirely: no Fix entity, no `trowel fix`, no `fix/<slug>` branch model, no `labels.fix`, no Fix storage paths.
+- `trowel start` is the sole Change creation command. It may create a Change with one or more Slices; one-slice Changes are not special.
+- One-slice Changes use the same Integration-branch plus Slice-branch model as every other Change.
+- Change ids and Slice ids stay globally unique in one shared project id pool.
+- File storage default path changes from `docs/prds/` to `docs/changes/` with no automatic migration. Old `docs/prds/` data is ignored unless the user manually moves it and updates config.
+- Issue storage label/config renames from `prd` to `change`; default label value becomes `change`; no old-label fallback.
+- Branch prefixes rename from `prd-<id>` to `change-<id>` and `prd-<id>/slice-...` to `change-<id>/slice-...`; no old-branch fallback.
+- Resource-scoped CLI becomes singular resource-first:
+  - `trowel change list`
+  - `trowel change status <changeId>`
+  - `trowel change work <changeId>`
+  - `trowel change abort <changeId>`
+  - `trowel slice status <sliceId>`
+  - `trowel slice abort <sliceId>`
+  - `trowel slice implement <sliceId>`
+  - `trowel slice review <sliceId>`
+  - `trowel slice address <sliceId>`
+- Remove global `trowel work`.
+- Manual phase commands are slice-only; no `trowel change implement/review/address`.
+- Manual `close` is renamed to `abort`; it remains the non-shipping path that marks a Change/Slice closed and performs cleanup.
+
+**Open follow-up: `ship` command.**
+
+Add a future command that explicitly drives a Change or Slice to successful completion, distinct from `abort`.
+
+Candidate surface:
+
+```bash
+trowel change ship <changeId>
+trowel slice ship <sliceId>
+```
+
+Intended direction to grill later:
+
+- `change ship <id>` should drive the Change to completion by running work until all Slices are done, then run Close-out or surface the remaining blockers/PRs that require human action.
+- `slice ship <id>` should drive a single Slice through implement/review/address until it is merged/closed or reaches a human-gated state.
+- `ship` is the success path; `abort` is the abandon path.
+- Need to decide whether `ship` is just a clearer alias for `change work`/manual slice phase loops, or whether `change work` should itself eventually be renamed to `change ship`.
+
+**Files likely touched.**
+
+- `docs/CONTEXT.md`
+- `src/cli.ts`
+- `src/schema.ts`
+- `src/config.ts`
+- `src/storages/types.ts`
+- `src/storages/implementations/file.ts`
+- `src/storages/implementations/issue.ts`
+- `src/commands/**`
+- `src/work/**`
+- `src/prompts/**`
+- tests alongside those modules
+
+**Verification path.**
+
+Run:
+
+```bash
+pnpm build
+pnpm exec vitest run --pool=threads
+npx fallow audit --format json
+git diff --check
+```
+
+---
+
+## 2. `trowel diagnose` flow
 
 **Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel work prd <id>`, `trowel fix`, or `trowel start`). Does **not** auto-invoke any of them.
 
