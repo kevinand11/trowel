@@ -1,6 +1,5 @@
 import { createEffectiveSliceReader } from './effective-slices.ts'
-import type { ClassifiedSlice, Storage } from '../storages/types.ts'
-import { classifySlices } from '../utils/bucket.ts'
+import type { Slice, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 
 export async function classifySlicesForChange(args: {
@@ -8,9 +7,9 @@ export async function classifySlicesForChange(args: {
 	gh: GhOps
 	changeId: string
 	usePrs: boolean
-}): Promise<ClassifiedSlice[]> {
+}): Promise<Slice[]> {
 	const reader = createEffectiveSliceReader({ storage: args.storage, gh: args.gh, usePrs: args.usePrs })
-	return classifySlices(await reader.findSlices(args.changeId))
+	return reader.findSlices(args.changeId)
 }
 
 if (import.meta.vitest) {
@@ -26,7 +25,7 @@ if (import.meta.vitest) {
 		test('usePrs:false classifies raw storage slices without gh enrichment', async () => {
 			const { gh, calls } = recordingGhOps()
 			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', usePrs: false })
-			expect(out[0]!.bucket).toBe('ready')
+			expect(out[0]!.state).toBe('open')
 			expect(calls).toEqual([])
 		})
 
@@ -35,7 +34,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [{ number: 130, headRefName: 'change-123/slice-124-read-query-shape', isDraft: false }],
 			})
 			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', usePrs: true })
-			expect(out[0]!.bucket).toBe('in-flight')
+			expect(out[0]!.state).toBe('in-flight')
 		})
 
 		test('usePrs:true surfaces gh enrichment errors', async () => {

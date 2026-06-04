@@ -47,6 +47,7 @@ async function processSliceStep(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: 
 	const state = classify(slice, ctx.config)
 	const terminal = terminalOutcomeForState(state)
 	if (terminal) return { outcome: terminal }
+	if (state === 'finalize') return finalizeLandedSlice(slice, ctx, tag, deps)
 	if (!SANDBOX_ROLES.has(state)) return unexpectedStateOutcome(state, tag, deps)
 	const outcome = await runSlicePhase(state as Role, slice, ctx, tag, deps)
 	const processOutcome = PROCESS_OUTCOME_BY_PHASE[outcome]
@@ -57,6 +58,12 @@ function terminalOutcomeForState(state: ResumeState): ProcessOutcome | null {
 	if (state === 'done') return 'done'
 	if (state === 'blocked') return 'no-work'
 	return null
+}
+
+async function finalizeLandedSlice(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<SliceStepResult> {
+	await deps.storage.updateSlice(ctx.changeId, slice.id, { closedAt: new Date().toISOString() })
+	deps.log(`${tag} finalized landed slice`)
+	return { outcome: 'progress' }
 }
 
 function unexpectedStateOutcome(state: ResumeState, tag: string, deps: LoopDeps): SliceStepResult {

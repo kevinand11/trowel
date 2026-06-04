@@ -5,7 +5,7 @@ import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { runCloseOut } from '../../work/close-out.ts'
 import { reconcileEntity } from '../../work/reconcile.ts'
-import { classifySlicesForChange } from '../../work/slice-buckets.ts'
+import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { deleteBranchIfPresent, restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
@@ -38,7 +38,7 @@ async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 }
 
 async function requireShippableSlices(changeId: string, rt: ShipRuntime): Promise<void> {
-	const blockers = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })).filter((slice) => slice.bucket !== 'done')
+	const blockers = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })).filter((slice) => slice.state !== 'done')
 	if (blockers.length > 0) throw notReadyError(changeId, blockers)
 }
 
@@ -64,7 +64,7 @@ async function reconciledOpenChange(changeId: string, rt: ShipRuntime): Promise<
 }
 
 function notReadyError(changeId: string, blockers: ClassifiedSlice[]): Error {
-	return new Error(`Change ${changeId} is not ready to ship.\n\nNon-terminal slices:\n${blockers.map((s) => `  ${s.id}  ${s.bucket}  ${s.title}`).join('\n')}\n\nRun: trowel change work ${changeId}`)
+	return new Error(`Change ${changeId} is not ready to ship.\n\nNon-terminal slices:\n${blockers.map((s) => `  ${s.id}  ${s.state}  ${s.title}`).join('\n')}\n\nRun: trowel change work ${changeId}`)
 }
 
 async function shipViaMerge(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<void> {
@@ -156,7 +156,7 @@ if (import.meta.vitest) {
 		const gitCalls: string[] = []
 		const out: string[] = []
 		const closed: string[] = []
-		const storage = args.storage ?? fakeSliceStorage([fakeClassifiedSlice({ id: 's1', title: 'Done', state: 'CLOSED', readyForAgent: true })], '3', {
+		const storage = args.storage ?? fakeSliceStorage([fakeClassifiedSlice({ id: 's1', title: 'Done', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: true })], '3', {
 			findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'OPEN' }),
 			closeChange: async (id) => { closed.push(id) },
 		})
@@ -210,10 +210,10 @@ if (import.meta.vitest) {
 			expect(out.join('')).toContain('already CLOSED')
 		})
 
-		test('non-done slices block shipping with id, bucket, and title', async () => {
-			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's2', title: 'Needs work', state: 'OPEN', readyForAgent: true })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'OPEN' }) })
+		test('non-done slices block shipping with id, state, and title', async () => {
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's2', title: 'Needs work', state: 'open', readyForAgent: true })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'OPEN' }) })
 			const { rt } = makeRt({ storage })
-			await expect(runShip('3', rt)).rejects.toThrow(/s2 {2}ready {2}Needs work/)
+			await expect(runShip('3', rt)).rejects.toThrow(/s2 {2}open {2}Needs work/)
 		})
 
 		test('non-PR mode merges, closes, and applies local delete policy', async () => {

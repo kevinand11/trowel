@@ -1,5 +1,5 @@
-import { classifySlices } from '../../utils/bucket.ts'
 import { parseGhIssueNumber } from '../../utils/gh-ops.ts'
+import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeRecord, ChangeSpec, ChangeSummary, Slice, SlicePatch, SliceSpec } from '../types.ts'
@@ -48,15 +48,17 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		// Storage emits raw slices with `prState: null` for everyone. The loop
 		// calls `enrichSlicesFromOpenPrs` (and, eventually, branch-ahead detection) before classification.
 		// See ADR `storage-behavior-separation` step 4.
-		return Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue)))
+		return classifySlices(await Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue))))
 	}
 
 	async function sliceFromSubIssue(issue: GhSubIssue): Promise<Slice> {
+		const closedAt = issueClosedAt(issue)
 		return {
 			id: String(issue.number),
 			title: issue.title,
 			body: issue.body,
-			state: issueState(issue.state),
+			state: closedAt === null ? 'draft' : 'done',
+			closedAt,
 			readyForAgent: hasIssueLabel(issue, deps.labels.readyForAgent),
 			needsRevision: hasIssueLabel(issue, deps.labels.needsRevision),
 			blockedBy: await blockedByForIssue(issue),
@@ -64,8 +66,8 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		}
 	}
 
-	function issueState(state: string): Slice['state'] {
-		return state === 'open' ? 'OPEN' : 'CLOSED'
+	function issueClosedAt(issue: GhSubIssue): string | null {
+		return issue.closed_at ?? issue.closedAt ?? null
 	}
 
 	function hasIssueLabel(issue: GhSubIssue, label: string): boolean {
@@ -89,16 +91,17 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			await deps.gh.addBlockedBy(sliceNumber, blockerInternalId)
 		}
 
-		return {
+		return classifySlices([{
 			id: sliceNumber,
 			title: spec.title,
 			body: spec.body,
-			state: 'OPEN',
+			state: 'draft',
+			closedAt: null,
 			readyForAgent: false,
 			needsRevision: false,
 			blockedBy: [...spec.blockedBy],
 			prState: null,
-		}
+		}])[0]!
 	}
 
 	async function closeChange(id: string): Promise<void> {
@@ -193,7 +196,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function updateSlice(_changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
 		await applyLabelPatch(sliceId, patch)
 		if (patch.blockedBy !== undefined) await replaceBlockedBy(sliceId, patch.blockedBy)
-		await applyIssueStatePatch(sliceId, patch.state)
+		await applyIssueClosedAtPatch(sliceId, patch.closedAt)
 	}
 
 	async function replaceBlockedBy(sliceId: string, blockedBy: string[]): Promise<void> {
@@ -222,9 +225,10 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		}
 	}
 
-	async function applyIssueStatePatch(sliceId: string, state: SlicePatch['state']): Promise<void> {
-		if (state === 'CLOSED') await deps.gh.closeIssue(sliceId)
-		else if (state === 'OPEN') await deps.gh.reopenIssue(sliceId)
+	async function applyIssueClosedAtPatch(sliceId: string, closedAt: SlicePatch['closedAt']): Promise<void> {
+		if (closedAt === undefined) return
+		if (closedAt === null) await deps.gh.reopenIssue(sliceId)
+		else await deps.gh.closeIssue(sliceId)
 	}
 }
 
@@ -279,10 +283,10 @@ if (import.meta.vitest) {
 				id: '145',
 				title: 'Session Middleware',
 				body: 'wire JWT',
-				state: 'OPEN',
+				state: 'open',
+				closedAt: null,
 				readyForAgent: true,
 				needsRevision: false,
-				bucket: 'ready',
 				blockedBy: [],
 				prState: null,
 				...overrides,
@@ -570,7 +574,8 @@ if (import.meta.vitest) {
 				id: '57',
 				title: 'Implement Tab Parser',
 				body: 'the slice spec',
-				state: 'OPEN',
+				state: 'draft',
+				closedAt: null,
 				readyForAgent: false,
 				needsRevision: false,
 				blockedBy: [],
@@ -611,15 +616,15 @@ if (import.meta.vitest) {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
 					{ number: 57, title: 'Implement Parser', body: 'parser spec', state: 'open', labels: [{ name: 'ready-for-agent' }] },
-					{ number: 58, title: 'Wire CLI', body: 'cli spec', state: 'closed', labels: [{ name: 'needs-revision' }, { name: 'other' }] },
+					{ number: 58, title: 'Wire CLI', body: 'cli spec', state: 'closed', closed_at: '2026-06-04T00:00:00Z', labels: [{ name: 'needs-revision' }, { name: 'other' }] },
 				],
 			})
 			const storage = createIssueStorage(deps)
 			const slices = classifySlices(await storage.findSlices('42'))
 			expect(calls[0]).toEqual(['listSubIssues', '42'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'OPEN', readyForAgent: true, needsRevision: false, bucket: 'ready', blockedBy: [], prState: null },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'CLOSED', readyForAgent: false, needsRevision: true, bucket: 'done', blockedBy: [], prState: null },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], prState: null },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'done', closedAt: '2026-06-04T00:00:00Z', readyForAgent: false, needsRevision: true, blockedBy: [], prState: null },
 			])
 		})
 
@@ -639,7 +644,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: findSlices output → classifier', () => {
-		test('open slice with readyForAgent label and no blockers → ready bucket', async () => {
+		test('open slice with readyForAgent label and no blockers → open state', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
 					{ number: 57, title: 'Implement Parser', body: 'b', state: 'open', labels: [{ name: 'ready-for-agent' }] },
@@ -648,11 +653,11 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			const slices = await storage.findSlices('42')
 			expect(slices[0]!.prState).toBeNull()
-			expect(classifySlices(slices)[0]!.bucket).toBe('ready')
+			expect(classifySlices(slices)[0]!.state).toBe('open')
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeUndefined()
 		})
 
-		test('open slice with needsRevision label → needs-revision bucket (classifier precedence)', async () => {
+		test('open slice with needsRevision label → needs-revision state (classifier precedence)', async () => {
 			const { deps } = makeDeps({
 				listSubIssues: async () => [
 					{ number: 57, title: 'P', body: 'b', state: 'open', labels: [{ name: 'needs-revision' }] },
@@ -660,10 +665,10 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			const [s] = classifySlices(await storage.findSlices('42'))
-			expect(s!.bucket).toBe('needs-revision')
+			expect(s!.state).toBe('needs-revision')
 		})
 
-		test('open slice with total_blocked_by > 0 → fetches dependencies + populates blockedBy + blocked bucket', async () => {
+		test('open slice with total_blocked_by > 0 → fetches dependencies + populates blockedBy + blocked state', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
 					{ number: 57, title: 'A', body: 'spec', state: 'open', labels: [], issue_dependencies_summary: { total_blocked_by: 0 } },
@@ -675,19 +680,19 @@ if (import.meta.vitest) {
 			const slices = classifySlices(await storage.findSlices('42'))
 			const b = slices.find((x) => x.id === '58')!
 			expect(b.blockedBy).toEqual(['57'])
-			expect(b.bucket).toBe('blocked')
+			expect(b.state).toBe('blocked')
 			expect(calls.filter((c) => c[0] === 'listBlockedBy').map((c) => c[1])).toEqual(['58'])
 		})
 
-		test('closed slice → done bucket; no listOpenPrs call (findSlices does not issue PR queries)', async () => {
+		test('closed slice → done state; no listOpenPrs call (findSlices does not issue PR queries)', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
-					{ number: 57, title: 'A', body: 'spec', state: 'closed', labels: [] },
+					{ number: 57, title: 'A', body: 'spec', state: 'closed', closed_at: '2026-06-04T00:00:00Z', labels: [] },
 				],
 			})
 			const storage = createIssueStorage(deps)
 			const [s] = classifySlices(await storage.findSlices('42'))
-			expect(s!.bucket).toBe('done')
+			expect(s!.state).toBe('done')
 			expect(calls.some((c) => c[0] === 'listOpenPrs')).toBe(false)
 		})
 	})
@@ -742,8 +747,8 @@ if (import.meta.vitest) {
 		test('state CLOSED runs closeIssue; state OPEN runs reopenIssue', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { state: 'CLOSED' })
-			await storage.updateSlice('42', '57', { state: 'OPEN' })
+			await storage.updateSlice('42', '57', { closedAt: '2026-06-04T00:00:00Z' })
+			await storage.updateSlice('42', '57', { closedAt: null })
 			expect(calls).toEqual([
 				['closeIssue', '57'],
 				['reopenIssue', '57'],
@@ -753,7 +758,7 @@ if (import.meta.vitest) {
 		test('combined patch fires multiple gh calls in expected order', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { readyForAgent: false, needsRevision: true, state: 'CLOSED' })
+			await storage.updateSlice('42', '57', { readyForAgent: false, needsRevision: true, closedAt: '2026-06-04T00:00:00Z' })
 			expect(calls).toHaveLength(3)
 			expect(calls).toContainEqual(['editIssueLabels', '57', { remove: ['ready-for-agent'] }])
 			expect(calls).toContainEqual(['editIssueLabels', '57', { add: ['needs-revision'] }])

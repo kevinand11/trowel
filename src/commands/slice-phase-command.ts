@@ -1,7 +1,6 @@
-import type { Slice, Storage } from '../storages/types.ts'
-import type { Bucket } from '../utils/bucket.ts'
+import type { Slice, SliceState, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
-import { classifySlicesForChange } from '../work/slice-buckets.ts'
+import { classifySlicesForChange } from '../work/slice-states.ts'
 
 export type SlicePhaseRuntime = {
 	storage: Storage
@@ -13,7 +12,7 @@ export type SlicePhaseRuntime = {
 export async function runSlicePhaseCommand(opts: {
 	sliceId: string
 	runtime: SlicePhaseRuntime
-	requiredBucket: Bucket
+	requiredState: SliceState
 	reason: (changeId: string) => string
 }): Promise<void> {
 	const hit = await opts.runtime.storage.findSlice(opts.sliceId)
@@ -22,8 +21,8 @@ export async function runSlicePhaseCommand(opts: {
 	const siblings = await classifySlicesForChange({ storage: opts.runtime.storage, gh: opts.runtime.gh, changeId, usePrs: opts.runtime.usePrs })
 	const slice = siblings.find((s) => s.id === opts.sliceId)
 	if (!slice) throw new Error(`slice '${opts.sliceId}' disappeared between findSlice and findSlices`)
-	if (slice.bucket !== opts.requiredBucket) {
-		throw new Error(`slice '${opts.sliceId}' is in bucket '${slice.bucket}', not '${opts.requiredBucket}'. ${opts.reason(changeId)}`)
+	if (slice.state !== opts.requiredState) {
+		throw new Error(`slice '${opts.sliceId}' is in state '${slice.state}', not '${opts.requiredState}'. ${opts.reason(changeId)}`)
 	}
 	await opts.runtime.runOnePhase(changeId, slice)
 }

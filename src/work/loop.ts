@@ -4,9 +4,9 @@ import { processSlice } from './process-slice.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, Storage, Slice, SlicePatch } from '../storages/types.ts'
-import { classifySlices } from '../utils/bucket.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
+import { classifySlices } from '../utils/slice-state.ts'
 
 export type LoopConfig = {
 	usePrs: boolean
@@ -56,8 +56,8 @@ async function findNextActionableSlice(
 	return slices.find((slice) => {
 		if (failed.has(slice.id)) return false
 		if (running.has(slice.id)) return false
-		const state = classify(slice, config)
-		return state !== 'done' && state !== 'blocked'
+		const resume = classify(slice, config)
+		return resume !== 'done' && resume !== 'blocked'
 	}) ?? null
 }
 
@@ -163,13 +163,15 @@ if (import.meta.vitest) {
 
 	function applyTestSlicePatch(slice: Slice | undefined, patch: SlicePatch): void {
 		if (!slice) return
-		setTestSliceState(slice, patch.state)
+		setTestSliceClosedAt(slice, patch.closedAt)
 		setTestReadyForAgent(slice, patch.readyForAgent)
 		setTestNeedsRevision(slice, patch.needsRevision)
 	}
 
-	function setTestSliceState(slice: Slice, state: SlicePatch['state']): void {
-		if (state !== undefined) slice.state = state
+	function setTestSliceClosedAt(slice: Slice, closedAt: SlicePatch['closedAt']): void {
+		if (closedAt === undefined) return
+		slice.closedAt = closedAt
+		slice.state = closedAt === null ? 'open' : 'done'
 	}
 
 	function setTestReadyForAgent(slice: Slice, value: boolean | undefined): void {
@@ -188,10 +190,10 @@ if (import.meta.vitest) {
 			id: 's1',
 			title: 'A',
 			body: 'spec',
-			state: 'OPEN',
+			state: 'open',
+			closedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
-			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
 			...overrides,
@@ -266,7 +268,7 @@ if (import.meta.vitest) {
 
 	describe('runLoop', () => {
 		test('blocked slice → no sandbox spawn; outcome no-work', async () => {
-			const blocked = makeSlice({ id: 'b1', bucket: 'blocked', blockedBy: ['a'] })
+			const blocked = makeSlice({ id: 'b1', state: 'blocked', blockedBy: ['a'] })
 			const storage = makeStorage({ slices: [blocked] })
 			let sandboxCalls = 0
 			await runLoop('p1', makeDeps(storage, {
@@ -302,7 +304,7 @@ if (import.meta.vitest) {
 			}))
 			expect(roles).toEqual(['implement'])
 			const after = await storage.findSlices('p1')
-			expect(after[0]!.state).toBe('CLOSED')
+			expect(after[0]!.state).toBe('done')
 		})
 
 		test('spawnTurn throws → loop catches, logs the error, returns partial (one bad slice does not abort the batch)', async () => {
@@ -323,8 +325,8 @@ if (import.meta.vitest) {
 			expect(spawnCalls).toBeGreaterThanOrEqual(2) // both slices were attempted
 			expect(logs.some((m) => /verdict file missing/.test(m))).toBe(true)
 			const after = await storage.findSlices('p1')
-			expect(after.find((s) => s.id === 'fine')!.state).toBe('CLOSED')
-			expect(after.find((s) => s.id === 'stuck')!.state).toBe('OPEN')
+			expect(after.find((s) => s.id === 'fine')!.state).toBe('done')
+			expect(after.find((s) => s.id === 'stuck')!.state).toBe('open')
 		})
 
 		test('partial verdict: slice added to skip set; worker pool exits after one claim', async () => {
@@ -341,7 +343,7 @@ if (import.meta.vitest) {
 			// One claim: slice tried once, returned partial, added to skip set.
 			expect(claims).toBe(1)
 			const after = await storage.findSlices('p1')
-			expect(after[0]!.state).toBe('OPEN')
+			expect(after[0]!.state).toBe('open')
 		})
 
 		test('stuck slice (always partial) does not block sibling ready slices in subsequent iterations', async () => {
@@ -358,7 +360,7 @@ if (import.meta.vitest) {
 			}))
 			expect(calls).toContain('fine')
 			const after = await storage.findSlices('p1')
-			expect(after.find((s) => s.id === 'fine')!.state).toBe('CLOSED')
+			expect(after.find((s) => s.id === 'fine')!.state).toBe('done')
 		})
 
 		test('a rejected slice (storage throws) is logged, added to skip set, not retried', async () => {
@@ -434,7 +436,7 @@ if (import.meta.vitest) {
 	describe('processSlice', () => {
 		test('review ready stops after markPrReady makes the open PR non-draft', async () => {
 			const raw = makeSlice({ id: 's1', prState: null })
-			const initial = makeSlice({ id: 's1', prState: 'draft', bucket: 'in-flight' })
+			const initial = makeSlice({ id: 's1', prState: 'draft', state: 'in-flight' })
 			const storage = makeStorage({ slices: [raw] })
 			const roles: Role[] = []
 			const { gh } = recordingGhOps({
@@ -467,7 +469,10 @@ if (import.meta.vitest) {
 				createDraftPr: async () => {
 					prCreateCount++
 					const real = state.slices.find((x) => x.id === slice.id)
-					if (real) real.state = 'CLOSED'
+					if (real) {
+						real.state = 'done'
+						real.closedAt = '2026-06-04T00:00:00.000Z'
+					}
 				},
 			})
 			const outcome = await processSlice('p1', slice, makeDeps(storage, {

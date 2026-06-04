@@ -1,159 +1,120 @@
 import type { StorageKind } from '../../storages/registry.ts'
-import type { ClassifiedSlice, ChangeSummary, Storage } from '../../storages/types.ts'
-import { emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
-import type { Bucket } from '../../utils/bucket.ts'
+import type { ClassifiedSlice, ChangeSummary, SliceState, Storage } from '../../storages/types.ts'
 import { createGh } from '../../utils/gh-ops.ts'
-import { withMutationLock } from '../../utils/mutation-lock.ts'
-import { reconcileEntity } from '../../work/reconcile.ts'
-import { classifySlicesForChange } from '../../work/slice-buckets.ts'
-import { buildStorage, exitOnCommandError, loadCommandBase } from '../runtime.ts'
+import { emptySliceStateCounts, formatSliceStateCounts } from '../../utils/slice-state-format.ts'
+import { classifySlicesForChange } from '../../work/slice-states.ts'
+import { buildStorage, loadCommandBase } from '../runtime.ts'
 
 export type ListState = 'open' | 'closed' | 'all'
 
-type ChangeListRow = {
-	summary: ChangeSummary
-	state: 'OPEN' | 'CLOSED'
-	slices: ClassifiedSlice[]
+type ListRuntime = { storage: Storage; usePrs: boolean; gh: ReturnType<typeof createGh>; state: ListState }
+type ChangeListRow = ChangeSummary & { state: string; slices: ClassifiedSlice[] }
+
+export async function list(state: ListState = 'open', opts: { storage?: string } = {}): Promise<void> {
+	const base = await loadCommandBase('change list')
+	const storage = buildStorage(base, (opts.storage as StorageKind | undefined) ?? base.config.storage)
+	const rows = await listChangeRows({ storage, usePrs: base.config.work.usePrs, gh: base.gh, state })
+	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }
 
-function renderList(rows: ChangeListRow[], filter: ListState): string {
-	if (rows.length === 0) return emptyChangeListMessage(filter)
-	return `${rows.map(renderChangeListRow).join('\n')}\n`
-}
-
-function emptyChangeListMessage(filter: ListState): string {
-	return filter === 'all' ? 'No Changes found.\n' : `No ${filter} Changes.\n`
-}
-
-function renderChangeListRow(row: ChangeListRow): string {
-	const idCol = row.summary.id.padEnd(8)
+function formatChangeRow(row: ChangeListRow): string {
+	const idCol = row.id.padEnd(6)
 	const stateCol = row.state.padEnd(8)
-	const titleCol = row.summary.title.padEnd(48)
+	const titleCol = row.title.padEnd(24)
 	return `${idCol}  ${stateCol}  ${titleCol}  ${changeSliceSummary(row.slices)}`
 }
 
 function changeSliceSummary(slices: ClassifiedSlice[]): string {
-	return slices.length === 0 ? '(no slices)' : formatBucketCounts(bucketCounts(slices))
+	return slices.length === 0 ? '(no slices)' : formatSliceStateCounts(stateCounts(slices))
 }
 
-function bucketCounts(slices: ClassifiedSlice[]): Record<Bucket, number> {
-	const counts: Record<Bucket, number> = emptyBucketCounts()
-	for (const s of slices) counts[s.bucket]++
+function stateCounts(slices: ClassifiedSlice[]): Record<SliceState, number> {
+	const counts = emptySliceStateCounts()
+	for (const s of slices) counts[s.state]++
 	return counts
 }
 
-type ListRuntime = {
-	storage: Storage
-	gh: ReturnType<typeof createGh>
-	usePrs: boolean
-	stdout: (s: string) => void
+async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
+	const summaries = await rt.storage.listChanges({ state: rt.state })
+	const rows = await Promise.all(summaries.map((summary) => listChangeRow(rt, summary)))
+	return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
-function newestFirst<T extends { createdAt: string }>(summaries: T[]): T[] {
-	return [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-}
-
-async function runListChanges(filter: ListState, rt: ListRuntime): Promise<void> {
-	const sorted = newestFirst(await rt.storage.listChanges({ state: filter }))
-	const rows: ChangeListRow[] = await Promise.all(
-		sorted.map(async (summary) => {
-			const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: summary.id, usePrs: rt.usePrs })
-			const found = await rt.storage.findChange(summary.id)
-			const state: 'OPEN' | 'CLOSED' = found?.state ?? 'OPEN'
-			return { summary, state, slices }
-		}),
-	)
-	rt.stdout(renderList(rows, filter))
-}
-
-async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListRuntime; projectRoot: string; storage: Storage; gh: ReturnType<typeof createGh> }> {
-	const base = await loadCommandBase('list')
-	const storage = buildStorage(base, (opts.storage as StorageKind | undefined) ?? base.config.storage)
-	return {
-		rt: { storage, gh: base.gh, usePrs: base.config.work.usePrs, stdout: (s) => process.stdout.write(s) },
-		projectRoot: base.projectRoot,
-		storage,
-		gh: base.gh,
-	}
-}
-
-async function reconcileListedEntities(filter: ListState, storage: Storage, gh: ReturnType<typeof createGh>): Promise<void> {
-	const summaries = await storage.listChanges({ state: filter })
-	for (const s of summaries) await reconcileEntity({ kind: 'change', id: s.id, branch: s.branch }, { storage, gh })
-}
-
-export async function list(filter: ListState, opts: { storage?: string }): Promise<void> {
-	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
-	await exitOnCommandError('list', () =>
-		withMutationLock(projectRoot, async () => {
-			await reconcileListedEntities(filter, storage, gh)
-			await runListChanges(filter, rt)
-		}),
-	)
+async function listChangeRow(rt: ListRuntime, summary: ChangeSummary): Promise<ChangeListRow> {
+	const change = await rt.storage.findChange(summary.id)
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: summary.id, usePrs: rt.usePrs })
+	return { ...summary, state: change?.state ?? 'UNKNOWN', slices }
 }
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
+	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 
 	function fakeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
 			id: 's1',
-			title: 'A slice',
+			title: 'Slice',
 			body: '',
-			state: 'OPEN',
+			state: 'open',
+			closedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
-			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
 			...overrides,
 		}
 	}
 
-	describe('renderList', () => {
-		test('renders one open Change with bucket counts', () => {
-			const rows: ChangeListRow[] = [
-				{
-					summary: { id: 'ab12cd', title: 'Add SSO', branch: 'change/ab12cd-add-sso', createdAt: '2026-05-13T00:00:00.000Z' },
-					state: 'OPEN',
-					slices: [fakeSlice({ id: 's1', bucket: 'done' })],
-				},
-			]
-			const out = renderList(rows, 'open')
-			expect(out).toContain('ab12cd')
+	describe('list rendering', () => {
+		test('renders one open Change with state counts', () => {
+			const out = formatChangeRow({
+				id: '1',
+				title: 'Add parser',
+				branch: 'change-1-add-parser',
+				createdAt: '2026-05-12T00:00:00Z',
+				state: 'OPEN',
+				slices: [fakeSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })],
+			})
+			expect(out).toContain('1')
 			expect(out).toContain('OPEN')
-			expect(out).toContain('Add SSO')
+			expect(out).toContain('Add parser')
 			expect(out).toContain('1 done')
 		})
 
-		test('empty open Change list has friendly message', () => {
-			expect(renderList([], 'open')).toBe('No open Changes.\n')
+		test('empty slice list prints no slices marker', () => {
+			expect(changeSliceSummary([])).toBe('(no slices)')
+		})
+
+		test('state summary follows configured order', () => {
+			expect(changeSliceSummary([
+				fakeSlice({ id: 'd', state: 'done', closedAt: 'x' }),
+				fakeSlice({ id: 'o', state: 'open' }),
+				fakeSlice({ id: 'l', state: 'landed', prState: 'merged' }),
+			])).toBe('1 done · 1 landed · 1 open')
 		})
 	})
 
-	describe('runListChanges', () => {
+	describe('listChangeRows', () => {
 		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[]): Storage {
 			return fakeSliceStorage(slices, null, {
-				findChange: async (id) => summaries.find((s) => s.id === id) ? { id, branch: 'b', title: 't', state: 'OPEN' } : null,
 				listChanges: async () => summaries,
+				findChange: async (id) => ({ id, branch: `change-${id}`, title: id, state: 'OPEN' }),
 			})
 		}
 
-		test('sorts newest first', async () => {
-			let out = ''
+		test('sorts newest first by createdAt', async () => {
 			const { gh } = recordingGhOps()
-			await runListChanges('open', {
+			const rows = await listChangeRows({
 				storage: storageWith([
-					{ id: '1', title: 'Old', branch: 'b1', createdAt: '2026-01-01T00:00:00Z' },
-					{ id: '2', title: 'New', branch: 'b2', createdAt: '2026-02-01T00:00:00Z' },
+					{ id: 'old', title: 'Old', branch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
+					{ id: 'new', title: 'New', branch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
 				], []),
-				gh,
 				usePrs: false,
-				stdout: (s) => { out = s },
+				gh,
+				state: 'all',
 			})
-			expect(out.indexOf('2')).toBeLessThan(out.indexOf('1'))
+			expect(rows.map((r) => r.id)).toEqual(['new', 'old'])
 		})
 	})
 }

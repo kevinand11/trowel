@@ -107,7 +107,7 @@ export function run(): void {
 
 	sliceCmd
 		.command('status')
-		.description("Show a single slice's state (parent Change, bucket, blockers)")
+		.description("Show a single slice's state (parent Change, state, blockers)")
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (sliceId: string, opts) => {

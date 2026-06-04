@@ -7,7 +7,7 @@ import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import { classifySlicesForChange } from '../../work/slice-buckets.ts'
+import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
 type AbortRuntime = CloseBranchRuntime & {
@@ -42,7 +42,7 @@ async function changeTargetBranch(change: ChangeRecord, rt: AbortRuntime): Promi
 }
 
 async function abortOpenChangeSlices(changeId: string, rt: AbortRuntime): Promise<boolean> {
-	const openSlices = (await rt.storage.findSlices(changeId)).filter((s) => s.state === 'OPEN')
+	const openSlices = (await rt.storage.findSlices(changeId)).filter((s) => s.closedAt === null)
 	if (openSlices.length === 0) return true
 	const ids = openSlices.map((s) => s.id).join(', ')
 	const ok = await rt.confirm(`Change has ${openSlices.length} open slices: ${ids}. Auto-close all? [y/N]`)
@@ -50,7 +50,7 @@ async function abortOpenChangeSlices(changeId: string, rt: AbortRuntime): Promis
 		rt.stdout('Aborted; nothing changed.\n')
 		return false
 	}
-	for (const s of openSlices) await rt.storage.updateSlice(changeId, s.id, { state: 'CLOSED' })
+	for (const s of openSlices) await rt.storage.updateSlice(changeId, s.id, { closedAt: new Date().toISOString() })
 	return true
 }
 
@@ -92,17 +92,17 @@ async function findClassifiedSliceOrThrow(sliceId: string, changeId: string, rt:
 }
 
 async function abortSliceRecord(changeId: string, sliceId: string, target: ClassifiedSlice, rt: AbortSliceRuntime): Promise<boolean> {
-	if (target.state === 'CLOSED') {
+	if (target.state === 'done') {
 		rt.stdout(`Slice '${sliceId}' already closed.\n`)
 		return true
 	}
-	if (target.bucket !== 'done' && !(await confirmCloseNonDoneSlice(sliceId, target, rt))) return false
-	await rt.storage.updateSlice(changeId, sliceId, { state: 'CLOSED' })
+	if (!(await confirmCloseNonDoneSlice(sliceId, target, rt))) return false
+	await rt.storage.updateSlice(changeId, sliceId, { closedAt: new Date().toISOString() })
 	return true
 }
 
 async function confirmCloseNonDoneSlice(sliceId: string, target: ClassifiedSlice, rt: AbortSliceRuntime): Promise<boolean> {
-	const ok = await rt.confirm(`Slice '${sliceId}' is in bucket '${target.bucket}', not 'done'. Close anyway? [y/N]`)
+	const ok = await rt.confirm(`Slice '${sliceId}' is in state '${target.state}', not 'done'. Close anyway? [y/N]`)
 	if (ok) return true
 	rt.stdout('Aborted; nothing changed.\n')
 	return false
@@ -201,6 +201,8 @@ if (import.meta.vitest) {
 				calls.push('findSlices')
 				return state.slices.map((s) => ({
 					...s,
+					state: s.state === 'CLOSED' ? 'done' as const : (s.readyForAgent ? 'open' as const : 'draft' as const),
+					closedAt: s.state === 'CLOSED' ? '2026-06-04T00:00:00.000Z' : null,
 					blockedBy: [],
 					prState: null,
 				}))
@@ -216,13 +218,13 @@ if (import.meta.vitest) {
 
 	function applyFakeSlicePatch(slice: FakeStorageState['slices'][number] | undefined, patch: SlicePatch): void {
 		if (!slice) return
-		closeFakeSliceIfRequested(slice, patch.state)
+		closeFakeSliceIfRequested(slice, patch.closedAt)
 		setFakeReadyForAgent(slice, patch.readyForAgent)
 		setFakeNeedsRevision(slice, patch.needsRevision)
 	}
 
-	function closeFakeSliceIfRequested(slice: FakeStorageState['slices'][number], state: SlicePatch['state']): void {
-		if (state === 'CLOSED') slice.state = 'CLOSED'
+	function closeFakeSliceIfRequested(slice: FakeStorageState['slices'][number], closedAt: SlicePatch['closedAt']): void {
+		if (closedAt !== undefined) slice.state = closedAt === null ? 'OPEN' : 'CLOSED'
 	}
 
 	function setFakeReadyForAgent(slice: FakeStorageState['slices'][number], value: boolean | undefined): void {
@@ -545,13 +547,23 @@ if (import.meta.vitest) {
 		function sliceStorage(changeId: string, slices: SliceRow[]): { storage: Storage; calls: string[] } {
 			const calls: string[] = []
 			const byId = new Map(slices.map((s) => [s.id, s]))
-			const toSlice = (s: SliceRow): Slice => ({ ...s, blockedBy: [], prState: null })
+			const toSlice = (s: SliceRow): Slice => ({
+				id: s.id,
+				title: s.title,
+				body: s.body,
+				state: s.state === 'CLOSED' ? 'done' : (s.readyForAgent ? 'open' : 'draft'),
+				closedAt: s.state === 'CLOSED' ? '2026-06-04T00:00:00.000Z' : null,
+				readyForAgent: s.readyForAgent,
+				needsRevision: s.needsRevision,
+				blockedBy: [],
+				prState: null,
+			})
 			const storage = fakeSliceStorage(slices.map(toSlice), changeId, {
 				findChange: async (id) => (id === changeId ? { id, branch: `${changeId}-feature`, title: 'F', state: 'OPEN' } : null),
 				updateSlice: async (_p, sliceId, patch) => {
 					calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)
 					const s = byId.get(sliceId)
-					if (s && patch.state === 'CLOSED') s.state = 'CLOSED'
+					if (s && patch.closedAt !== undefined) s.state = patch.closedAt === null ? 'OPEN' : 'CLOSED'
 				},
 			})
 			return { storage, calls }
@@ -611,7 +623,7 @@ if (import.meta.vitest) {
 			expect(gCalls.find((c) => c[0] === 'deleteBranch')).toBeUndefined()
 		})
 
-		test('non-done bucket → confirm; decline → no updateSlice', async () => {
+		test('non-done state → confirm; decline → no updateSlice', async () => {
 			const { storage, calls } = sliceStorage('42', [{ id: 's1', title: 'A', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false }])
 			const { git } = fakeGit({ current: 'main', branches: new Set(['main']), mergedAncestors: new Map() })
 			let prompt = ''
@@ -627,12 +639,12 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [],
 				perSliceBranches: false,
 			})
-			expect(prompt).toMatch(/bucket 'ready'/)
+			expect(prompt).toMatch(/state 'open'/)
 			expect(buf).toMatch(/aborted/i)
 			expect(calls.find((c) => c.startsWith('updateSlice'))).toBeUndefined()
 		})
 
-		test('non-done bucket → confirm accept → updateSlice CLOSED runs', async () => {
+		test('non-done state → confirm accept → updateSlice closedAt runs', async () => {
 			const { storage, calls } = sliceStorage('42', [{ id: 's1', title: 'A', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false }])
 			const { git } = fakeGit({ current: 'main', branches: new Set(['main']), mergedAncestors: new Map() })
 			await runAbortSlice('s1', {
@@ -646,7 +658,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [],
 				perSliceBranches: false,
 			})
-			expect(calls).toContain('updateSlice(s1,{"state":"CLOSED"})')
+			expect(calls.some((c) => /^updateSlice\(s1,\{"closedAt":"\d{4}-\d{2}-\d{2}T/.test(c))).toBe(true)
 		})
 
 		test('perSliceBranches:true → applies deleteBranch policy against the Change integration branch', async () => {
