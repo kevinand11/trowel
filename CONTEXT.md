@@ -37,7 +37,7 @@ The branch a Change is intended to ship into, captured from the branch where the
 _Avoid_: Base branch, default branch, main
 
 **Worktree**:
-A trowel-managed git worktree under `.trowel/worktrees/` used as disposable Turn infrastructure.
+A trowel-managed git worktree under `.trowel/worktrees/` used as disposable infrastructure for Turns and merge-based Ship work.
 _Avoid_: Checkout, sandbox directory
 
 **Cleanup**:
@@ -94,6 +94,17 @@ _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
 - A **Turn** runs in one **Worktree** checked out to either a Slice branch or an Integration branch.
+- Merge-based **Ship** performs the Target-branch merge inside a trowel-managed **Worktree**, not the user's main working tree.
+- Host-owned local merges run inside trowel-managed **Worktrees**, not the user's main working tree.
+- After a host-owned local merge command completes, the user's main working tree remains on its starting branch.
+- **Ship** and **Abort** refuse when the user's current branch is a local branch **Cleanup** may delete; the user must switch branches first.
+- Merge-based **Ship** uses the reserved `__merge-change` **Worktree** under the Change's worktree root, checks out a detached HEAD at the Target branch tip, merges the Integration branch, and pushes `HEAD` to the Target branch.
+- Slice-branch host merges use the reserved `__merge-slice` **Worktree** under the Change's worktree root, check out a detached HEAD at the Integration branch tip, merge the Slice branch, and push `HEAD` to the Integration branch.
+- Host-owned merge commands may reset and reuse an existing reserved merge **Worktree** after printing a clear warning; the implementation must clear both worktree contents and any in-progress merge state before starting a new host-owned merge.
+- Successful slice Integration-merge **Worktrees** are kept for reuse until Change-level **Cleanup** removes the Change's trowel-managed Worktrees.
+- Successful merge-based **Ship** removes its ship **Worktree** through the normal **Cleanup** pass rather than deleting it in the merge helper.
+- If merge-based **Ship** fails during the merge, trowel preserves the failed **Worktree** and reports its path for inspection instead of finalizing the **Change** or running **Cleanup**; a later retry may reset and reuse that Worktree.
+- If a ship **Worktree** already exists from a previous Ship attempt, merge-based **Ship** resets and reuses it before starting a new host-owned merge.
 - **Ship** invokes **Close-out** for a ready Change, finalizes a landed Change by setting `closedAt`, then runs **Cleanup**; if the Change is done, Ship only runs Cleanup; if the Change is open or aborted, Ship refuses without Cleanup.
 - **Abort** marks an `open` or `ready` Change abandoned, closes any open Slice PRs without merging, then runs **Cleanup**; if the Change is `in-flight`, Abort requires exact-id confirmation, closes the Close-out PR without merging, marks the Change closed, then runs Cleanup; if the Change is `aborted`, Abort runs Cleanup only; if the Change is `landed` or `done`, Abort refuses and tells the user to run Ship.
 - **Abort** uses `abort.comment` when closing GitHub issues, Slice PRs, and in-flight Close-out PRs; if the comment is `null`, it closes silently.
@@ -116,3 +127,4 @@ _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums
 - "Cleanup" was used broadly; resolved: it means local housekeeping for the Integration branch, all Slice branches, and all trowel-managed Worktrees, and explicitly excludes remote branch deletion.
 - "Done or aborted" conflicts with the old stored `OPEN | CLOSED` state; resolved: Change state is computed, with `aborted` derived as `closedAt && !done` rather than stored as an explicit reason.
 - A Slice-level abort surface was considered and rejected for now; resolved: only top-level Changes can be shipped or aborted.
+- "usePrs: false Ship" was used to mean local merge-based **Ship**; resolved: the invariant is about whether Ship performs a local merge, not about the `usePrs` flag value.

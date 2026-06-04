@@ -4,7 +4,7 @@ import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
-import { cleanupChange } from '../../work/cleanup.ts'
+import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { runCloseOut } from '../../work/close-out.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
@@ -36,11 +36,16 @@ async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 	await requireCleanTree(rt)
 	const backTo = await rt.git.currentBranch()
 	const context = await loadShipContext(changeId, rt)
+	if (shipMayRunCleanup(context.state)) await refuseCurrentCleanupBranch({ change: context.change, slices: context.slices, rt })
 	try {
 		await shipByState(context, rt)
 	} finally {
 		await restoreStartingBranch(backTo, context.targetBranch, rt)
 	}
+}
+
+function shipMayRunCleanup(state: ChangeState): boolean {
+	return state === 'ready' || state === 'in-flight' || state === 'landed' || state === 'done'
 }
 
 async function shipByState(context: ShipContext, rt: ShipRuntime): Promise<void> {
@@ -116,7 +121,7 @@ function abortedChangeError(changeId: string): Error {
 async function shipViaMerge(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await runCloseOut(
 		{ kind: 'change', id: change.id, branch: change.branch, targetBranch, title: change.title },
-		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
+		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, projectRoot: rt.projectRoot, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
 	)
 	return true
 }
@@ -241,11 +246,15 @@ if (import.meta.vitest) {
 			baseBranch: async () => 'main',
 			checkout: async (b) => { gitCalls.push(`checkout(${b})`) },
 			mergeNoFf: async (b) => { gitCalls.push(`mergeNoFf(${b})`) },
+			mergeNoFfIn: async (p, b) => { gitCalls.push(`mergeNoFfIn(${p},${b})`) },
 			mergeAbort: async () => { gitCalls.push('mergeAbort') },
 			push: async (b) => { gitCalls.push(`push(${b})`) },
+			pushHeadTo: async (p, b) => { gitCalls.push(`pushHeadTo(${p},${b})`) },
+			updateLocalBranchRef: async (b, ref) => { gitCalls.push(`updateLocalBranchRef(${b},${ref})`) },
 			pushSetUpstream: async (b) => { gitCalls.push(`pushSetUpstream(${b})`) },
 			fetch: async (b) => { gitCalls.push(`fetch(${b})`) },
 			deleteBranch: async (b) => { gitCalls.push(`deleteBranch(${b})`) },
+			worktreeAdd: async (p, b) => { gitCalls.push(`worktreeAdd(${p},${b})`) },
 			branchExists: async () => true,
 			listLocalBranches: async () => ['change-3-x'],
 			remoteBranchExists: async () => true,
@@ -303,10 +312,89 @@ if (import.meta.vitest) {
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
-		test('non-PR mode merges ready Changes, closes, and applies local delete policy', async () => {
+		test('refuses before prompting when the current branch is a Cleanup candidate under ship prompt policy', async () => {
+			let current = 'change-3-x'
+			let confirmCalls = 0
+			const { rt, ghCalls } = makeRt({
+				usePrs: true,
+				deleteBranchPolicy: 'prompt',
+				confirm: async () => {
+					confirmCalls += 1
+					throw new Error('should not prompt')
+				},
+				git: noopGitOps({
+					currentBranch: async () => current,
+					isWorkingTreeClean: async () => true,
+					baseBranch: async () => 'main',
+					listLocalBranches: async () => ['main', 'change-3-x'],
+					remoteBranchExists: async () => true,
+					commitsAhead: async (branch) => branch.startsWith('origin/') ? 1 : 0,
+					checkout: async (branch) => { current = branch },
+				}),
+			})
+
+			await expect(runShip('3', rt)).rejects.toThrow(/Switch branches first/)
+			expect(confirmCalls).toBe(0)
+			expect(ghCalls.map((call) => call[0])).not.toContain('createDraftPr')
+			expect(current).toBe('change-3-x')
+		})
+
+		test('refuses before Close-out when the current branch is a Cleanup candidate under ship always policy', async () => {
+			let current = 'change-3-x'
+			const { rt, closed } = makeRt({
+				deleteBranchPolicy: 'always',
+				git: noopGitOps({
+					currentBranch: async () => current,
+					isWorkingTreeClean: async () => true,
+					baseBranch: async () => 'main',
+					listLocalBranches: async () => ['main', 'change-3-x'],
+					remoteBranchExists: async () => true,
+					commitsAhead: async () => 0,
+					checkout: async (branch) => { current = branch },
+				}),
+			})
+
+			await expect(runShip('3', rt)).rejects.toThrow(/Switch branches first/)
+			expect(closed).toEqual([])
+			expect(current).toBe('change-3-x')
+		})
+
+		test('does not refuse the current Cleanup candidate when ship deletion policy is never', async () => {
+			let current = 'change-3-x'
+			let confirmCalls = 0
+			const { rt, ghCalls } = makeRt({
+				usePrs: true,
+				deleteBranchPolicy: 'never',
+				confirm: async () => {
+					confirmCalls += 1
+					return false
+				},
+				git: noopGitOps({
+					currentBranch: async () => current,
+					isWorkingTreeClean: async () => true,
+					baseBranch: async () => 'main',
+					listLocalBranches: async () => ['main', 'change-3-x'],
+					remoteBranchExists: async () => true,
+					fetch: async () => {},
+					commitsAhead: async (branch) => branch.startsWith('origin/') ? 1 : 0,
+					checkout: async (branch) => { current = branch },
+					worktreeList: async () => [],
+				}),
+			})
+
+			await runShip('3', rt)
+
+			expect(confirmCalls).toBe(1)
+			expect(ghCalls.map((call) => call[0])).toContain('createDraftPr')
+			expect(current).toBe('change-3-x')
+		})
+
+		test('non-PR mode merges ready Changes, closes, preserves the main checkout, and applies local delete policy', async () => {
 			const { rt, gitCalls, closed } = makeRt({ deleteBranchPolicy: 'always' })
 			await runShip('3', rt)
-			expect(gitCalls).toContain('mergeNoFf(change-3-x)')
+			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
+			expect(gitCalls).toContain('pushHeadTo(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,main)')
+			expect(gitCalls.find((call) => call.startsWith('checkout'))).toBeUndefined()
 			expect(closed).toEqual(['3'])
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
