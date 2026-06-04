@@ -2,7 +2,7 @@ import { confirm as inqConfirm } from '@inquirer/prompts'
 
 import { deleteBranchIfPresent, restoreStartingBranch, type CloseBranchRuntime, type OpenPr } from './branch.ts'
 import type { StorageKind } from '../../storages/registry.ts'
-import type { ClassifiedSlice, FixRecord, ChangeRecord, Slice, SlicePatch, Storage } from '../../storages/types.ts'
+import type { ClassifiedSlice, ChangeRecord, Slice, SlicePatch, Storage } from '../../storages/types.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
@@ -149,38 +149,6 @@ function closeRuntime(base: CommandBase, storage: Storage, confirm: (msg: string
 export async function closeChange(changeId: string, opts: { storage?: StorageKind }): Promise<void> {
 	const { base, storage, confirm, listOpenPrs } = await buildCloseRuntime(opts)
 	await exitOnCommandError('close', () => withMutationLock(base.projectRoot, () => runCloseChange(changeId, closeRuntime(base, storage, confirm, listOpenPrs))))
-}
-
-async function runCloseFix(fixId: string, rt: CloseRuntime): Promise<void> {
-	const back = await rt.git.currentBranch()
-	const fix = await findFixOrThrow(fixId, rt.storage)
-	const targetBranch = await fixTargetBranch(fix, rt)
-	await closeFixRecord(fixId, fix, rt)
-	await deleteBranchIfPresent(fix.branch, targetBranch, rt)
-	await restoreStartingBranch(back, targetBranch, rt)
-}
-
-async function findFixOrThrow(fixId: string, storage: Storage): Promise<FixRecord> {
-	const fix = await storage.findFix(fixId)
-	if (!fix) throw new Error(`Fix '${fixId}' not found`)
-	return fix
-}
-
-async function fixTargetBranch(fix: FixRecord, rt: CloseRuntime): Promise<string> {
-	return fix.targetBranch ?? await rt.git.baseBranch()
-}
-
-async function closeFixRecord(fixId: string, fix: FixRecord, rt: CloseRuntime): Promise<void> {
-	if (fix.state === 'OPEN') {
-		await rt.storage.closeFix(fixId)
-	} else {
-		rt.stdout(`Fix '${fixId}' already closed in store.\n`)
-	}
-}
-
-export async function closeFix(fixId: string, opts: { storage?: StorageKind }): Promise<void> {
-	const { base, storage, confirm, listOpenPrs } = await buildCloseRuntime(opts)
-	await exitOnCommandError('close', () => withMutationLock(base.projectRoot, () => runCloseFix(fixId, closeRuntime(base, storage, confirm, listOpenPrs))))
 }
 
 export async function closeSlice(sliceId: string, opts: { storage?: StorageKind }): Promise<void> {
@@ -573,32 +541,6 @@ if (import.meta.vitest) {
 			await runCloseChangeWith(changeState(), gitState, { deleteBranchPolicy: 'always', confirm: async () => true })
 			expect(gitState.current).toBe('experiment')
 			expect(gitState.branches.has('42-feature')).toBe(false)
-		})
-	})
-
-	describe('close fix', () => {
-		test('branch deletion safety compares against the Fix targetBranch', async () => {
-			const storage = fakeSliceStorage([], null, {
-				findChange: async () => null,
-				findFix: async () => ({ id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X', body: 'body', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
-			})
-			const { git, calls: gCalls } = fakeGit({
-				current: 'main',
-				branches: new Set(['main', 'hotfix/base', 'fix/5-x']),
-				mergedAncestors: new Map([['fix/5-x', ['hotfix/base']]]),
-			})
-
-			await runCloseFix('5', {
-				storage,
-				deleteBranchPolicy: 'always',
-				confirm: async () => true,
-				stdout: () => {},
-				git,
-				listOpenPrs: async () => [],
-			})
-
-			expect(gCalls).toContain('isMerged(fix/5-x,hotfix/base)')
-			expect(gCalls).toContain('deleteBranch(fix/5-x)')
 		})
 	})
 

@@ -1,6 +1,6 @@
 import path from 'node:path'
 
-import { renderStatus, renderStatusFix, renderStatusSlice } from './render.ts'
+import { renderStatus, renderStatusSlice } from './render.ts'
 import { loadConfig } from '../../config.ts'
 import { getStorage } from '../../storages/registry.ts'
 import type { ClassifiedSlice, ChangeRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
@@ -72,23 +72,6 @@ export async function statusChange(changeId: string, opts: { storage?: string })
 export async function statusSlice(sliceId: string, opts: { storage?: string }): Promise<void> {
 	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
 	await exitOnStatusError(() => withMutationLock(projectRoot, () => runStatusSlice(sliceId, statusRuntime(storage, gh, usePrs))))
-}
-
-async function runStatusFix(fixId: string, rt: StatusRuntime): Promise<void> {
-	const fix = await rt.storage.findFix(fixId)
-	if (!fix) throw new Error(`Fix '${fixId}' not found`)
-	writeStatusText(rt.stdout, renderStatusFix(fix))
-}
-
-export async function statusFix(fixId: string, opts: { storage?: string }): Promise<void> {
-	const { storage, projectRoot, gh } = await buildStatusStorage(opts)
-	await exitOnStatusError(() =>
-		withMutationLock(projectRoot, async () => {
-			const found = await storage.findFix(fixId)
-			if (found) await reconcileEntity({ kind: 'fix', id: fixId, branch: found.branch }, { storage, gh })
-			await runStatusFix(fixId, statusRuntime(storage, gh, false))
-		}),
-	)
 }
 
 type StatusSliceRuntime = {

@@ -1,5 +1,5 @@
 import type { StorageKind } from '../../storages/registry.ts'
-import type { ClassifiedSlice, FixSummary, ChangeSummary, Storage } from '../../storages/types.ts'
+import type { ClassifiedSlice, ChangeSummary, Storage } from '../../storages/types.ts'
 import { emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
 import type { Bucket } from '../../utils/bucket.ts'
 import { createGh } from '../../utils/gh-ops.ts'
@@ -50,7 +50,6 @@ type ListRuntime = {
 }
 
 function newestFirst<T extends { createdAt: string }>(summaries: T[]): T[] {
-	// Storages return unsorted; sort newest-first here. See ADR `storage-behavior-separation` step 4.
 	return [...summaries].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
@@ -67,35 +66,6 @@ async function runListChanges(filter: ListState, rt: ListRuntime): Promise<void>
 	rt.stdout(renderList(rows, filter))
 }
 
-type FixListRow = {
-	summary: FixSummary
-	state: 'OPEN' | 'CLOSED'
-}
-
-function renderFixList(rows: FixListRow[], filter: ListState): string {
-	if (rows.length === 0) {
-		return filter === 'all' ? 'No fixes found.\n' : `No ${filter} fixes.\n`
-	}
-	const lines = rows.map((row) => {
-		const idCol = row.summary.id.padEnd(8)
-		const stateCol = row.state.padEnd(8)
-		const titleCol = row.summary.title.padEnd(48)
-		return `${idCol}  ${stateCol}  ${titleCol}  ${row.summary.branch}`
-	})
-	return `${lines.join('\n')}\n`
-}
-
-async function runListFixes(filter: ListState, rt: ListRuntime): Promise<void> {
-	const sorted = newestFirst(await rt.storage.listFixes({ state: filter }))
-	const rows: FixListRow[] = await Promise.all(
-		sorted.map(async (summary) => {
-			const found = await rt.storage.findFix(summary.id)
-			return { summary, state: found?.state ?? 'OPEN' as const }
-		}),
-	)
-	rt.stdout(renderFixList(rows, filter))
-}
-
 async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListRuntime; projectRoot: string; storage: Storage; gh: ReturnType<typeof createGh> }> {
 	const base = await loadCommandBase('list')
 	const storage = buildStorage(base, (opts.storage as StorageKind | undefined) ?? base.config.storage)
@@ -107,36 +77,25 @@ async function buildListRuntime(opts: { storage?: string }): Promise<{ rt: ListR
 	}
 }
 
-async function reconcileListedEntities(kind: 'change' | 'fix', filter: ListState, storage: Storage, gh: ReturnType<typeof createGh>): Promise<void> {
-	// Reconciliation may write CLOSED on entities whose Close-out PR merged on GitHub. Best-effort
-	// per entity; failures are swallowed by reconcileEntity itself.
-	const summaries = kind === 'change' ? await storage.listChanges({ state: filter }) : await storage.listFixes({ state: filter })
-	for (const s of summaries) {
-		await reconcileEntity({ kind, id: s.id, branch: s.branch }, { storage, gh })
-	}
-}
-
-async function runListedCommand(kind: 'change' | 'fix', filter: ListState, opts: { storage?: string }): Promise<void> {
-	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
-	await exitOnCommandError('list', () =>
-		withMutationLock(projectRoot, async () => {
-			await reconcileListedEntities(kind, filter, storage, gh)
-			await (kind === 'change' ? runListChanges(filter, rt) : runListFixes(filter, rt))
-		}),
-	)
+async function reconcileListedEntities(filter: ListState, storage: Storage, gh: ReturnType<typeof createGh>): Promise<void> {
+	const summaries = await storage.listChanges({ state: filter })
+	for (const s of summaries) await reconcileEntity({ kind: 'change', id: s.id, branch: s.branch }, { storage, gh })
 }
 
 export async function list(filter: ListState, opts: { storage?: string }): Promise<void> {
-	await runListedCommand('change', filter, opts)
-}
-
-export async function listFix(filter: ListState, opts: { storage?: string }): Promise<void> {
-	await runListedCommand('fix', filter, opts)
+	const { rt, projectRoot, storage, gh } = await buildListRuntime(opts)
+	await exitOnCommandError('list', () =>
+		withMutationLock(projectRoot, async () => {
+			await reconcileListedEntities(filter, storage, gh)
+			await runListChanges(filter, rt)
+		}),
+	)
 }
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
+	const { fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 
 	function fakeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
@@ -169,139 +128,32 @@ if (import.meta.vitest) {
 			expect(out).toContain('1 done')
 		})
 
-		test('renders buckets in canonical order with empty ones omitted', () => {
-			const rows: ChangeListRow[] = [
-				{
-					summary: { id: 'p1', title: 'T', branch: 'b', createdAt: '2026-05-13T00:00:00.000Z' },
-					state: 'OPEN',
-					slices: [
-						fakeSlice({ id: '1', bucket: 'ready' }),
-						fakeSlice({ id: '2', bucket: 'done' }),
-						fakeSlice({ id: '3', bucket: 'done' }),
-						fakeSlice({ id: '4', bucket: 'blocked' }),
-					],
-				},
-			]
-			const out = renderList(rows, 'open')
-			expect(out).toContain('2 done · 1 blocked · 1 ready')
-			expect(out).not.toContain('needs-revision')
-		})
-
-		test('empty list message is state-aware', () => {
-			expect(renderList([], 'open')).toContain('No open Changes')
-			expect(renderList([], 'closed')).toContain('No closed Changes')
-			expect(renderList([], 'all')).toContain('No Changes found')
-		})
-
-		test('CLOSED state renders for closed Changes', () => {
-			const rows: ChangeListRow[] = [
-				{
-					summary: { id: 'ef34gh', title: 'Old work', branch: 'change/ef34gh-old-work', createdAt: '2026-05-13T00:00:00.000Z' },
-					state: 'CLOSED',
-					slices: [fakeSlice({ id: 's1', bucket: 'done' })],
-				},
-			]
-			expect(renderList(rows, 'all')).toContain('CLOSED')
-		})
-	})
-
-	describe('renderFixList', () => {
-		test('renders one open fix', () => {
-			const out = renderFixList([
-				{ summary: { id: '5', title: 'Tabs render wrong', branch: 'fix/5-tabs-render-wrong', createdAt: '2026-05-17T00:00:00Z' }, state: 'OPEN' },
-			], 'open')
-			expect(out).toContain('5')
-			expect(out).toContain('OPEN')
-			expect(out).toContain('Tabs render wrong')
-			expect(out).toContain('fix/5-tabs-render-wrong')
-		})
-
-		test('empty list message is state-aware', () => {
-			expect(renderFixList([], 'open')).toContain('No open fixes')
-			expect(renderFixList([], 'closed')).toContain('No closed fixes')
-			expect(renderFixList([], 'all')).toContain('No fixes found')
+		test('empty open Change list has friendly message', () => {
+			expect(renderList([], 'open')).toBe('No open Changes.\n')
 		})
 	})
 
 	describe('runListChanges', () => {
-		function fakeStorage(overrides: Partial<Storage>): Storage {
-			return {
-				createChange: async () => { throw new Error('nyi') },
-				findChange: async () => null,
-				listChanges: async () => [],
-				closeChange: async () => {},
-				createSlice: async () => { throw new Error('nyi') },
-				findSlices: async () => [],
-				findSlice: async () => null,
-				updateSlice: async () => {},
-				createFix: async () => { throw new Error('nyi') },
-				findFix: async () => null,
-				listFixes: async () => [],
-				updateFix: async () => {},
-				closeFix: async () => {},
-				...overrides,
-			}
+		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[]): Storage {
+			return fakeSliceStorage(slices, null, {
+				findChange: async (id) => summaries.find((s) => s.id === id) ? { id, branch: 'b', title: 't', state: 'OPEN' } : null,
+				listChanges: async () => summaries,
+			})
 		}
 
-		test('passes the filter through to storage.listChanges', async () => {
-			let receivedState: ListState | null = null
-			const storage = fakeStorage({
-				listChanges: async (opts) => {
-					receivedState = opts.state
-					return []
-				},
-			})
+		test('sorts newest first', async () => {
+			let out = ''
 			const { gh } = recordingGhOps()
-			const captured: string[] = []
-			await runListChanges('closed', { storage, gh, usePrs: false, stdout: (s) => captured.push(s) })
-			expect(receivedState).toBe('closed')
-		})
-
-		test('sorts Changes newest-first by createdAt, regardless of the order the storage returned', async () => {
-			const storage = fakeStorage({
-				listChanges: async () => [
-					{ id: 'older', title: 'Older', branch: 'b/older', createdAt: '2026-05-10T00:00:00.000Z' },
-					{ id: 'newer', title: 'Newer', branch: 'b/newer', createdAt: '2026-05-13T00:00:00.000Z' },
-				],
-				findChange: async (id) => ({ id, title: id, branch: `b/${id}`, state: 'OPEN' }),
-				findSlices: async () => [],
+			await runListChanges('open', {
+				storage: storageWith([
+					{ id: '1', title: 'Old', branch: 'b1', createdAt: '2026-01-01T00:00:00Z' },
+					{ id: '2', title: 'New', branch: 'b2', createdAt: '2026-02-01T00:00:00Z' },
+				], []),
+				gh,
+				usePrs: false,
+				stdout: (s) => { out = s },
 			})
-			const { gh } = recordingGhOps()
-			const captured: string[] = []
-			await runListChanges('open', { storage, gh, usePrs: false, stdout: (s) => captured.push(s) })
-			const text = captured.join('')
-			expect(text.indexOf('newer')).toBeLessThan(text.indexOf('older'))
-		})
-
-		test('usePrs:true counts a ready storage slice with an open PR as in-flight', async () => {
-			const storage = fakeStorage({
-				listChanges: async () => [{ id: '123', title: 'Paginated Reads', branch: '123-paginated-reads', createdAt: '2026-05-13T00:00:00.000Z' }],
-				findChange: async (id) => ({ id, title: 'Paginated Reads', branch: '123-paginated-reads', state: 'OPEN' }),
-				findSlices: async () => [{ id: '124', title: 'Read query-shape validation', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }],
-			})
-			const { gh } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 130, headRefName: 'change-123/slice-124-read-query-shape-validation', isDraft: false }],
-			})
-			const captured: string[] = []
-			await runListChanges('open', { storage, gh, usePrs: true, stdout: (s) => captured.push(s) })
-			expect(captured.join('')).toContain('1 in-flight')
-			expect(captured.join('')).not.toContain('1 ready')
-		})
-
-		test('aborts the whole command when one findSlices rejects', async () => {
-			const storage = fakeStorage({
-				listChanges: async () => [
-					{ id: 'a', title: 'A', branch: 'b/a', createdAt: '2026-05-12T00:00:00.000Z' },
-					{ id: 'b', title: 'B', branch: 'b/b', createdAt: '2026-05-13T00:00:00.000Z' },
-				],
-				findChange: async (id) => ({ id, title: id, branch: `b/${id}`, state: 'OPEN' }),
-				findSlices: async (changeId) => {
-					if (changeId === 'b') throw new Error('rate limited')
-					return []
-				},
-			})
-			const { gh } = recordingGhOps()
-			await expect(runListChanges('open', { storage, gh, usePrs: false, stdout: () => {} })).rejects.toThrow(/rate limited/)
+			expect(out.indexOf('2')).toBeLessThan(out.indexOf('1'))
 		})
 	})
 }

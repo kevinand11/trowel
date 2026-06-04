@@ -1,4 +1,4 @@
-import type { ClassifiedSlice, FixRecord, ChangeRecord } from '../../storages/types.ts'
+import type { ClassifiedSlice, ChangeRecord } from '../../storages/types.ts'
 import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
 import type { Bucket } from '../../utils/bucket.ts'
 
@@ -12,20 +12,6 @@ export function renderStatus(change: ChangeRecord, slices: ClassifiedSlice[]): s
 		'',
 		...renderBucketSections(slices),
 	]
-	return lines.join('\n')
-}
-
-export function renderStatusFix(fix: FixRecord): string {
-	const lines: string[] = []
-	lines.push(`Fix ${fix.id}  ${fix.title}`)
-	lines.push(`Branch:  ${fix.branch}`)
-	lines.push(`State:   ${fix.state}`)
-	lines.push(`ready-for-agent: ${fix.readyForAgent}`)
-	lines.push(`needs-revision:  ${fix.needsRevision}`)
-	if (fix.body.trim().length > 0) {
-		lines.push('')
-		lines.push(fix.body.trim())
-	}
 	return lines.join('\n')
 }
 
