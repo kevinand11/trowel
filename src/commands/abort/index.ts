@@ -7,11 +7,14 @@ import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { slug as slugify } from '../../utils/slug.ts'
+import { cleanupChange } from '../../work/cleanup.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
 type AbortRuntime = CloseBranchRuntime & {
+	projectRoot?: string
 	storage: Storage
+	interactive?: boolean
 }
 
 type AbortSliceRuntime = AbortRuntime & {
@@ -26,9 +29,12 @@ async function runAbortChange(changeId: string, rt: AbortRuntime): Promise<void>
 	const targetBranch = await changeTargetBranch(change, rt)
 
 	if (!(await abortOpenChangeSlices(changeId, rt))) return
-	await abortChangeRecord(changeId, change, rt)
-	await deleteBranchIfPresent(change.branch, targetBranch, rt)
-	await restoreStartingBranch(back, targetBranch, rt)
+	try {
+		await abortChangeRecord(changeId, change, rt)
+		await cleanupAfterAbort(change, targetBranch, rt)
+	} finally {
+		await restoreStartingBranch(back, targetBranch, rt)
+	}
 }
 
 async function findChangeOrThrow(changeId: string, storage: Storage): Promise<ChangeRecord> {
@@ -60,6 +66,23 @@ async function abortChangeRecord(changeId: string, change: ChangeRecord, rt: Abo
 	} else {
 		rt.stdout(`Change '${changeId}' already closed in store.\n`)
 	}
+}
+
+async function cleanupAfterAbort(change: ChangeRecord, targetBranch: string, rt: AbortRuntime): Promise<void> {
+	const slices = await rt.storage.findSlices(change.id)
+	await cleanupChange({
+		change,
+		slices,
+		targetBranch,
+		rt: {
+			projectRoot: rt.projectRoot ?? process.cwd(),
+			git: rt.git,
+			deleteBranchPolicy: rt.deleteBranchPolicy,
+			interactive: rt.interactive ?? true,
+			confirm: rt.confirm,
+			stdout: rt.stdout,
+		},
+	})
 }
 
 async function runAbortSlice(sliceId: string, rt: AbortSliceRuntime): Promise<void> {
@@ -137,8 +160,10 @@ async function buildAbortRuntime(opts: { storage?: StorageKind }): Promise<{ bas
 
 function abortRuntime(base: CommandBase, storage: Storage, confirm: (msg: string) => Promise<boolean>, listOpenPrs: (branch: string) => Promise<OpenPr[]>): AbortRuntime {
 	return {
+		projectRoot: base.projectRoot,
 		storage,
 		deleteBranchPolicy: base.config.abort.deleteBranch,
+		interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 		confirm,
 		stdout: (s) => process.stdout.write(s),
 		git: base.git,
@@ -239,6 +264,8 @@ if (import.meta.vitest) {
 		current: string
 		branches: Set<string>
 		mergedAncestors: Map<string, string[]> // branch → ancestors (i.e. base branches it's merged into)
+		remoteBranches?: Set<string>
+		ahead?: Map<string, number>
 	}
 
 	function fakeGit(state: GitState): { git: GitOps; calls: string[] } {
@@ -247,6 +274,13 @@ if (import.meta.vitest) {
 			currentBranch: async () => state.current,
 			baseBranch: async () => 'main',
 			branchExists: async (b) => state.branches.has(b),
+			listLocalBranches: async () => [...state.branches],
+			remoteBranchExists: async (b) => Boolean(state.remoteBranches?.has(b)),
+			fetch: async (b) => { calls.push(`fetch(${b})`) },
+			commitsAhead: async (b, base) => {
+				calls.push(`commitsAhead(${b},${base})`)
+				return state.ahead?.get(b) ?? 0
+			},
 			isMerged: async (b, base) => {
 				calls.push(`isMerged(${b},${base})`)
 				return (state.mergedAncestors.get(b) ?? []).includes(base)
@@ -412,18 +446,25 @@ if (import.meta.vitest) {
 			expect(gitState.branches.has('42-feature')).toBe(false)
 		})
 
-		test('Change branch deletion safety compares against the Change targetBranch', async () => {
-			const state = changeState('OPEN', { targetBranch: 'release/1.2' })
-			const gitState = branchState('main', ['main', 'release/1.2', '42-feature'], new Map([['42-feature', ['release/1.2']]]))
+		test('cleanup considers integration and slice branches, including stale local slice branch names', async () => {
+			const sliceBranch = 'change-42/slice-s1-a'
+			const staleSliceBranch = 'change-42/slice-stale-old-title'
+			const state = changeState('OPEN', {}, [{ id: 's1', title: 'A', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false }])
+			const gitState = branchState('main', ['main', '42-feature', sliceBranch, staleSliceBranch, 'unrelated'])
 
 			const { gitCalls } = await runAbortChangeWith(state, gitState, { deleteBranchPolicy: 'always', confirm: async () => true })
 
-			expect(gitCalls).toContain('isMerged(42-feature,release/1.2)')
 			expect(gitCalls).toContain('deleteBranch(42-feature)')
+			expect(gitCalls).toContain(`deleteBranch(${sliceBranch})`)
+			expect(gitCalls).toContain(`deleteBranch(${staleSliceBranch})`)
+			expect(gitState.branches.has('unrelated')).toBe(true)
 		})
 
-		test("policy='prompt' → asks once; user declines → no delete", async () => {
+		test("policy='prompt' → asks once for the full local branch set; user declines → no delete", async () => {
+			const sliceBranch = 'change-42/slice-s1-a'
 			const { state, gitState } = happyState()
+			state.slices = [{ id: 's1', title: 'A', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false }]
+			gitState.branches.add(sliceBranch)
 			const { storage } = fakeStorage(state)
 			const { git, calls: gCalls } = fakeGit(gitState)
 			const msgs: string[] = []
@@ -439,12 +480,13 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [],
 			})
 			expect(msgs).toHaveLength(1)
-			expect(msgs[0]).toMatch(/delete integration branch '42-feature'/i)
+			expect(msgs[0]).toContain('42-feature')
+			expect(msgs[0]).toContain(sliceBranch)
 			expect(gCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(gitState.branches.has('42-feature')).toBe(true)
 		})
 
-		test("policy='prompt' + accept → deletes; merged so no extra warnings", async () => {
+		test("policy='prompt' + accept → deletes local branches", async () => {
 			const { state, gitState } = happyState()
 			const { storage } = fakeStorage(state)
 			const { git } = fakeGit(gitState)
@@ -477,43 +519,24 @@ if (import.meta.vitest) {
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
-		function expectBranchKeptAfterPrompt(msgs: string[], pattern: RegExp, gitState: GitState): void {
-			expect(msgs.some((m) => pattern.test(m))).toBe(true)
+		test('remote-ahead local branch → skips and reports without prompting', async () => {
+			const { state, gitState } = happyState()
+			gitState.remoteBranches = new Set(['42-feature'])
+			gitState.ahead = new Map([['42-feature', 2]])
+
+			const { gitCalls, stdoutBuf } = await runAbortChangeWith(state, gitState, { deleteBranchPolicy: 'always', confirm: async () => true })
+
+			expect(gitCalls).toContain('commitsAhead(42-feature,origin/42-feature)')
+			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(gitState.branches.has('42-feature')).toBe(true)
-		}
-
-		test('open slice PRs → warn + confirm before delete; decline → keep branch', async () => {
-			const { state, gitState } = happyState()
-			const msgs: string[] = []
-			const { stdoutBuf } = await runAbortChangeWith(state, gitState, {
-				deleteBranchPolicy: 'always',
-				confirm: async (m) => {
-					msgs.push(m)
-					return false // decline
-				},
-				listOpenPrs: async (b) => [{ number: 99, url: `https://github.com/o/r/pull/99 base=${b}` }],
-			})
-			expect(stdoutBuf).toContain('#99')
-			expectBranchKeptAfterPrompt(msgs, /deleting the branch will close these PRs/i, gitState)
+			expect(stdoutBuf).toContain("Skipped local branch '42-feature'")
+			expect(stdoutBuf).toContain('not present on origin/42-feature')
 		})
 
-		test('unmerged branch → warn + confirm; decline → keep branch', async () => {
+		test('remote-up-to-date local branch → deletes', async () => {
 			const { state, gitState } = happyState()
-			gitState.mergedAncestors = new Map() // branch not merged
-			const msgs: string[] = []
-			await runAbortChangeWith(state, gitState, {
-				deleteBranchPolicy: 'always',
-				confirm: async (m) => {
-					msgs.push(m)
-					return false
-				},
-			})
-			expectBranchKeptAfterPrompt(msgs, /contains commits not on 'main'/i, gitState)
-		})
-
-		test('unmerged + accept → deletes', async () => {
-			const { state, gitState } = happyState()
-			gitState.mergedAncestors = new Map()
+			gitState.remoteBranches = new Set(['42-feature'])
+			gitState.ahead = new Map([['42-feature', 0]])
 			await runAbortChangeWith(state, gitState, { deleteBranchPolicy: 'always', confirm: async () => true })
 			expect(gitState.branches.has('42-feature')).toBe(false)
 		})

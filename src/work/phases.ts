@@ -330,6 +330,7 @@ if (import.meta.vitest) {
 			branchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
 			isMerged: async () => false,
 			commitsAhead: async () => overrides.commitsAhead ?? 0,
+			listLocalBranches: async () => [],
 			deleteBranch: recorded('deleteBranch'),
 			worktreeAdd: recorded('worktreeAdd'),
 			worktreeRemove: recorded('worktreeRemove'),

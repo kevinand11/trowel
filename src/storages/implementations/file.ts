@@ -397,6 +397,7 @@ if (import.meta.vitest) {
 				calls.git.push(['deleteBranch', b])
 				await realGit.deleteBranch(b)
 			},
+			listLocalBranches: async () => realGit.listLocalBranches(),
 			worktreeAdd: async (p: string, b: string) => {
 				await realGit.worktreeAdd(p, b)
 			},
