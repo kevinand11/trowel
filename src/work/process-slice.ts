@@ -1,16 +1,14 @@
 import { classify } from './classify.ts'
 import type { LoopDeps } from './loop.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
-import { enrichSlicePrStates } from './pr-flow.ts'
 import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
-import { classifySlices } from '../utils/bucket.ts'
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
 type LoopPhaseCtx = { prdId: string; integrationBranch: string; config: ClassifySliceConfig }
-type SliceStepResult = { outcome: ProcessOutcome } | { slice: ClassifiedSlice }
+type SliceStepResult = { outcome: ProcessOutcome } | { outcome: 'progress' }
 
 const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'review', 'address'])
 
@@ -27,17 +25,11 @@ export async function processSlice(prdId: string, initial: ClassifiedSlice, deps
 	const initialOutcome = initialProcessOutcome(initial, ctx, tag, deps)
 	if (initialOutcome) return initialOutcome
 
-	let slice: ClassifiedSlice = initial
-	for (let step = 0; step < deps.config.sliceStepCap; step++) {
-		const stepResult = await processSliceStep(slice, ctx, tag, deps)
-		if ('outcome' in stepResult) return stepResult.outcome
-		slice = stepResult.slice
-	}
-	deps.log(`${tag} step-cap reached after ${deps.config.sliceStepCap} step(s); returning partial`)
-	return 'partial'
+	const stepResult = await processSliceStep(initial, ctx, tag, deps)
+	return stepResult.outcome === 'progress' ? 'no-work' : stepResult.outcome
 }
 
-function loopPhaseCtx(prdId: string, deps: LoopDeps): LoopPhaseCtx {
+function loopPhaseCtx (prdId: string, deps: LoopDeps): LoopPhaseCtx {
 	return {
 		prdId,
 		integrationBranch: deps.integrationBranch,
@@ -58,7 +50,7 @@ async function processSliceStep(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: 
 	if (!SANDBOX_ROLES.has(state)) return unexpectedStateOutcome(state, tag, deps)
 	const outcome = await runSlicePhase(state as Role, slice, ctx, tag, deps)
 	const processOutcome = PROCESS_OUTCOME_BY_PHASE[outcome]
-	return processOutcome ? { outcome: processOutcome } : refreshSliceResult(slice, ctx, deps)
+	return { outcome: processOutcome ?? 'progress' }
 }
 
 function terminalOutcomeForState(state: ResumeState): ProcessOutcome | null {
@@ -84,13 +76,6 @@ async function runSlicePhase(role: Role, slice: ClassifiedSlice, ctx: LoopPhaseC
 
 function phaseDepsFor(deps: LoopDeps): PhaseDeps {
 	return { storage: deps.storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: deps.config.mergeNoVerify, projectRoot: deps.projectRoot }
-}
-
-async function refreshSliceResult(slice: ClassifiedSlice, ctx: LoopPhaseCtx, deps: LoopDeps): Promise<SliceStepResult> {
-	const raw = await deps.storage.findSlices(ctx.prdId)
-	const enriched = ctx.config.usePrs ? await enrichSlicePrStates(deps.gh, ctx.prdId, raw) : raw
-	const refreshed = classifySlices(enriched).find((s) => s.id === slice.id)
-	return refreshed ? { slice: refreshed } : { outcome: 'partial' }
 }
 
 function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: LoopPhaseCtx) {

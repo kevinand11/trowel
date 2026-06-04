@@ -13,11 +13,10 @@ type FixStepResult = 'progress' | 'stop'
 
 export async function runFixEntity(entity: FixLoopEntity, deps: FixEntityLoopDeps): Promise<void> {
 	const fixPhaseDeps = fixPhaseDepsFor(deps)
-	for (let step = 0; step < deps.config.sliceStepCap; step++) {
+	while (true) {
 		const result = await runFixEntityStep(entity, deps, fixPhaseDeps)
 		if (result === 'stop') return
 	}
-	deps.log(`[work fix-${entity.id}] step-cap reached after ${deps.config.sliceStepCap} step(s); stopping`)
 }
 
 function fixPhaseDepsFor(deps: FixEntityLoopDeps): FixPhaseDeps {

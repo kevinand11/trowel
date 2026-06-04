@@ -32,7 +32,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 	const storageKind = opts.storage ?? config.storage
 	const harnessKind = opts.harness ?? config.agent.harness
 	const harness = getHarness(harnessKind)
-	const log = (m: string) => process.stdout.write(`${m}\n`)
+	const log = (m: string) => process.stdout.write(`${new Date().toISOString()} ${m}\n`)
 	const storage = buildStorage(base, storageKind, { log })
 
 	await ensureTrowelDir(projectRoot)
@@ -112,7 +112,6 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 				usePrs: config.work.usePrs,
 				review: config.work.review,
 				perSliceBranches: config.work.perSliceBranches,
-				sliceStepCap: config.work.sliceStepCap,
 				maxConcurrent: config.turn.maxConcurrent,
 				mergeNoVerify: config.work.mergeNoVerify,
 			},

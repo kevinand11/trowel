@@ -111,7 +111,7 @@ if (import.meta.vitest) {
 	}
 
 	const baseConfig: LoopConfig = {
-		usePrs: false, review: false, perSliceBranches: true, sliceStepCap: 5, maxConcurrent: null, mergeNoVerify: false,
+		usePrs: false, review: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
 	}
 
 	async function prdClosedAfterLoop(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<boolean> {

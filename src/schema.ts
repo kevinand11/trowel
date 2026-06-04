@@ -44,7 +44,6 @@ export const partialConfigPipe = () =>
 		),
 		work: v.optional(
 			v.object({
-				sliceStepCap: v.optional(v.number()),
 				usePrs: v.optional(v.boolean()),
 				review: v.optional(v.boolean()),
 				perSliceBranches: v.optional(v.boolean()),
@@ -82,7 +81,6 @@ export type Config = {
 		maxConcurrent: number | null
 	}
 	work: {
-		sliceStepCap: number
 		usePrs: boolean
 		review: boolean
 		perSliceBranches: boolean
@@ -124,7 +122,6 @@ export const defaultConfig: Config = {
 		maxConcurrent: 3,
 	},
 	work: {
-		sliceStepCap: 5,
 		// Default false: most projects start in host-merge mode regardless of storage.
 		// Set true to open a draft PR per slice branch (requires a GitHub remote + gh auth).
 		usePrs: false,
@@ -209,8 +206,7 @@ if (import.meta.vitest) {
 			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
-		test('work loop defaults: 5 inner step cap, PRs off, 24h worktree cleanup', () => {
-			expect(defaultConfig.work.sliceStepCap).toBe(5)
+		test('work loop defaults: PRs off, 24h worktree cleanup', () => {
 			expect(defaultConfig.work.usePrs).toBe(false)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
 		})
