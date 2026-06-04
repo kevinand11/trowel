@@ -8,6 +8,7 @@ import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
 import { list, type ListState } from './commands/list/index.ts'
 import { review } from './commands/review.ts'
+import { shipChange } from './commands/ship/index.ts'
 import { start } from './commands/start.ts'
 import { statusChange, statusSlice } from './commands/status/index.ts'
 import { work } from './commands/work/index.ts'
@@ -82,6 +83,15 @@ export function run(): void {
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.action(async (changeId: string, opts) => {
 			await work(changeId, opts)
+		})
+
+	changeCmd
+		.command('ship')
+		.description('Ship a finished Change')
+		.argument('<change-id>')
+		.option('--storage <kind>', 'Override project storage')
+		.action(async (changeId: string, opts) => {
+			await shipChange(changeId, opts)
 		})
 
 	changeCmd

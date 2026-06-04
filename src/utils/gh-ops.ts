@@ -1,5 +1,5 @@
-import type { ShipMergeMethod } from '../storages/types.ts'
 import { parseSemver, tryExec, type ShellResult } from './shell.ts'
+import type { ShipMergeMethod } from '../storages/types.ts'
 
 /**
  * Single canonical surface for every `gh` operation trowel performs. Parallel

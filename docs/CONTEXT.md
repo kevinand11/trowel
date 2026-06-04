@@ -50,11 +50,15 @@ The branch that holds in-flight Change work. Slice commits are merged into it (o
 _Avoid_: Feature branch.
 
 **Close-out**:
-The terminal step that ships a closeable **Change**. A Change becomes closeable when every **Slice** is CLOSED. If `config.work.usePrs` is true, Close-out opens/marks-ready a PR from the Integration branch to the Target branch and leaves the Change OPEN until merge reconciliation. If false, Close-out host-merges the Integration branch into the Target branch and marks the Change CLOSED.
+The terminal step that ships a closeable **Change**, invoked only by **Ship**. The **AFK loop** never runs Close-out. A Change becomes closeable when every **Slice** is in the `done` **Bucket** after Reconciliation/effective state is applied. If `config.work.usePrs` is true, Close-out opens/marks-ready a PR from the Integration branch to the Target branch and leaves the Change OPEN until merge reconciliation. If false, Close-out host-merges the Integration branch into the Target branch and marks the Change CLOSED.
 _Avoid_: Abort.
 
+**Ship**:
+The user command that invokes **Close-out** for an already-finished **Change**. `trowel change ship <id>` first requires a clean working tree, then holds the **Mutation lock** for the full operation and runs **Reconciliation**; if the Change is already `CLOSED`, it exits successfully as an idempotent no-op. Otherwise it fails if any **Slice** is not in the `done` **Bucket** after Reconciliation/effective state is applied, listing each non-terminal Slice id, Bucket, and title. Ship does not run the **AFK loop** or agent **Turns**. Shipping is the only path that invokes Close-out. Ship behavior is storage-agnostic and works the same for `file` and `issue` Storage; flags/config decide git/PR behavior, not Storage kind. Ship restores the **BACK_TO branch** after completion/failure when possible. If ship cleanup deletes the BACK_TO branch, deletion wins; ship leaves the user on the safe current branch and reports that BACK_TO was deleted. Ship cleanup may delete local branches according to ship config (`ship.deleteBranch: 'always' | 'prompt' | 'never'`, default `prompt`), but never deletes remote branches. PR-mode merge uses `ship.mergeMethod: 'merge' | 'squash' | 'rebase'`, default `merge`; the first implementation has no ship-specific CLI override flags. Before PR-mode Close-out, ship fetches and checks whether the local Integration branch is ahead of its remote counterpart; if ahead, interactive ship prompts to push with default yes, while non-interactive ship fails. If the remote counterpart is missing, interactive ship prompts to publish it with default yes; declining or running non-interactively fails because a Close-out PR requires a remote head branch. Non-interactive ship is not a primary workflow, but promptless contexts use deterministic safe defaults: required prompts fail, optional merge/delete prompts default to no. In PR mode, ship cleanup deletes the local Integration branch only after `ship` successfully merges the Close-out PR; if the PR is only opened/readied, the local Integration branch is kept. Shipping is Change-level; there is no Slice ship command until Slice-level shipping has a distinct domain meaning.
+_Avoid_: Work, abort, slice ship.
+
 **Abort**:
-The manual abandon path. `trowel change abort <id>` or `trowel slice abort <id>` marks records CLOSED and performs cleanup without merging or opening a shipping PR. Abort is not the success path.
+The manual abandon path. `trowel change abort <id>` or `trowel slice abort <id>` marks records CLOSED and performs cleanup without merging or opening a shipping PR. Abort is not the success path. Abort cleanup may delete local branches according to abort config, but never deletes remote branches.
 _Avoid_: Close (old command name), ship.
 
 **Reconciliation**:
@@ -81,7 +85,7 @@ _Avoid_: Mutex, semaphore.
 ### AFK loop
 
 **AFK loop**:
-The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `review`, or `address`), releases the slot, then refetches effective state before the next claim. The loop exits when no actionable Slices remain.
+The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `review`, or `address`), releases the slot, then refetches effective state before the next claim. The loop exits successfully when no actionable Slices remain; if every Slice is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
 _Avoid_: Sandcastle, agent runner.
 
 **Agent harness**:
