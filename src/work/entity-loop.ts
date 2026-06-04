@@ -1,4 +1,3 @@
-import { runCloseOut } from './close-out.ts'
 import { createEffectiveSliceReader } from './effective-slices.ts'
 import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
 import { reconcileEntity, type LoopEntityRef } from './reconcile.ts'
@@ -24,9 +23,8 @@ export type EntityLoopDeps = {
 }
 
 /**
- * Top-level dispatch entry for `trowel change work`. Runs Reconciliation, then per-entity processing,
- * then Close-out when the entity converges. Idempotent: re-running on a shipped entity is a
- * Reconciliation-only pass.
+ * Top-level dispatch entry for `trowel change work`. Runs Reconciliation, then per-entity processing.
+ * Work never runs Close-out; when every Slice is done it points the user to `trowel change ship`.
  */
 export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): Promise<void> {
 	const ref: LoopEntityRef = { kind: 'change', id: entity.id, branch: entity.integrationBranch }
@@ -38,7 +36,7 @@ async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, 
 	const change = await openChangeOrStop(entity, deps)
 	if (!change) return
 	await runLoop(entity.id, loopDepsForChange(entity, deps))
-	await closeOutChangeIfReady(entity, change, deps)
+	await printShipGuidanceIfReady(entity, deps)
 }
 
 async function openChangeOrStop(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeRecord | null> {
@@ -62,27 +60,14 @@ function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps
 	}
 }
 
-async function closeOutChangeIfReady(entity: Extract<LoopEntity, { kind: 'change' }>, change: ChangeRecord, deps: EntityLoopDeps): Promise<void> {
+async function printShipGuidanceIfReady(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
 	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs })
 	const slices = await reader.findSlices(entity.id)
-	if (!changeReadyForCloseOut(entity, slices, deps)) return
-	deps.log(`[work change-${entity.id}] all slices CLOSED → running Close-out`)
-	await runCloseOut(
-		{ kind: 'change', id: entity.id, branch: entity.integrationBranch, targetBranch: change.targetBranch, title: entity.title },
-		{
-			storage: deps.storage,
-			git: deps.git,
-			gh: deps.gh,
-			log: deps.log,
-			config: { usePrs: deps.config.usePrs, deleteBranch: 'prompt', mergeNoVerify: deps.config.mergeNoVerify },
-			projectRoot: deps.projectRoot,
-		},
-	)
-}
-
-function changeReadyForCloseOut(entity: Extract<LoopEntity, { kind: 'change' }>, slices: Slice[], deps: EntityLoopDeps): boolean {
-	if (slices.length === 0) deps.log(`[work change-${entity.id}] no slices; skipping Close-out`)
-	return slices.length > 0 && slices.every((s) => s.state === 'CLOSED')
+	if (slices.length === 0) {
+		deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
+		return
+	}
+	if (slices.every((s) => s.state === 'CLOSED')) deps.log(`[work change-${entity.id}] all slices done; run: trowel change ship ${entity.id}`)
 }
 
 if (import.meta.vitest) {
@@ -103,8 +88,9 @@ if (import.meta.vitest) {
 		usePrs: false, review: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
 	}
 
-	async function changeClosedAfterLoop(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<boolean> {
+	async function loopLogsForSlices(slices: Awaited<ReturnType<Storage['findSlices']>>, config: LoopConfig): Promise<{ changeClosed: boolean; logs: string[] }> {
 		let changeClosed = false
+		const logs: string[] = []
 		const storage = makeStorage({
 			findChange: async (id) => ({ id, branch: 'b', title: 'F', state: 'OPEN' }),
 			findSlices: async () => slices,
@@ -113,20 +99,24 @@ if (import.meta.vitest) {
 		const { gh } = recordingGhOps()
 		await runEntityLoop(
 			{ kind: 'change', id: '3', integrationBranch: '3-feat', title: 'Feat' },
-			{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: () => {}, config },
+			{ storage, git: noopGit(), gh, spawnTurn: async () => ({ verdict: 'partial', commits: 0 }), log: (msg) => logs.push(msg), config },
 		)
-		return changeClosed
+		return { changeClosed, logs }
 	}
 
 	describe('runEntityLoop: change', () => {
-		test('all slices already CLOSED + usePrs:false → Close-out fires, Change CLOSED', async () => {
-			expect(await changeClosedAfterLoop([
+		test('all slices already CLOSED → does not Close-out and prints ship guidance', async () => {
+			const result = await loopLogsForSlices([
 				{ id: 's1', title: 'a', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
-			], { ...baseConfig, usePrs: false })).toBe(true)
+			], { ...baseConfig, usePrs: false })
+			expect(result.changeClosed).toBe(false)
+			expect(result.logs.join('\n')).toContain('trowel change ship 3')
 		})
 
-		test('empty slices → skips Close-out (nothing to ship)', async () => {
-			expect(await changeClosedAfterLoop([], baseConfig)).toBe(false)
+		test('empty slices → no ship guidance', async () => {
+			const result = await loopLogsForSlices([], baseConfig)
+			expect(result.changeClosed).toBe(false)
+			expect(result.logs.join('\n')).toContain('no slices; nothing to ship')
 		})
 
 		test('Change already CLOSED → no loop, no Close-out', async () => {
