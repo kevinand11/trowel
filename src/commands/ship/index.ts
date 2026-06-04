@@ -6,7 +6,6 @@ import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { cleanupChange } from '../../work/cleanup.ts'
 import { runCloseOut } from '../../work/close-out.ts'
-import { reconcileEntity } from '../../work/reconcile.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
@@ -68,7 +67,7 @@ async function shipByState(context: ShipContext, rt: ShipRuntime): Promise<void>
 }
 
 async function loadShipContext(changeId: string, rt: ShipRuntime): Promise<ShipContext> {
-	const change = await reconciledChange(changeId, rt)
+	const change = await loadChange(changeId, rt)
 	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })
 	return {
 		change,
@@ -99,10 +98,7 @@ async function requireCleanTree(rt: ShipRuntime): Promise<void> {
 	if (!(await rt.git.isWorkingTreeClean())) throw new Error('working tree is dirty; commit or stash before shipping')
 }
 
-async function reconciledChange(changeId: string, rt: ShipRuntime): Promise<NonNullable<Awaited<ReturnType<Storage['findChange']>>>> {
-	const initial = await rt.storage.findChange(changeId)
-	if (!initial) throw new Error(`Change '${changeId}' not found`)
-	await reconcileEntity({ kind: 'change', id: changeId, branch: initial.branch }, { storage: rt.storage, gh: rt.gh, log: rt.stdout })
+async function loadChange(changeId: string, rt: ShipRuntime): Promise<NonNullable<Awaited<ReturnType<Storage['findChange']>>>> {
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`Change '${changeId}' not found`)
 	return change
@@ -285,7 +281,7 @@ if (import.meta.vitest) {
 			await expect(runShip('3', rt)).rejects.toThrow(/working tree is dirty/)
 		})
 
-		test('done Change after reconciliation exits successfully through cleanup', async () => {
+		test('done Change exits successfully through cleanup', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'CLOSED' }) })
 			const { rt, out } = makeRt({ storage, gh: recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'MERGED' }) }).gh })
 			await runShip('3', rt)
@@ -356,7 +352,7 @@ if (import.meta.vitest) {
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
 
-		test('landed Change is finalized before cleanup without running Close-out', async () => {
+		test('landed Change from merged Close-out PR is finalized before cleanup without running Close-out', async () => {
 			const gitCalls: string[] = []
 			const git = noopGitOps({
 				currentBranch: async () => 'back',
@@ -370,13 +366,17 @@ if (import.meta.vitest) {
 				fetch: async (b) => { gitCalls.push(`fetch(${b})`) },
 				commitsAhead: async () => 0,
 			})
-			const { rt, closed, ghCalls } = makeRt({ git, deleteBranchPolicy: 'always' })
+			const { gh, calls } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'MERGED' }) })
+			const { rt, closed, out } = makeRt({ git, gh, deleteBranchPolicy: 'always' })
 
 			await runShip('3', rt)
 
+			const stdout = out.join('')
 			expect(closed).toEqual(['3'])
+			expect(stdout).toContain('has landed; finalized before cleanup')
+			expect(stdout).not.toContain('already done')
 			expect(gitCalls).not.toContain('mergeNoFf(change-3-x)')
-			expect(ghCalls.map((c) => c[0])).not.toContain('createDraftPr')
+			expect(calls.map((c) => c[0])).not.toContain('createDraftPr')
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
 	})
