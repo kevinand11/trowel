@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
-import { address } from './commands/address.ts'
 import { abortChange, abortSlice } from './commands/abort/index.ts'
+import { address } from './commands/address.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
