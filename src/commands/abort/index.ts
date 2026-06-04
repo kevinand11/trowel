@@ -343,7 +343,7 @@ if (import.meta.vitest) {
 			await expect(runAbortChangeWith({ storageState: { change: null, slices: [] } })).rejects.toThrow(/Change '42' not found/)
 		})
 
-		test('refuses before exact-id prompting when the current branch is a Cleanup candidate under abort policy', async () => {
+		test('refuses before exact-id prompting when the current branch is a Cleanup candidate under abort prompt policy', async () => {
 			let confirmExactCalls = 0
 			const storageState = {
 				change: fakeChange(),
@@ -367,6 +367,18 @@ if (import.meta.vitest) {
 			})).rejects.toThrow(/Switch branches first/)
 			expect(confirmExactCalls).toBe(0)
 			expect(storageState.change.closedAt).toBeNull()
+		})
+
+		test('refuses before closing records when the current branch is a Cleanup candidate under abort always policy', async () => {
+			const storageState = { change: fakeChange(), slices: [fakeSlice()] }
+
+			await expect(runAbortChangeWith({
+				storageState,
+				gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
+				runtime: { deleteBranchPolicy: 'always' },
+			})).rejects.toThrow(/Switch branches first/)
+			expect(storageState.change.closedAt).toBeNull()
+			expect(storageState.slices[0]!.closedAt).toBeNull()
 		})
 
 		test('does not refuse the current Cleanup candidate when abort deletion policy is never', async () => {

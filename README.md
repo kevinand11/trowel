@@ -28,3 +28,5 @@ Personal CLI for orchestrating Change-driven feature work — start, slice, and 
 | `trowel init [global\|private\|project]` | Write a config layer. |
 
 `--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn.
+
+Branch behavior: `trowel start` intentionally switches the main checkout to the newly created Change integration branch after materialising the Change. Later host-owned local merges do not use the main checkout: `trowel change work`, `trowel slice implement`, and merge-based `trowel change ship` merge through reserved trowel worktrees. `trowel change ship` and `trowel change abort` also refuse Cleanup when the current branch is one of the local branches Cleanup may delete; switch branches first, then retry.

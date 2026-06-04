@@ -316,7 +316,7 @@ if (import.meta.vitest) {
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
-		test('refuses before prompting when the current branch is a Cleanup candidate under ship policy', async () => {
+		test('refuses before prompting when the current branch is a Cleanup candidate under ship prompt policy', async () => {
 			let current = 'change-3-x'
 			let confirmCalls = 0
 			const { rt, ghCalls } = makeRt({
@@ -340,6 +340,26 @@ if (import.meta.vitest) {
 			await expect(runShip('3', rt)).rejects.toThrow(/Switch branches first/)
 			expect(confirmCalls).toBe(0)
 			expect(ghCalls.map((call) => call[0])).not.toContain('createDraftPr')
+			expect(current).toBe('change-3-x')
+		})
+
+		test('refuses before Close-out when the current branch is a Cleanup candidate under ship always policy', async () => {
+			let current = 'change-3-x'
+			const { rt, closed } = makeRt({
+				deleteBranchPolicy: 'always',
+				git: noopGitOps({
+					currentBranch: async () => current,
+					isWorkingTreeClean: async () => true,
+					baseBranch: async () => 'main',
+					listLocalBranches: async () => ['main', 'change-3-x'],
+					remoteBranchExists: async () => true,
+					commitsAhead: async () => 0,
+					checkout: async (branch) => { current = branch },
+				}),
+			})
+
+			await expect(runShip('3', rt)).rejects.toThrow(/Switch branches first/)
+			expect(closed).toEqual([])
 			expect(current).toBe('change-3-x')
 		})
 
@@ -373,11 +393,12 @@ if (import.meta.vitest) {
 			expect(current).toBe('change-3-x')
 		})
 
-		test('non-PR mode merges ready Changes, closes, and applies local delete policy', async () => {
+		test('non-PR mode merges ready Changes, closes, preserves the main checkout, and applies local delete policy', async () => {
 			const { rt, gitCalls, closed } = makeRt({ deleteBranchPolicy: 'always' })
 			await runShip('3', rt)
 			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
 			expect(gitCalls).toContain('pushHeadTo(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,main)')
+			expect(gitCalls.find((call) => call.startsWith('checkout'))).toBeUndefined()
 			expect(closed).toEqual(['3'])
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
