@@ -100,7 +100,7 @@ export type GhOps = {
 	listOpenPrs(opts?: { base?: string }): Promise<PrSummary[]>
 	/**
 	 * Look up the most recent PR for `head` regardless of state. Returns null when no PR exists.
-	 * Used by **Reconciliation** to detect that a Close-out PR has been merged on GitHub.
+	 * Used by state computation to detect that a Close-out PR has been merged on GitHub.
 	 */
 	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>
 	closePr(prNumber: number, opts?: { comment?: string }): Promise<void>
