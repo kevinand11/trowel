@@ -74,6 +74,7 @@ export type ClassifiedSlice = Slice & { bucket: Bucket }
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
 
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
+export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
 
 /**
  * Outcome of a single per-slice phase invocation (one `prepare<Role>` + sandbox + `land<Role>`).

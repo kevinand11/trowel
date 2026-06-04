@@ -364,6 +364,7 @@ if (import.meta.vitest) {
 				calls.git.push(['deleteRemoteBranch', b])
 				await realGit.deleteRemoteBranch(b)
 			},
+			remoteBranchExists: async (b: string) => realGit.remoteBranchExists(b),
 			createRemoteBranch: async (n: string, b: string) => {
 				calls.git.push(['createRemoteBranch', n, b])
 				await realGit.createRemoteBranch(n, b)

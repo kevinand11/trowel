@@ -22,6 +22,7 @@ export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 		push: noop,
 		mergeNoFf: noop,
 		deleteRemoteBranch: noop,
+		remoteBranchExists: trueAsync,
 		createRemoteBranch: noop,
 		createLocalBranch: noop,
 		pushSetUpstream: noop,

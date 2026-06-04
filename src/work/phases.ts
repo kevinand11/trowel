@@ -317,6 +317,7 @@ if (import.meta.vitest) {
 			},
 			mergeAbort: recorded('mergeAbort'),
 			deleteRemoteBranch: recorded('deleteRemoteBranch'),
+			remoteBranchExists: async () => true,
 			createRemoteBranch: recorded('createRemoteBranch'),
 			createLocalBranch: recorded('createLocalBranch'),
 			pushSetUpstream: recorded('pushSetUpstream'),

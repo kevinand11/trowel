@@ -1,3 +1,4 @@
+import type { ShipMergeMethod } from '../storages/types.ts'
 import { parseSemver, tryExec, type ShellResult } from './shell.ts'
 
 /**
@@ -99,6 +100,7 @@ export type GhOps = {
 	 * Used by **Reconciliation** to detect that a Close-out PR has been merged on GitHub.
 	 */
 	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>
+	mergePr(prNumber: number, method: ShipMergeMethod): Promise<void>
 
 	// PR feedback
 	fetchPrLineComments(prNumber: number): Promise<LineCommentRaw[]>
@@ -209,6 +211,9 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		async findAnyPrByHead(head) {
 			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state', '--jq', '.[0]'])
 			return r.ok ? parseAnyPrByHead(r.stdout) : null
+		},
+		async mergePr(prNumber, method) {
+			await ghOrThrow(['pr', 'merge', String(prNumber), `--${method}`])
 		},
 		async listOpenPrs(opts) {
 			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels']

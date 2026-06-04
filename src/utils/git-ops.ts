@@ -16,6 +16,7 @@ export type GitOps = {
 	mergeNoFf(branch: string, opts?: { noVerify?: boolean }): Promise<void>
 	mergeAbort(): Promise<void>
 	deleteRemoteBranch(branch: string): Promise<void>
+	remoteBranchExists(branch: string): Promise<boolean>
 	createRemoteBranch(newBranch: string, baseBranch: string): Promise<void>
 	// file storage's createChange uses these for integration-branch creation
 	createLocalBranch(name: string, baseBranch: string): Promise<void>
@@ -74,6 +75,10 @@ export function createRepoGit(projectRoot: string): GitOps {
 		deleteRemoteBranch: async (b) => {
 			await gitOrThrow(['push', '-q', 'origin', `:${b}`])
 		},
+		remoteBranchExists: async (b) => {
+			const remote = await tryExec('git', ['-C', projectRoot, 'ls-remote', '--heads', 'origin', b])
+			return remote.ok && remote.stdout.trim() !== ''
+		},
 		createRemoteBranch: async (newBranch, baseBranch) => {
 			await gitOrThrow(['fetch', '-q', 'origin', baseBranch])
 			await gitOrThrow(['push', '-q', 'origin', `refs/remotes/origin/${baseBranch}:refs/heads/${newBranch}`])
@@ -113,7 +118,6 @@ export function createRepoGit(projectRoot: string): GitOps {
 		},
 		deleteBranch: async (b) => {
 			await tryExec('git', ['-C', projectRoot, 'branch', '-q', '-D', b])
-			await tryExec('git', ['-C', projectRoot, 'push', '-q', 'origin', `:${b}`])
 		},
 		worktreeAdd: async (worktreePath, branch) => {
 			await gitOrThrow(['worktree', 'add', worktreePath, branch])
