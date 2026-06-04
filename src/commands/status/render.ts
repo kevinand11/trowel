@@ -1,56 +1,54 @@
-import type { ClassifiedSlice, ChangeRecord } from '../../storages/types.ts'
-import { BUCKET_ORDER, emptyBucketCounts, formatBucketCounts } from '../../utils/bucket-format.ts'
-import type { Bucket } from '../../utils/bucket.ts'
+import type { ClassifiedSlice, ChangeRecord, SliceState } from '../../storages/types.ts'
+import { emptySliceStateCounts, formatSliceStateCounts, SLICE_STATE_ORDER } from '../../utils/slice-state-format.ts'
 
 export function renderStatus(change: ChangeRecord, slices: ClassifiedSlice[]): string {
-	const counts = bucketCountsFor(slices)
-	const summary = slices.length === 0 ? '(no slices)' : `(${formatBucketCounts(counts)})`
+	const counts = stateCountsFor(slices)
 	const lines = [
 		`Change ${change.id}  ${change.title}`,
+		`State:   ${change.state}`,
 		`Branch:  ${change.branch}`,
-		`State:   ${change.state}          ${summary}`,
-		'',
-		...renderBucketSections(slices),
 	]
-	return lines.join('\n')
+	if (change.targetBranch) lines.push(`Target:  ${change.targetBranch}`)
+	lines.push('', `Slices:  ${formatSliceStateCounts(counts) || '(no slices)'}`)
+	lines.push(...renderStateSections(slices))
+	return `${lines.join('\n')}\n`
 }
 
 export function renderStatusSlice(change: ChangeRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
 	const lines: string[] = []
 	lines.push(`Slice ${slice.id}  ${slice.title}`)
-	lines.push(`Change:     ${change.id}  ${change.title}`)
-	lines.push(`State:   ${slice.state}   bucket: ${slice.bucket}`)
+	lines.push(`Change:  ${change.id}  ${change.title}`)
+	lines.push(`State:   ${slice.state}`)
+	lines.push(`closed-at:       ${slice.closedAt ?? '(none)'}`)
 	lines.push(`ready-for-agent: ${slice.readyForAgent}`)
 	lines.push(`needs-revision:  ${slice.needsRevision}`)
 	lines.push(...blockedByLines(slice, siblings))
-	return lines.join('\n')
+	return `${lines.join('\n')}\n`
 }
 
-function bucketCountsFor(slices: ClassifiedSlice[]): Record<Bucket, number> {
-	const counts: Record<Bucket, number> = emptyBucketCounts()
-	for (const s of slices) counts[s.bucket]++
+function stateCountsFor(slices: ClassifiedSlice[]): Record<SliceState, number> {
+	const counts = emptySliceStateCounts()
+	for (const s of slices) counts[s.state]++
 	return counts
 }
 
-function renderBucketSections(slices: ClassifiedSlice[]): string[] {
+function renderStateSections(slices: ClassifiedSlice[]): string[] {
 	const lines: string[] = []
 	const sliceById = bySliceId(slices)
-	for (const bucket of BUCKET_ORDER) appendBucketSection(lines, bucket, slices, sliceById)
+	for (const state of SLICE_STATE_ORDER) appendStateSection(lines, state, slices, sliceById)
 	return lines
 }
 
-function appendBucketSection(lines: string[], bucket: Bucket, slices: ClassifiedSlice[], sliceById: Map<string, ClassifiedSlice>): void {
-	const inBucket = slices.filter((s) => s.bucket === bucket)
-	if (inBucket.length === 0) return
-	lines.push(`  ${bucket}`)
-	for (const s of inBucket) lines.push(renderSliceSummaryLine(s, sliceById))
-	lines.push('')
+function appendStateSection(lines: string[], state: SliceState, slices: ClassifiedSlice[], sliceById: Map<string, ClassifiedSlice>): void {
+	const inState = slices.filter((s) => s.state === state)
+	if (inState.length === 0) return
+	lines.push(`  ${state}`)
+	for (const s of inState) lines.push(renderSliceSummaryLine(s, sliceById))
 }
 
 function renderSliceSummaryLine(s: ClassifiedSlice, sliceById: Map<string, ClassifiedSlice>): string {
 	const right = rightColumn(s, sliceById)
-	const idCol = s.id.padEnd(8)
-	return right ? `    ${idCol}  ${s.title.padEnd(48)}  ${right}` : `    ${idCol}  ${s.title}`
+	return `    ${s.id.padEnd(6)}  ${s.title}${right}`
 }
 
 function bySliceId(slices: ClassifiedSlice[]): Map<string, ClassifiedSlice> {
@@ -58,25 +56,25 @@ function bySliceId(slices: ClassifiedSlice[]): Map<string, ClassifiedSlice> {
 }
 
 function rightColumn(s: ClassifiedSlice, byId: Map<string, ClassifiedSlice>): string {
-	if (s.bucket !== 'blocked') return ''
+	if (s.state !== 'blocked') return ''
 	const unmet = unmetBlockers(s, byId)
-	return unmet.length === 0 ? '' : `blockedBy: ${unmet.join(', ')}`
+	return unmet.length > 0 ? `  blocked by: ${unmet.join(', ')}` : ''
 }
 
 function unmetBlockers(s: ClassifiedSlice, byId: Map<string, ClassifiedSlice>): string[] {
 	return s.blockedBy.filter((id) => {
 		const dep = byId.get(id)
-		return !dep || dep.bucket !== 'done'
+		return !dep || dep.state !== 'done'
 	})
 }
 
 function blockedByLines(slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string[] {
 	if (slice.blockedBy.length === 0) return []
 	const byId = bySliceId(siblings)
-	return ['blockedBy:', ...slice.blockedBy.map((id) => blockedByLine(id, byId))]
+	return ['', 'Blocked by:', ...slice.blockedBy.map((id) => blockedByLine(id, byId))]
 }
 
 function blockedByLine(id: string, byId: Map<string, ClassifiedSlice>): string {
 	const dep = byId.get(id)
-	return dep ? `  ${id.padEnd(6)}  ${dep.bucket.padEnd(14)}  ${dep.title}` : `  ${id.padEnd(6)}  (not found)`
+	return dep ? `  ${id.padEnd(6)}  ${dep.state.padEnd(14)}  ${dep.title}` : `  ${id.padEnd(6)}  (not found)`
 }

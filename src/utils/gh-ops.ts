@@ -33,6 +33,8 @@ export type RawSubIssue = {
 	title: string
 	body: string
 	state: string
+	closed_at?: string | null
+	closedAt?: string | null
 	labels: Array<{ name: string }>
 	issue_dependencies_summary?: { total_blocked_by?: number }
 }

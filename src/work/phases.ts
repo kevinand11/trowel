@@ -79,8 +79,8 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  * - `no-work-needed` → clear `readyForAgent` via storage, return `'no-work'`.
  *
  * `ready` handling dispatches on (perSliceBranches × usePrs):
- * - `perSliceBranches: false`, `usePrs: false`: push integration, close the slice via
- *   `updateSlice({state: 'CLOSED'})`, return `'done'`. (`usePrs: true` is impossible without
+ * - `perSliceBranches: false`, `usePrs: false`: push integration, finalize the slice via
+ *   `updateSlice({closedAt})`, return `'done'`. (`usePrs: true` is impossible without
  *   slice branches — rejected at config load.)
  * - `perSliceBranches: true`, `usePrs: false`: push slice branch, host-side merge `--no-ff` into
  *   the integration branch, push and delete the slice branch, close the slice via storage,
@@ -105,8 +105,8 @@ async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: Pha
 	await deps.git.push(ctx.integrationBranch)
 	await deps.git.deleteRemoteBranch(branch)
 	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { state: 'CLOSED' })
-	deps.log(`${tag} closed slice`)
+	await finalizeSlice(deps, ctx.changeId, slice.id)
+	deps.log(`${tag} finalized slice`)
 }
 
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
@@ -157,9 +157,13 @@ async function closeDirectIntegrationSlice(deps: PhaseDeps, slice: Slice, ctx: P
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await deps.git.push(ctx.integrationBranch)
 	deps.log(`${tag} pushed ${ctx.integrationBranch}`)
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { state: 'CLOSED' })
-	deps.log(`${tag} closed slice`)
+	await finalizeSlice(deps, ctx.changeId, slice.id)
+	deps.log(`${tag} finalized slice`)
 	return 'done'
+}
+
+async function finalizeSlice(deps: PhaseDeps, changeId: string, sliceId: string): Promise<void> {
+	await deps.storage.updateSlice(changeId, sliceId, { closedAt: new Date().toISOString() })
 }
 
 async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
@@ -302,10 +306,10 @@ if (import.meta.vitest) {
 		mergeNoVerify?: boolean
 		branchExists?: (b: string) => boolean
 		commitsAhead?: number
-	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { state: 'OPEN' | 'CLOSED'; needsRevision: boolean }; logs: string[] } {
+	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; needsRevision: boolean }; logs: string[] } {
 		const calls: GitCall[] = []
 		const logs: string[] = []
-		const storageState = { state: 'OPEN' as 'OPEN' | 'CLOSED', needsRevision: true }
+		const storageState = { closedAt: null as string | null, needsRevision: true }
 		const recorded = (method: string) => (...args: unknown[]) => { calls.push({ method, args }); return Promise.resolve() }
 		const git: GitOps = {
 			fetch: recorded('fetch'),
@@ -343,11 +347,11 @@ if (import.meta.vitest) {
 			findChange: async () => null,
 			listChanges: async () => [],
 			closeChange: async () => {},
-			createSlice: async () => ({ id: 's', title: '', body: '', state: 'OPEN', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
+			createSlice: async () => ({ id: 's', title: '', body: '', state: 'draft', closedAt: null, readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
 			findSlices: async () => [],
 			findSlice: async () => null,
 			updateSlice: async (_p, _s, patch) => {
-				if (patch.state === 'CLOSED') storageState.state = 'CLOSED'
+				if (patch.closedAt !== undefined) storageState.closedAt = patch.closedAt
 				if (patch.needsRevision !== undefined) storageState.needsRevision = patch.needsRevision
 			},
 		}
@@ -367,7 +371,7 @@ if (import.meta.vitest) {
 	}
 
 	const slice: Slice = {
-		id: '42', title: 'A slice', body: 'b', state: 'OPEN',
+		id: '42', title: 'A slice', body: 'b', state: 'open', closedAt: null,
 		readyForAgent: true, needsRevision: false, blockedBy: [], prState: null,
 	}
 	const ctx: PhaseCtx = {
@@ -412,7 +416,7 @@ if (import.meta.vitest) {
 			const { deps, calls, storageState } = makePhaseDeps({ commitsAhead: 0 })
 			const outcome = await landImplement(deps, slice, { verdict: 'no-work-needed', notes: 'already done', commits: 0 }, ctx)
 			expect(outcome).toBe('no-work')
-			expect(storageState.state).toBe('OPEN')
+			expect(storageState.closedAt).toBeNull()
 			const methods = calls.map((c) => c.method)
 			expect(methods).not.toContain('mergeNoFf')
 			expect(methods).not.toContain('deleteRemoteBranch')
@@ -425,7 +429,7 @@ if (import.meta.vitest) {
 			const methods = calls.map((c) => c.method)
 			expect(methods).toContain('mergeNoFf')
 			expect(methods).toContain('deleteRemoteBranch')
-			expect(storageState.state).toBe('CLOSED')
+			expect(storageState.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 			expect(logs.some((l) => /no-work-needed but slice branch has 2 unmerged commit/.test(l))).toBe(true)
 		})
 
@@ -443,7 +447,7 @@ if (import.meta.vitest) {
 			const outcome = await landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)
 			expect(outcome).toBe('done')
 			expect(calls.find((c) => c.method === 'mergeAbort')).toBeUndefined()
-			expect(storageState.state).toBe('CLOSED')
+			expect(storageState.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 
 		test('mergeNoFf throws → mergeAbort runs, error re-thrown, push and deleteRemoteBranch NOT reached', async () => {

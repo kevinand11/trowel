@@ -9,7 +9,7 @@ export async function address(sliceId: string, opts: { storage?: StorageKind; ha
 		storage: opts.storage,
 		harness: opts.harness,
 		role: 'address',
-		requiredBucket: 'needs-revision',
+		requiredState: 'needs-revision',
 		reason: () => 'Addresser only runs against slices flagged for revision.',
 	})
 }
@@ -23,20 +23,20 @@ if (import.meta.vitest) {
 			runSlicePhaseCommand({
 				sliceId,
 				runtime,
-				requiredBucket: 'needs-revision',
+				requiredState: 'needs-revision',
 				reason: () => 'Addresser only runs against slices flagged for revision.',
 			})
 
 		test('on a needs-revision slice (issue storage): calls runOnePhase exactly once', async () => {
-			const calls = await collectRunOnePhaseSlices(runAddress, fakeClassifiedSlice({ id: 's1', bucket: 'needs-revision', needsRevision: true, prState: 'draft' }))
+			const calls = await collectRunOnePhaseSlices(runAddress, fakeClassifiedSlice({ id: 's1', state: 'needs-revision', needsRevision: true, prState: 'draft' }))
 			expect(calls).toHaveLength(1)
 		})
 
-		test('refuses when slice bucket is not "needs-revision"', async () => {
-			const slice = fakeClassifiedSlice({ id: 's1', bucket: 'in-flight', needsRevision: false, prState: 'draft' })
+		test('refuses when slice state is not "needs-revision"', async () => {
+			const slice = fakeClassifiedSlice({ id: 's1', state: 'in-flight', needsRevision: false, prState: 'draft' })
 			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
-			await expect(runAddress('s1', { storage, gh, usePrs: false, runOnePhase: async () => {} })).rejects.toThrow(/bucket 'in-flight'/)
+			await expect(runAddress('s1', { storage, gh, usePrs: false, runOnePhase: async () => {} })).rejects.toThrow(/state 'in-flight'/)
 		})
 	})
 }

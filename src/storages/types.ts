@@ -1,4 +1,3 @@
-import type { Bucket } from '../utils/bucket.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import type { TurnIn } from '../work/verdict.ts'
@@ -50,12 +49,16 @@ export type ChangeRecord = {
  * Populated by `findSlices`. See ADR `afk-loop-asymmetric-across-storages`.
  */
 export type SlicePrState = 'draft' | 'ready' | 'merged' | null
+export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'needs-revision' | 'landed' | 'done'
 
 export type Slice = {
 	id: string
 	title: string
 	body: string
-	state: 'OPEN' | 'CLOSED'
+	/** Computed lowercase lifecycle state. */
+	state: SliceState
+	/** Raw terminal timestamp. `null` means the Slice has not been finalized. */
+	closedAt: string | null
 	readyForAgent: boolean
 	needsRevision: boolean
 	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
@@ -64,14 +67,9 @@ export type Slice = {
 	prState: SlicePrState
 }
 
-/**
- * A `Slice` enriched with the loop-computed lifecycle bucket. Storages return raw `Slice`s;
- * consumers that need bucket (status, list, loop classifier) call `classifySlices` from
- * `src/utils/bucket.ts` to enrich.
- */
-export type ClassifiedSlice = Slice & { bucket: Bucket }
+export type ClassifiedSlice = Slice
 
-export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'state' | 'blockedBy'>>
+export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'closedAt' | 'blockedBy'>>
 
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
@@ -97,14 +95,15 @@ export type PreparedPhase = {
 /**
  * Loop dispatch state for one slice. Computed by `classify` in `src/work/classify.ts`.
  *
- * - `'done'` — slice has nothing more for the loop to do (closed, !readyForAgent, PR merged/ready,
+ * - `'done'` — slice has nothing more for the loop to do (done, draft, PR ready,
  *   or PR draft with `config.review: false`). The loop skips it.
  * - `'blocked'` — at least one unfinished blocker exists. Loop skips; will reconsider once a blocker closes.
+ * - `'finalize'` — record `closedAt` for a landed Slice.
  * - `'implement'` — run the implementer sandbox next.
  * - `'review'` — run the reviewer sandbox next (issue storage only; only reachable with `usePrs && review`).
  * - `'address'` — run the addresser sandbox next (issue storage only; only reachable with `usePrs && review`).
  */
-export type ResumeState = 'done' | 'blocked' | 'implement' | 'review' | 'address'
+export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'review' | 'address'
 
 export type ClassifySliceConfig = { usePrs: boolean; review: boolean; perSliceBranches: boolean }
 

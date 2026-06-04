@@ -1,58 +1,54 @@
-import type { ClassifiedSlice, ClassifySliceConfig, ResumeState } from '../storages/types.ts'
+import type { ClassifySliceConfig, ResumeState, Slice } from '../storages/types.ts'
 
 /**
- * Decide what the loop should do next for this slice. Pure: reads slice fields, bucket, and
- * config flags only.
- *
- * Previously implemented per-storage (`Storage.classifySlice`); consolidated as a free function
- * since the issue-storage predicate is a superset of the file-storage predicate — on file slices
- * `prState` is always `null`, so the prState branches fall through with no behavior change. See
- * ADR `storage-behavior-separation`.
+ * Decide what the loop should do next for this slice. Pure: reads computed Slice state,
+ * PR state, and config flags only.
  *
  * Predicates evaluated top-to-bottom (first match wins):
  *
- *   done       state === 'CLOSED'
- *   done       !readyForAgent
- *   done       prState === 'merged'
- *   blocked    bucket === 'blocked'
- *   address    needsRevision
+ *   done       state === 'done'
+ *   done       state === 'draft'
+ *   finalize   state === 'landed'
+ *   blocked    state === 'blocked'
+ *   address    state === 'needs-revision'
  *   done       prState === 'ready'
  *   done       prState === 'draft' && !config.review        (review opt-out)
  *   review     prState === 'draft'
- *   implement  (catch-all)
+ *   implement  state === 'open'
  */
 type ResumeRule = {
 	state: ResumeState
-	matches: (slice: ClassifiedSlice, config: ClassifySliceConfig) => boolean
+	matches: (slice: Slice, config: ClassifySliceConfig) => boolean
 }
 
 const RESUME_RULES: ResumeRule[] = [
-	{ state: 'done', matches: (slice) => slice.state === 'CLOSED' },
-	{ state: 'done', matches: (slice) => !slice.readyForAgent },
-	{ state: 'done', matches: (slice) => slice.prState === 'merged' },
-	{ state: 'blocked', matches: (slice) => slice.bucket === 'blocked' },
-	{ state: 'address', matches: (slice) => slice.needsRevision },
+	{ state: 'done', matches: (slice) => slice.state === 'done' },
+	{ state: 'done', matches: (slice) => slice.state === 'draft' },
+	{ state: 'finalize', matches: (slice) => slice.state === 'landed' },
+	{ state: 'blocked', matches: (slice) => slice.state === 'blocked' },
+	{ state: 'address', matches: (slice) => slice.state === 'needs-revision' },
 	{ state: 'done', matches: (slice) => slice.prState === 'ready' },
 	{ state: 'done', matches: (slice, config) => slice.prState === 'draft' && !config.review },
 	{ state: 'review', matches: (slice) => slice.prState === 'draft' },
+	{ state: 'implement', matches: (slice) => slice.state === 'open' },
 ]
 
-export function classify(slice: ClassifiedSlice, config: ClassifySliceConfig): ResumeState {
-	return RESUME_RULES.find((rule) => rule.matches(slice, config))?.state ?? 'implement'
+export function classify(slice: Slice, config: ClassifySliceConfig): ResumeState {
+	return RESUME_RULES.find((rule) => rule.matches(slice, config))?.state ?? 'done'
 }
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
+	function makeSlice(overrides: Partial<Slice> = {}): Slice {
 		return {
 			id: 's1',
 			title: 't',
 			body: 'b',
-			state: 'OPEN',
+			state: 'open',
+			closedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
-			bucket: 'ready',
 			blockedBy: [],
 			prState: null,
 			...overrides,
@@ -60,49 +56,40 @@ if (import.meta.vitest) {
 	}
 
 	describe('classify', () => {
-		test('CLOSED → done', () => {
-			expect(classify(makeSlice({ state: 'CLOSED', bucket: 'done' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
+		test('done → done', () => {
+			expect(classify(makeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
 		})
 
-		test('!readyForAgent → done (slice is a draft waiting on the user)', () => {
-			expect(classify(makeSlice({ readyForAgent: false, bucket: 'draft' }), { usePrs: false, review: false, perSliceBranches: true })).toBe('done')
+		test('draft → done (slice is waiting on the user)', () => {
+			expect(classify(makeSlice({ state: 'draft', readyForAgent: false }), { usePrs: false, review: false, perSliceBranches: true })).toBe('done')
 		})
 
-		test('prState merged → done', () => {
-			expect(classify(makeSlice({ prState: 'merged' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
+		test('landed → finalize', () => {
+			expect(classify(makeSlice({ state: 'landed', prState: 'merged' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('finalize')
 		})
 
 		test('prState ready → done (awaiting human merge)', () => {
-			expect(classify(makeSlice({ prState: 'ready' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
+			expect(classify(makeSlice({ state: 'in-flight', prState: 'ready' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('done')
 		})
 
 		test('prState draft with review: false → done (review opt-out: loop stops at the draft PR)', () => {
-			expect(classify(makeSlice({ prState: 'draft' }), { usePrs: true, review: false, perSliceBranches: true })).toBe('done')
+			expect(classify(makeSlice({ state: 'in-flight', prState: 'draft' }), { usePrs: true, review: false, perSliceBranches: true })).toBe('done')
 		})
 
 		test('prState draft with review: true → review (agent reviewer fires)', () => {
-			expect(classify(makeSlice({ prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('review')
+			expect(classify(makeSlice({ state: 'in-flight', prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('review')
 		})
 
-		test('blocked bucket → blocked (takes precedence over implement, after the done short-circuits)', () => {
-			expect(classify(makeSlice({ bucket: 'blocked', blockedBy: ['s0'] }), { usePrs: true, review: true, perSliceBranches: true })).toBe('blocked')
+		test('blocked → blocked', () => {
+			expect(classify(makeSlice({ state: 'blocked', blockedBy: ['s0'] }), { usePrs: true, review: true, perSliceBranches: true })).toBe('blocked')
 		})
 
-		test('needsRevision with a draft PR and review: true → address (addresser handles reviewer feedback)', () => {
-			expect(classify(makeSlice({ needsRevision: true, prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('address')
-		})
-
-		test('needsRevision with a ready PR → address (revision work beats awaiting human merge)', () => {
-			expect(classify(makeSlice({ needsRevision: true, prState: 'ready', bucket: 'needs-revision' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('address')
+		test('needs-revision with a draft PR and review: true → address', () => {
+			expect(classify(makeSlice({ state: 'needs-revision', needsRevision: true, prState: 'draft' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('address')
 		})
 
 		test('open slice with no PR yet → implement', () => {
 			expect(classify(makeSlice(), { usePrs: true, review: true, perSliceBranches: true })).toBe('implement')
-		})
-
-		test('file-storage shape (prState null, no PR concept): ready → implement; config flags inert', () => {
-			expect(classify(makeSlice({ bucket: 'ready' }), { usePrs: false, review: false, perSliceBranches: true })).toBe('implement')
-			expect(classify(makeSlice({ bucket: 'ready' }), { usePrs: true, review: true, perSliceBranches: true })).toBe('implement')
 		})
 	})
 }

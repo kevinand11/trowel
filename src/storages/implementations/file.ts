@@ -1,9 +1,9 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { classifySlices } from '../../utils/bucket.ts'
 import { allocateNextId } from '../../utils/id.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
+import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import {
 	landAddress,
@@ -37,7 +37,7 @@ function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
 	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
 	applyOptionalPatchValue(store, 'needsRevision', patch.needsRevision)
 	applyBlockedByPatch(store, patch.blockedBy)
-	applyStatePatch(store, patch.state)
+	applyClosedAtPatch(store, patch.closedAt)
 }
 
 function applyOptionalPatchValue<K extends 'readyForAgent' | 'needsRevision'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
@@ -48,13 +48,8 @@ function applyBlockedByPatch(store: MutableStore, blockedBy: string[] | undefine
 	if (blockedBy !== undefined) store.blockedBy = [...blockedBy]
 }
 
-function applyStatePatch(store: MutableStore, state: SlicePatch['state']): void {
-	if (state === 'CLOSED') closeMutableStore(store)
-	if (state === 'OPEN') store.closedAt = null
-}
-
-function closeMutableStore(store: MutableStore): void {
-	if (store.closedAt === null) store.closedAt = new Date().toISOString()
+function applyClosedAtPatch(store: MutableStore, closedAt: SlicePatch['closedAt']): void {
+	if (closedAt !== undefined) store.closedAt = closedAt
 }
 
 const STATE_FILTERS: Record<StateFilter['state'], (store: { closedAt: string | null }) => boolean> = {
@@ -206,7 +201,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			}
 			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(store))
 
-			return sliceFromStore(store, spec.body) as Slice
+			return classifySlices([sliceFromStore(store, spec.body)])[0]!
 		})
 	}
 
@@ -218,7 +213,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const slice = await readSliceFromDir(path.join(slicesPath, entry))
 			if (slice) result.push(slice)
 		}
-		return result
+		return classifySlices(result)
 	}
 
 	async function slicesDirOrNull(changeId: string): Promise<string | null> {
@@ -233,7 +228,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		try {
 			const store: SliceStore = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
 			const body = await readFile(path.join(dir, 'README.md'), 'utf8')
-			return sliceFromStore(store, body) as Slice
+			return sliceFromStore(store, body)
 		} catch {
 			return null
 		}
@@ -250,12 +245,13 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return withMutationLock(deps.projectRoot, async () => updateStore<SliceStore>(await findSliceDir(changeId, sliceId), patch))
 	}
 
-	function sliceFromStore(store: SliceStore, body: string): Omit<Slice, 'bucket'> {
+	function sliceFromStore(store: SliceStore, body: string): Slice {
 		return {
 			id: store.id,
 			title: store.title,
 			body,
-			state: store.closedAt === null ? 'OPEN' : 'CLOSED',
+			state: store.closedAt === null ? 'draft' : 'done',
+			closedAt: store.closedAt,
 			readyForAgent: store.readyForAgent,
 			needsRevision: store.needsRevision,
 			blockedBy: store.blockedBy ?? [],
@@ -484,14 +480,14 @@ if (import.meta.vitest) {
 		return { storage, changeId, slice }
 	}
 
-	async function bucketForReadySliceBlockedByA(f: Fixture, doneA: boolean): Promise<string> {
+	async function stateForReadySliceBlockedByA(f: Fixture, doneA: boolean): Promise<string> {
 		const storage = createFileStorage(f.deps)
 		const { id: changeId } = await storage.createChange({ title: 'P', body: 'b' })
 		const a = await storage.createSlice(changeId, { title: 'A', body: 'spec', blockedBy: [] })
 		const b = await storage.createSlice(changeId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-		if (doneA) await storage.updateSlice(changeId, a.id, { state: 'CLOSED' })
+		if (doneA) await storage.updateSlice(changeId, a.id, { closedAt: new Date().toISOString() })
 		await storage.updateSlice(changeId, b.id, { readyForAgent: true })
-		return classifySlices(await storage.findSlices(changeId)).find((s) => s.id === b.id)!.bucket
+		return classifySlices(await storage.findSlices(changeId)).find((s) => s.id === b.id)!.state
 	}
 
 	describe('file storage: phase primitives', () => {
@@ -500,10 +496,10 @@ if (import.meta.vitest) {
 				id: 's1',
 				title: 'Implement A',
 				body: 'spec',
-				state: 'OPEN',
+				state: 'open',
+				closedAt: null,
 				readyForAgent: true,
 				needsRevision: false,
-				bucket: 'ready',
 				blockedBy: [],
 				prState: null,
 				...overrides,
@@ -600,7 +596,7 @@ if (import.meta.vitest) {
 				expect(outcome).toBe('done')
 				expect(f.calls.git).toContainEqual(['push', result.branch])
 				const after = await storage.findSlices(result.id)
-				expect(after[0]!.state).toBe('CLOSED')
+				expect(after[0]!.state).toBe('done')
 			} finally {
 				await teardown(f)
 			}
@@ -612,7 +608,7 @@ if (import.meta.vitest) {
 				const { outcome, after } = await landReadySlice(f, { verdict: 'no-work-needed', commits: 0 })
 				expect(outcome).toBe('no-work')
 				expect(f.calls.git.find((c) => c[0] === 'push')).toBeUndefined()
-				expect(after[0]!.state).toBe('OPEN')
+				expect(after[0]!.state).toBe('draft')
 				expect(after[0]!.readyForAgent).toBe(false)
 			} finally {
 				await teardown(f)
@@ -625,7 +621,7 @@ if (import.meta.vitest) {
 				const { outcome, after } = await landReadySlice(f, { verdict: 'partial', commits: 0 })
 				expect(outcome).toBe('partial')
 				expect(f.calls.git).toEqual([])
-				expect(after[0]!.state).toBe('OPEN')
+				expect(after[0]!.state).toBe('open')
 				expect(after[0]!.readyForAgent).toBe(true)
 			} finally {
 				await teardown(f)
@@ -640,7 +636,7 @@ if (import.meta.vitest) {
 				const slice = await storage.createSlice(changeId, { title: 'Implement A', body: 'spec', blockedBy: [] })
 				f.calls.git.length = 0
 
-				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, bucket: 'ready' } as ClassifiedSlice, {
+				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
 					changeId,
 					integrationBranch: branch,
 					config: { usePrs: false, review: false, perSliceBranches: true },
@@ -674,7 +670,7 @@ if (import.meta.vitest) {
 				expect(calls).toContainEqual(['mergeNoFf', sliceBranch])
 				expect(calls).toContainEqual(['deleteRemoteBranch', sliceBranch])
 				const after = await storage.findSlices(changeId)
-				expect(after[0]!.state).toBe('CLOSED')
+				expect(after[0]!.state).toBe('done')
 			} finally {
 				await teardown(f)
 			}
@@ -703,7 +699,7 @@ if (import.meta.vitest) {
 				expect(ghCalls.find((c) => c[0] === 'createDraftPr')).toBeDefined()
 				// Slice not closed (PR awaits merge).
 				const after = await storage.findSlices(changeId)
-				expect(after[0]!.state).toBe('OPEN')
+				expect(after[0]!.state).toBe('open')
 			} finally {
 				await teardown(f)
 			}
@@ -903,7 +899,7 @@ if (import.meta.vitest) {
 			const slice = await storage.createSlice(changeId, { title: 'Implement Tab Parser', body: '# spec\nbody', blockedBy: [] })
 			expect(slice.title).toBe('Implement Tab Parser')
 			expect(slice.body).toBe('# spec\nbody')
-			expect(slice.state).toBe('OPEN')
+			expect(slice.state).toBe('draft')
 			expect(slice.readyForAgent).toBe(false)
 			expect(slice.needsRevision).toBe(false)
 
@@ -940,13 +936,13 @@ if (import.meta.vitest) {
 			const a = await storage.createSlice(changeId, { title: 'Alpha', body: 'aa', blockedBy: [] })
 			const b = await storage.createSlice(changeId, { title: 'Beta', body: 'bb', blockedBy: [] })
 			// Mark b as closed and needsRevision via updateSlice
-			await storage.updateSlice(changeId, b.id, { state: 'CLOSED', needsRevision: true })
+			await storage.updateSlice(changeId, b.id, { closedAt: new Date().toISOString(), needsRevision: true })
 
 			const slices = classifySlices(await storage.findSlices(changeId))
 			expect(slices).toHaveLength(2)
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
-			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'OPEN', readyForAgent: false, needsRevision: false })
-			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'CLOSED', needsRevision: true })
+			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'draft', closedAt: null, readyForAgent: false, needsRevision: false })
+			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'done', needsRevision: true })
 		})
 	})
 
@@ -974,7 +970,7 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file storage: findSlices computes bucket', () => {
+	describe('file storage: findSlices computes state', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -986,43 +982,43 @@ if (import.meta.vitest) {
 		test('OPEN slice with no readiness flags → draft', async () => {
 			const { storage, changeId } = await createChangeWithSlice(f)
 			const [s] = classifySlices(await storage.findSlices(changeId))
-			expect(s!.bucket).toBe('draft')
+			expect(s!.state).toBe('draft')
 		})
 
-		test('readyForAgent and no deps → ready', async () => {
+		test('readyForAgent and no deps → open', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
 			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
 			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.bucket).toBe('ready')
+			expect(updated!.state).toBe('open')
 		})
 
 		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
 			await storage.updateSlice(changeId, slice.id, { needsRevision: true, readyForAgent: true })
 			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.bucket).toBe('needs-revision')
+			expect(updated!.state).toBe('needs-revision')
 		})
 
 		test('CLOSED → done', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.updateSlice(changeId, slice.id, { state: 'CLOSED' })
+			await storage.updateSlice(changeId, slice.id, { closedAt: new Date().toISOString() })
 			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.bucket).toBe('done')
+			expect(updated!.state).toBe('done')
 		})
 
 		test('slice with Depends-on: pointing to a non-done slice → blocked', async () => {
-			expect(await bucketForReadySliceBlockedByA(f, false)).toBe('blocked')
+			expect(await stateForReadySliceBlockedByA(f, false)).toBe('blocked')
 		})
 
-		test('slice with Depends-on: pointing to a done slice → ready (dep satisfied)', async () => {
-			expect(await bucketForReadySliceBlockedByA(f, true)).toBe('ready')
+		test('slice with Depends-on: pointing to a done slice → open (dep satisfied)', async () => {
+			expect(await stateForReadySliceBlockedByA(f, true)).toBe('open')
 		})
 
 		test('file storage never returns in-flight (no PR concept)', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
 			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
 			const slices = classifySlices(await storage.findSlices(changeId))
-			expect(slices.every((x) => x.bucket !== 'in-flight')).toBe(true)
+			expect(slices.every((x) => x.state !== 'in-flight')).toBe(true)
 		})
 	})
 
@@ -1194,11 +1190,11 @@ if (import.meta.vitest) {
 		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await storage.updateSlice(changeId, slice.id, { state: 'CLOSED' })
+			await storage.updateSlice(changeId, slice.id, { closedAt: new Date().toISOString() })
 			let store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 
-			await storage.updateSlice(changeId, slice.id, { state: 'OPEN' })
+			await storage.updateSlice(changeId, slice.id, { closedAt: null })
 			store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.closedAt).toBeNull()
 		})

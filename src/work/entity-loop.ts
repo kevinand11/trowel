@@ -67,7 +67,7 @@ async function printShipGuidanceIfReady(entity: Extract<LoopEntity, { kind: 'cha
 		deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
 		return
 	}
-	if (slices.every((s) => s.state === 'CLOSED')) deps.log(`[work change-${entity.id}] all slices done; run: trowel change ship ${entity.id}`)
+	if (slices.every((s) => s.state === 'done')) deps.log(`[work change-${entity.id}] all slices done; run: trowel change ship ${entity.id}`)
 }
 
 if (import.meta.vitest) {
@@ -107,7 +107,7 @@ if (import.meta.vitest) {
 	describe('runEntityLoop: change', () => {
 		test('all slices already CLOSED → does not Close-out and prints ship guidance', async () => {
 			const result = await loopLogsForSlices([
-				{ id: 's1', title: 'a', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
+				{ id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null },
 			], { ...baseConfig, usePrs: false })
 			expect(result.changeClosed).toBe(false)
 			expect(result.logs.join('\n')).toContain('trowel change ship 3')
