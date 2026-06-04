@@ -4,8 +4,9 @@ import { renderStatus, renderStatusSlice } from './render.ts'
 import { loadConfig } from '../../config.ts'
 import { getStorage } from '../../storages/registry.ts'
 import type { ClassifiedSlice, ChangeRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
+import { classifyChange } from '../../utils/change-state.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
-import { createRepoGit } from '../../utils/git-ops.ts'
+import { createRepoGit, type GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { reconcileEntity } from '../../work/reconcile.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
@@ -13,6 +14,7 @@ import { classifySlicesForChange } from '../../work/slice-states.ts'
 type StatusRuntime = {
 	storage: Storage
 	gh: GhOps
+	git: GitOps
 	usePrs: boolean
 	stdout: (s: string) => void
 }
@@ -21,10 +23,20 @@ async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`Change '${changeId}' not found`)
 	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })
-	writeStatusText(rt.stdout, renderStatus(change, slices))
+	const state = await classifyChange(change, slices, { gh: rt.gh, git: rt.git })
+	const targetBranch = change.targetBranch ?? await fallbackTargetBranch(rt.git)
+	writeStatusText(rt.stdout, renderStatus({ ...change, targetBranch, state }, slices))
 }
 
-async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; usePrs: boolean }> {
+async function fallbackTargetBranch(git: GitOps): Promise<string | undefined> {
+	try {
+		return await git.baseBranch()
+	} catch {
+		return undefined
+	}
+}
+
+async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; git: GitOps; usePrs: boolean }> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel status: no project root found\n')
@@ -32,20 +44,21 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 	}
 	const storageKind = opts.storage ?? config.storage
 	const gh = createGh()
+	const git = createRepoGit(projectRoot)
 	const storageDeps: StorageDeps = {
 		gh,
-		git: createRepoGit(projectRoot),
+		git,
 		repoRoot: projectRoot,
 		projectRoot,
 		changesDir: path.resolve(projectRoot, config.docs.changesDir),
 		labels: config.labels,
 		abortOptions: config.abort,
 	}
-	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, usePrs: config.work.usePrs }
+	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git, usePrs: config.work.usePrs }
 }
 
-function statusRuntime(storage: Storage, gh: GhOps, usePrs: boolean): StatusRuntime {
-	return { storage, gh, usePrs, stdout: (s) => process.stdout.write(s) }
+function statusRuntime(storage: Storage, gh: GhOps, git: GitOps, usePrs: boolean): StatusRuntime {
+	return { storage, gh, git, usePrs, stdout: (s) => process.stdout.write(s) }
 }
 
 async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
@@ -58,24 +71,25 @@ async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
 }
 
 export async function statusChange(changeId: string, opts: { storage?: string }): Promise<void> {
-	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
+	const { storage, projectRoot, gh, git, usePrs } = await buildStatusStorage(opts)
 	await exitOnStatusError(() =>
 		withMutationLock(projectRoot, async () => {
 			const found = await storage.findChange(changeId)
 			if (found) await reconcileEntity({ kind: 'change', id: changeId, branch: found.branch }, { storage, gh })
-			await runStatus(changeId, statusRuntime(storage, gh, usePrs))
+			await runStatus(changeId, statusRuntime(storage, gh, git, usePrs))
 		}),
 	)
 }
 
 export async function statusSlice(sliceId: string, opts: { storage?: string }): Promise<void> {
-	const { storage, projectRoot, gh, usePrs } = await buildStatusStorage(opts)
-	await exitOnStatusError(() => withMutationLock(projectRoot, () => runStatusSlice(sliceId, statusRuntime(storage, gh, usePrs))))
+	const { storage, projectRoot, gh, git, usePrs } = await buildStatusStorage(opts)
+	await exitOnStatusError(() => withMutationLock(projectRoot, () => runStatusSlice(sliceId, statusRuntime(storage, gh, git, usePrs))))
 }
 
 type StatusSliceRuntime = {
 	storage: Storage
 	gh: GhOps
+	git: GitOps
 	usePrs: boolean
 	stdout: (s: string) => void
 }
@@ -120,6 +134,7 @@ function writeStatusText(stdout: (s: string) => void, text: string): void {
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 
 	type FakeStorageState = {
 		change: ChangeRecord | null
@@ -146,36 +161,40 @@ if (import.meta.vitest) {
 		}
 	}
 
-	const change: ChangeRecord = { id: 'ab12cd', branch: 'change/ab12cd-feature', title: 'Add SSO', state: 'OPEN' }
+	const change: ChangeRecord = { id: 'ab12cd', branch: 'change/ab12cd-feature', targetBranch: 'main', title: 'Add SSO', state: 'OPEN', closedAt: null }
+	const renderedChange = { ...change, state: 'open' as const }
+	const unmergedGit = () => noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })
 
 	describe('status: tracer (no slices)', () => {
 		test('renders header + "(no slices)" summary', async () => {
 			const storage = fakeStorage({ change, rawSlices: [] })
 			const { gh } = recordingGhOps()
 			let buf = ''
-			await runStatus('ab12cd', { storage, gh, usePrs: false, stdout: (s) => (buf += s) })
+			await runStatus('ab12cd', { storage, gh, git: unmergedGit(), usePrs: false, stdout: (s) => (buf += s) })
 			expect(buf).toContain('Change ab12cd  Add SSO')
-			expect(buf).toContain('Branch:  change/ab12cd-feature')
-			expect(buf).toContain('State:   OPEN')
+			expect(buf).toContain('State:               open')
+			expect(buf).toContain('Target branch:       main')
+			expect(buf).toContain('Integration branch:  change/ab12cd-feature')
+			expect(buf).toContain('Guidance:            work remains')
 			expect(buf).toContain('(no slices)')
 		})
 
 		test('error when Change not found', async () => {
 			const storage = fakeStorage({ change: null, rawSlices: [] })
 			const { gh } = recordingGhOps()
-			await expect(runStatus('zzzzzz', { storage, gh, usePrs: false, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
+			await expect(runStatus('zzzzzz', { storage, gh, git: unmergedGit(), usePrs: false, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
 		})
 
 		test('usePrs:true renders a ready storage slice with an open PR as in-flight', async () => {
 			const storage = fakeStorage({
 				change,
-					rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }],
+				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }],
 			})
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 130, headRefName: `change-${change.id}/slice-124-read-query-shape-validation`, isDraft: false }],
 			})
 			let buf = ''
-			await runStatus(change.id, { storage, gh, usePrs: true, stdout: (s) => (buf += s) })
+			await runStatus(change.id, { storage, gh, git: unmergedGit(), usePrs: true, stdout: (s) => (buf += s) })
 			expect(buf).toContain('1 in-flight')
 			expect(buf).toMatch(/^ {2}in-flight$/m)
 			expect(buf).not.toMatch(/^ {2}open$/m)
@@ -197,40 +216,40 @@ if (import.meta.vitest) {
 		})
 
 		test('"done" section appears for done slices', () => {
-			const out = renderStatus(change, [slice({ id: '142', title: 'Schema migration', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })])
+			const out = renderStatus(renderedChange, [slice({ id: '142', title: 'Schema migration', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })])
 			expect(out).toMatch(/^ {2}done$/m)
 			expect(out).toMatch(/142 +Schema migration/)
 		})
 
 		test('"open" section appears for open slices', () => {
-			const out = renderStatus(change, [slice({ id: '147', title: 'Audit log', state: 'open', readyForAgent: true })])
+			const out = renderStatus(renderedChange, [slice({ id: '147', title: 'Audit log', state: 'open', readyForAgent: true })])
 			expect(out).toMatch(/^ {2}open$/m)
 			expect(out).toMatch(/147 +Audit log/)
 		})
 
 		test('"draft" section appears for draft slices', () => {
-			const out = renderStatus(change, [slice({ id: '149', title: 'TBD', state: 'draft' })])
+			const out = renderStatus(renderedChange, [slice({ id: '149', title: 'TBD', state: 'draft' })])
 			expect(out).toMatch(/^ {2}draft$/m)
 		})
 
 		test('"needs-revision" section appears for needsRevision slices', () => {
-			const out = renderStatus(change, [slice({ id: '150', title: 'Fix me', state: 'needs-revision', needsRevision: true })])
+			const out = renderStatus(renderedChange, [slice({ id: '150', title: 'Fix me', state: 'needs-revision', needsRevision: true })])
 			expect(out).toMatch(/^ {2}needs-revision$/m)
 		})
 
 		test('"in-flight" section appears for in-flight slices', () => {
-			const out = renderStatus(change, [slice({ id: '145', title: 'Session middleware', state: 'in-flight', prState: 'draft' })])
+			const out = renderStatus(renderedChange, [slice({ id: '145', title: 'Session middleware', state: 'in-flight', prState: 'draft' })])
 			expect(out).toMatch(/^ {2}in-flight$/m)
 		})
 
 		test('"blocked" section shows blockedBy ids in the right column', () => {
-			const out = renderStatus(change, [slice({ id: '146', title: 'SSO admin UI', state: 'blocked', readyForAgent: true, blockedBy: ['145', '147'] })])
+			const out = renderStatus(renderedChange, [slice({ id: '146', title: 'SSO admin UI', state: 'blocked', readyForAgent: true, blockedBy: ['145', '147'] })])
 			expect(out).toMatch(/^ {2}blocked$/m)
 			expect(out).toContain('blocked by: 145, 147')
 		})
 
 		test('empty states are omitted from the rendering', () => {
-			const out = renderStatus(change, [
+			const out = renderStatus(renderedChange, [
 				slice({ id: '142', title: 'A', state: 'done', closedAt: 'x' }),
 				slice({ id: '147', title: 'B', state: 'open', readyForAgent: true }),
 			])
@@ -241,7 +260,7 @@ if (import.meta.vitest) {
 		})
 
 		test('summary line shows counts only for non-empty states', () => {
-			const out = renderStatus(change, [
+			const out = renderStatus(renderedChange, [
 				slice({ id: 'd1', state: 'done', closedAt: 'x' }),
 				slice({ id: 'd2', state: 'done', closedAt: 'x' }),
 				slice({ id: 'r1', state: 'open', readyForAgent: true }),
@@ -285,7 +304,7 @@ if (import.meta.vitest) {
 			const storage = sliceStorage(change, slices)
 			const { gh } = recordingGhOps()
 			let buf = ''
-			await runStatusSlice('42', { storage, gh, usePrs: false, stdout: (s) => (buf += s) })
+			await runStatusSlice('42', { storage, gh, git: unmergedGit(), usePrs: false, stdout: (s) => (buf += s) })
 			return buf
 		}
 
@@ -310,7 +329,7 @@ if (import.meta.vitest) {
 		test('errors when slice id not found', async () => {
 			const storage = sliceStorage(change, [])
 			const { gh } = recordingGhOps()
-			await expect(runStatusSlice('999', { storage, gh, usePrs: false, stdout: () => {} })).rejects.toThrow(/slice '999' not found/)
+			await expect(runStatusSlice('999', { storage, gh, git: unmergedGit(), usePrs: false, stdout: () => {} })).rejects.toThrow(/slice '999' not found/)
 		})
 	})
 }

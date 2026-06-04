@@ -1,17 +1,39 @@
-import type { ClassifiedSlice, ChangeRecord, SliceState } from '../../storages/types.ts'
+import type { ClassifiedSlice, ChangeRecord, ChangeState, SliceState } from '../../storages/types.ts'
 import { emptySliceStateCounts, formatSliceStateCounts, SLICE_STATE_ORDER } from '../../utils/slice-state-format.ts'
 
-export function renderStatus(change: ChangeRecord, slices: ClassifiedSlice[]): string {
+export type StatusChange = Omit<ChangeRecord, 'state'> & { state: ChangeState }
+
+export function renderStatus(change: StatusChange, slices: ClassifiedSlice[]): string {
 	const counts = stateCountsFor(slices)
 	const lines = [
 		`Change ${change.id}  ${change.title}`,
-		`State:   ${change.state}`,
-		`Branch:  ${change.branch}`,
+		`State:               ${change.state}`,
+		`Target branch:       ${change.targetBranch ?? '(unknown)'}`,
+		`Integration branch:  ${change.branch}`,
+		`Guidance:            ${stateGuidance(change)}`,
 	]
-	if (change.targetBranch) lines.push(`Target:  ${change.targetBranch}`)
 	lines.push('', `Slices:  ${formatSliceStateCounts(counts) || '(no slices)'}`)
 	lines.push(...renderStateSections(slices))
 	return `${lines.join('\n')}\n`
+}
+
+function stateGuidance(change: StatusChange): string {
+	const ship = `trowel change ship ${change.id}`
+	const work = `trowel change work ${change.id}`
+	switch (change.state) {
+		case 'done':
+			return 'shipped and finalized; no further work needed'
+		case 'landed':
+			return `merged to Target branch but not finalized; run ${ship}`
+		case 'aborted':
+			return 'aborted; run cleanup again only if local worktrees/branches remain'
+		case 'in-flight':
+			return 'Close-out PR is open; merge it, then run status or ship again'
+		case 'ready':
+			return `all Slices are done; run ${ship}`
+		case 'open':
+			return `work remains; run ${work}`
+	}
 }
 
 export function renderStatusSlice(change: ChangeRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
