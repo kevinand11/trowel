@@ -149,7 +149,7 @@ export interface Storage {
 	/**
 	 * Look up a slice by its global id without knowing the parent Change. Returns the slice plus its
 	 * parent Change id, or null if no slice with that id exists. Powers `trowel status slice <id>`,
-	 * `trowel close slice <id>`, and the single-arg phase commands (`implement`/`address`/`review`).
+	 * `trowel slice abort <id>`, and the slice phase commands (`slice implement`/`slice address`/`slice review`).
 	 */
 	findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null>
 	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>

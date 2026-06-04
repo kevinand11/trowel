@@ -103,7 +103,7 @@ async function readdirOrEmpty(dir: string): Promise<string[]> {
 }
 
 export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
-	async function findEntityDir(root: string, kind: 'Change' | 'fix', id: string): Promise<string> {
+	async function findEntityDir(root: string, kind: 'Change', id: string): Promise<string> {
 		let entries: string[]
 		try {
 			entries = await readdir(root)

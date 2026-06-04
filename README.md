@@ -1,56 +1,30 @@
-# Trowel
+# trowel
 
-Personal CLI for orchestrating PRD-driven feature work — start, slice, finish — across any git project.
+Personal CLI for orchestrating Change-driven feature work — start, slice, and finish — across any git project.
 
-> v0 scaffold. Backends (markdown, draft-pr, issue) and the AFK loop are deferred to per-area grilling sessions. `doctor` and `config` work today; every other subcommand is a stub that prints "not yet implemented" and exits non-zero.
+## Core concepts
 
-## Install
+- **Change** — the user-visible unit of intended repository work. A Change has one or more Slices, a target branch, and an integration branch.
+- **Slice** — one vertical cut of a Change that can be implemented and reviewed independently.
+- **Storage** — where Changes and Slices are tracked: local files or GitHub issues.
+- **Turn** — one agent run for one role (`implement`, `review`, or `address`) against one Slice.
 
-```sh
-git clone https://github.com/kevinand11/trowel
-cd trowel
-pnpm install
-mkdir -p ~/.local/bin
-ln -s "$PWD/bin/trowel" ~/.local/bin/trowel
-```
+## Common commands
 
-`~/.local/bin` should already be on PATH; if not, add it.
+| Command | Purpose |
+| --- | --- |
+| `trowel start [--storage <kind>] [--harness <kind>]` | Grill a new Change and create its Slices. |
+| `trowel change list [--state open\|closed\|all] [--storage <kind>]` | List Changes. |
+| `trowel change status <change-id> [--storage <kind>]` | Show one Change and its Slice buckets. |
+| `trowel change work <change-id> [--storage <kind>] [--harness <kind>]` | Run the AFK loop for a Change. |
+| `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
+| `trowel slice status <slice-id> [--storage <kind>]` | Show one Slice. |
+| `trowel slice abort <slice-id> [--storage <kind>]` | Abort one Slice. |
+| `trowel slice implement <slice-id> [--storage <kind>] [--harness <kind>]` | Run implementer for one Slice. |
+| `trowel slice review <slice-id> [--storage <kind>] [--harness <kind>]` | Run reviewer for one Slice PR. |
+| `trowel slice address <slice-id> [--storage <kind>] [--harness <kind>]` | Run addresser for one Slice PR. |
+| `trowel doctor` | Check local tool/config health. |
+| `trowel config` | Print resolved config. |
+| `trowel init [global\|private\|project]` | Write a config layer. |
 
-## Config
-
-Config files are JSON, validated at load time by [valleyed](https://github.com/kevinand11/valleyed). Trowel walks four named layers (lowest → highest precedence):
-
-| Layer | Source | Path |
-|---|---|---|
-| `default` | hard-coded defaults | (in `src/schema.ts`) |
-| `global` | global defaults | `~/.trowel/config.json` |
-| `private` | per-project, this user only | `~/.trowel/projects/<full-path-mirrored>/config.json` |
-| `project` (**wins outright**) | project file | `<project root>/.trowel/config.json` |
-
-"Project root" = the nearest ancestor of cwd containing `.trowel/` (preferred) or `.git/` (fallback).
-
-See `docs/CONTEXT.md` for full vocabulary.
-
-## v0 commands
-
-Scoped commands (`list`, `status`, `close`) take a scope token (`prd` or `slice`) before the id. Phase commands (`implement`, `address`, `review`) take just `<slice-id>` — slice ids are globally unique within a project (GitHub issue numbers on `issue`; an integer from a project-wide shared pool on `file`).
-
-| Command |
-| --- |
-| `trowel init [layer]` (default `project`) |
-| `trowel doctor` |
-| `trowel config` |
-| `trowel start [--storage <kind>] [--harness <kind>]` |
-| `trowel work <prd-id> [--storage <kind>] [--harness <kind>]` |
-| `trowel implement <slice-id> [--storage <kind>] [--harness <kind>]` |
-| `trowel address <slice-id> [--storage <kind>] [--harness <kind>]` |
-| `trowel review <slice-id> [--storage <kind>] [--harness <kind>]` |
-| `trowel list prd [--state open\|closed\|all] [--storage <kind>]` |
-| `trowel status prd <prd-id> [--storage <kind>]` |
-| `trowel status slice <slice-id> [--storage <kind>]` |
-| `trowel close prd <prd-id> [--storage <kind>]` |
-| `trowel close slice <slice-id> [--storage <kind>]` |
-| `trowel diagnose <description>` |
-| `trowel fix <description>` |
-
-Flag rule: `--storage` is offered by any command that reads or writes a PRD or Slice; `--harness` is offered by any command that spawns an agent. `doctor` / `config` / `init` take neither.
+`--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn.

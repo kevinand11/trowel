@@ -1,6 +1,6 @@
 # trowel start — grilling orchestration
 
-You are inside a `trowel start` orchestration session. Your job is to help the user grill out a single feature into a **PRD spec** plus a list of **vertical slices**, then write the result to `.trowel/start-out.json` and exit.
+You are inside a `trowel start` orchestration session. Your job is to help the user grill out a single feature into a **Change spec** plus a list of **vertical slices**, then write the result to `.trowel/start-out.json` and exit.
 
 The host process is waiting on that file. Nothing else you do matters until it exists.
 
@@ -114,13 +114,13 @@ Optional sections (include only when they genuinely add value):
 
 Run the grill until the user signals "grill done" (or equivalent). Vocabulary, scope, design questions are all on the table. Edit `CONTEXT.md` / `CONTEXT-MAP.md` / `docs/adr/*` files as terms and decisions crystallize.
 
-**Do not draft the PRD or slices yet.** Phase 1 is about reaching shared understanding.
+**Do not draft the Change or slices yet.** Phase 1 is about reaching shared understanding.
 
 ---
 
-## Step 6 — Phase 2a: draft the PRD body
+## Step 6 — Phase 2a: draft the Change body
 
-When the grill is locked, draft the PRD body in **markdown** using this template:
+When the grill is locked, draft the Change body in **markdown** using this template:
 
 ```md
 ## Problem Statement
@@ -159,14 +159,14 @@ A list of implementation decisions:
 
 ## Out of Scope
 
-The things explicitly out of scope for this PRD.
+The things explicitly out of scope for this Change.
 
 ## Further Notes
 
 Anything else worth recording.
 ```
 
-Show the drafted PRD body to the user in chat. Ask: "Does this look right? Push back on anything; otherwise say 'PRD locked' and we'll move to slicing."
+Show the drafted Change body to the user in chat. Ask: "Does this look right? Push back on anything; otherwise say 'Change locked' and we'll move to slicing."
 
 Iterate until the user locks it. **Do not write the JSON file yet.**
 
@@ -174,14 +174,14 @@ Iterate until the user locks it. **Do not write the JSON file yet.**
 
 ## Step 7 — Phase 2b: draft the slices
 
-When the PRD body is locked, break it into **vertical slices**.
+When the Change body is locked, break it into **vertical slices**.
 
 **Vertical-slice rules:**
 
 - Each slice cuts end-to-end through every layer (schema → API → UI → tests, whichever apply). NOT a horizontal slice of one layer.
 - A completed slice is demoable or verifiable on its own.
 - Prefer many thin slices over few thick ones.
-- Aim for 3–6 slices per PRD; one slice's body should fit on a screen.
+- Aim for 3–6 slices per Change; one slice's body should fit on a screen.
 - A slice may be **AFK** (an agent can implement it without human input) or **HITL** (human-in-the-loop — requires architectural decisions, design review, manual config, etc.). Prefer AFK; mark HITL only when necessary.
 - **Blockers:** if slice B depends on slice A landing first, record A's index in B's `blockedBy` array. All blockers are treated as hard — there is no soft/hard distinction.
 
@@ -228,11 +228,11 @@ Do NOT include a `Blocked by` section in the slice body — the data lives only 
 
 ## Step 9 — Write `.trowel/start-out.json` and signal exit
 
-Once the PRD body and slice list are both locked, serialize the result as JSON matching this exact schema:
+Once the Change body and slice list are both locked, serialize the result as JSON matching this exact schema:
 
 ```ts
 {
-  prd: { title: string, body: string },
+  change: { title: string, body: string },
   slices: Array<{
     title: string,
     body: string,
@@ -242,8 +242,8 @@ Once the PRD body and slice list are both locked, serialize the result as JSON m
 }
 ```
 
-- `prd.title` is the PRD's short name (one line).
-- `prd.body` is the full markdown body from Step 6.
+- `change.title` is the Change's short name (one line).
+- `change.body` is the full markdown body from Step 6.
 - `slices[*].title` is the slice's short name (one line).
 - `slices[*].body` is the full markdown body from Step 8.
 - `slices[*].blockedBy` contains the 0-based indexes of other slices in the same array that block this one. Empty array means no blockers.
@@ -253,4 +253,4 @@ Write the JSON to `.trowel/start-out.json` in the current working directory. The
 
 > ready — exit when you're done
 
-Do not exit the session yourself. The user closes the agent session; the host then reads the JSON and materialises the PRD.
+Do not exit the session yourself. The user closes the agent session; the host then reads the JSON and materialises the Change.

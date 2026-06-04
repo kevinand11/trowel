@@ -86,7 +86,7 @@ function printCreatedStartChange(rt: StartRuntime, created: CreatedStartChange):
 	rt.stdout(`Branch: ${created.branch} (you are now on it)\n`)
 	printCreatedStartSlices(rt, created)
 	rt.stdout('\nReview `git status` for uncommitted files (CONTEXT/ADR edits from the grill, and on file storage, the Change/slice artifacts). Commit at your discretion.\n')
-	rt.stdout(`\nNext: trowel work ${created.changeId}\n`)
+	rt.stdout(`\nNext: trowel change work ${created.changeId}\n`)
 }
 
 function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartChange): void {
@@ -605,7 +605,7 @@ if (import.meta.vitest) {
 			expect(out).toMatch(/abc123-rename-foo/)
 			expect(out).toMatch(/s1/)
 			expect(out).toMatch(/s2/)
-			expect(out).toMatch(/trowel work abc123/)
+			expect(out).toMatch(/trowel change work abc123/)
 			expect(out).toMatch(/commit/i)
 		})
 	})

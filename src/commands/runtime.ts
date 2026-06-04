@@ -55,7 +55,7 @@ export type GrillCommandRuntime = {
 	confirm: (msg: string) => Promise<boolean>
 }
 
-export async function buildGrillCommandRuntime(commandName: 'start' | 'fix', opts: { storage?: string; harness?: string }, outFileName: string): Promise<GrillCommandRuntime> {
+export async function buildGrillCommandRuntime(commandName: 'start', opts: { storage?: string; harness?: string }, outFileName: string): Promise<GrillCommandRuntime> {
 	const base = await loadCommandBase(commandName)
 	const { config, projectRoot, git } = base
 	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage

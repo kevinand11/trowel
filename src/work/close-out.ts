@@ -123,7 +123,7 @@ function bodyFor(entity: CloseOutEntity): string {
 
 /**
  * The 'prompt' policy is interactive — runLoop runs unattended, so we coerce it to 'never' here.
- * Manual `trowel close <kind> <id>` retains the full prompt behaviour.
+ * Manual `trowel change abort <id>` / `trowel slice abort <id>` retain full prompt behaviour.
  */
 function autoDeletePolicy(p: DeleteBranchPolicy): DeleteBranchPolicy {
 	return p === 'prompt' ? 'never' : p

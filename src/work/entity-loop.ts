@@ -24,7 +24,7 @@ export type EntityLoopDeps = {
 }
 
 /**
- * Top-level dispatch entry for `trowel work`. Runs Reconciliation, then per-entity processing,
+ * Top-level dispatch entry for `trowel change work`. Runs Reconciliation, then per-entity processing,
  * then Close-out when the entity converges. Idempotent: re-running on a shipped entity is a
  * Reconciliation-only pass.
  */

@@ -1,177 +1,132 @@
 # Trowel — Context
 
-Trowel is a personal CLI that orchestrates PRD-driven feature work — start, slice, and finish — and subsumes the AFK-agent loop (previously the standalone `sandcastle`). It is single-user, single-machine, not shareable; it installs once and runs against any git project.
-
-> **Note**: Some terminology below — in particular the rename of "Backend" → "Storage" and the storage/loop split — anticipates the architectural pivot recorded in ADR `2026-05-13-storage-behavior-separation.md`. Implementation may lag the documented vocabulary; ADR `2026-05-12-unified-loop-via-backend-primitives.md` still describes the current shape of the code.
+Trowel is a personal CLI that orchestrates Change-driven repository work — start, slice, and finish — across any git project. It is single-user, single-machine, not shareable; it installs once and runs against any git project.
 
 ## Language
 
-### PRD lifecycle
+### Change lifecycle
 
-**PRD**:
-A long-form spec describing a single feature or change, identified by a unique **PRD id**. The artifact type — directory of markdown files (`file` storage) or GitHub issue (`issue` storage) — is chosen per project via the **Storage**. The PRD records a **Target branch**: the branch the user was on for the `trowel start` invocation that materialised it. The PRD's state (`OPEN` | `CLOSED`) is storage-native: the `file` storage encodes it as a `closedAt: <iso> | null` field in the PRD's `store.json`; the `issue` storage reads native GitHub issue state. On the `file` storage, **trowel does not commit any contents of `prdsDir`** — PRD docs, slice state files, and close transitions are all working-tree-only mutations. If the user keeps `prdsDir` in a git repo, they own staging and committing those changes (including slice-level state transitions written by `trowel work`). The `issue` storage has no working-tree state to commit; its state changes flow through `gh` calls.
-_Avoid_: Spec, design doc, ticket, story.
+**Change**:
+A user-visible unit of intended repository work, identified by a unique **Change id**. A Change contains one or more **Slices**, records a **Target branch**, and has an **Integration branch** where Slice work accumulates before Close-out. The artifact type — directory of markdown/JSON files (`file` storage) or GitHub issue (`issue` storage) — is chosen per project via **Storage**. The Change's state is `OPEN | CLOSED`. On file storage, trowel writes Change/Slice files but does not auto-commit them.
+_Avoid_: PRD, Fix, ticket, story.
 
-**PRD id**:
-The canonical unique identifier for a **PRD**. Form depends on **Storage**: GitHub issue number (`issue`) or a positive integer drawn from a project-wide pool shared with **Slice** ids (`file`). On the `file` storage the id is allocated compute-on-demand at creation time — the storage scans every existing PRD and slice dir for the highest integer prefix and uses `max + 1` — under the **Mutation lock**. The id is what trowel commands take as arguments (`trowel status prd <id>`, `trowel work <id>`).
-_Avoid_: Slug (slug is human-legible, not unique on its own), name.
+**Change id**:
+The canonical unique identifier for a **Change**. Form depends on **Storage**: GitHub issue number (`issue`) or a positive integer drawn from a project-wide pool shared with **Slice** ids (`file`). It is used by commands such as `trowel change status <id>` and `trowel change work <id>`.
+_Avoid_: PRD id, slug, name.
 
 **Storage**:
-The strategy that decides how a **PRD** is persisted, identified, listed, and linked to its **Slices**. One of `file`, `issue`. Storage is **pure persistence** — id format, slice/PRD CRUD, blocker linkage, slice-flag storage, branch-naming convention. The AFK-loop behavior (per-slice branches, PR-flow, reviewer/addresser phases) lives in the loop driver and is selected by **Flags**, not by the storage choice. Flags work uniformly across every storage; tool availability (`gh`, `claude`) is a `trowel doctor` concern, not a storage opinion. PR-flow operations (`openDraftPr`, `markPrReady`, `fetchPrFeedback`, `getPrState`) are free utility functions parameterized by `gh`, not methods on the storage.
-_Avoid_: Backend (old name, retired), provider, adapter, driver.
+The strategy that decides how a **Change** is persisted, identified, listed, and linked to its **Slices**. One of `file`, `issue`. Storage is pure persistence: id format, Change/Slice CRUD, blocker linkage, slice flags, and branch-naming convention. AFK-loop behavior lives in the loop driver and is selected by **Flags**, not by storage choice.
+_Avoid_: Backend, provider, adapter, driver.
 
 **Flag**:
-A user-configurable behavior toggle in `config.work.*`. Flags drive AFK-loop behavior uniformly across every **Storage**. The three flags today:
-- **`usePrs`** (requires `perSliceBranches: true`): the loop opens a draft PR per slice branch after the implementer's push; the slice's transition to `done` is gated on PR merge. When false, the loop merges the slice branch into the **Integration branch** via `git merge --no-ff` host-side (if `perSliceBranches: true`) or skips slice branches entirely (if `perSliceBranches: false`). Mismatched flag combos (e.g. `usePrs: true && perSliceBranches: false`) error at config load.
-- **`review`** (requires `usePrs: true`): the loop runs the **Reviewer** and **Addresser** phases against the slice's PR. When false, the loop opens the draft PR (if `usePrs: true`) and stops, awaiting a human review.
-- **`perSliceBranches`**: each Slice gets its own branch (`prd-<prdId>/slice-<sliceId>-<slug>`) on which the implementer commits. When false, the implementer commits directly to the **Integration branch**. Default `true`; the `false` mode is `maxConcurrent: 1` because parallel implementers would race on a single branch.
+A user-configurable behavior toggle in `config.work.*`. Current flags:
+- **`usePrs`**: opens one PR per Slice branch after implementation; requires `perSliceBranches: true`.
+- **`review`**: runs Reviewer and Addresser phases; requires `usePrs: true`.
+- **`perSliceBranches`**: each Slice gets its own branch (`change-<changeId>/slice-<sliceId>-<slug>`). When false, implementers commit directly to the **Integration branch** and concurrency is one.
 _Avoid_: Option, setting.
 
 **Slice**:
-One vertical cut of a **PRD** — a discrete piece of work that can be implemented and reviewed independently. Storage is storage-defined: the `file` storage stores slices locally as directories under the PRD's `slices/` subdirectory; the `issue` storage stores them as GitHub sub-issues. Slice ids are globally unique within a project: on `file` they come from the same shared integer pool as **PRD ids** (see **PRD id**); on `issue` they are GitHub issue numbers (sub-issues share the repo's issue-number sequence). Global uniqueness is what lets `trowel status slice <id>` and `trowel close slice <id>` address a slice without naming its parent PRD. Each `Slice` returned by the storage carries `{ id, title, body, state: 'OPEN' | 'CLOSED', readyForAgent, needsRevision, blockedBy: string[] }`. The two AFK-loop signals — `readyForAgent` (eligible for the implementer to pick up) and `needsRevision` (the reviewer flagged the slice's PR for changes) — are stored natively per storage: the `file` storage uses boolean fields in the slice's `store.json`; the `issue` storage uses the presence of GitHub labels whose names come from `StorageDeps.labels.{readyForAgent,needsRevision}` (configurable per project). The slice's **Bucket** and PR-state are **not** storage fields — they are loop-computed projections (see below).
-_Avoid_: Sub-issue (overloads GitHub's "sub-issue" feature; sub-issues are only one storage mechanism), task, ticket.
+One vertical cut of a **Change** — a discrete piece of work that can be implemented and reviewed independently. Slice ids are globally unique within a project: file storage draws them from the same integer pool as **Change ids**, and issue storage uses GitHub issue numbers. Each Slice has storage fields `{ id, title, body, state: 'OPEN' | 'CLOSED', readyForAgent, needsRevision, blockedBy, prState }`.
+_Avoid_: Sub-issue, task, ticket.
 
 **Bucket**:
-The canonical lifecycle classification of a **Slice**, computed from the slice's storage fields plus PR-state queries. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Mutually exclusive — every slice is in exactly one bucket at any time. Computed by command/loop code (not the storage) using the storage's raw Slice plus a PR-state probe when `usePrs: true`; every command that displays or gates behavior on buckets (`status`, `list`, manual phase commands, close prompts) must use the same enrichment as the **AFK loop** so bucket summaries and command eligibility agree. When `usePrs: true`, PR-state enrichment is required — if the `gh` query fails, the command surfaces an error instead of falling back to raw storage buckets. Ordering and meaning: `done` is terminal and unblocks dependents; `needs-revision` means reviewer feedback requires an Addresser; `in-flight` means the slice has an open PR, draft or ready-for-merge, and therefore still blocks dependents until merged/closed; `blocked` means one or more dependencies are not `done`; `ready` means no open PR exists and the slice is eligible for the Implementer; `draft` means no open PR exists and the slice is intentionally not agent-ready yet.
-_Avoid_: Status (overloaded with `Slice.state: OPEN | CLOSED`, which is one of the raw signals that feeds the bucket), phase, stage.
+The canonical lifecycle classification of a **Slice**, computed from storage fields plus PR-state queries when `usePrs: true`. One of `done`, `needs-revision`, `in-flight`, `blocked`, `ready`, `draft`. Commands that display or gate behavior on buckets use the same PR-enriched effective slice state as the AFK loop. With `usePrs: true`, enrichment failures surface instead of falling back to raw storage state.
+_Avoid_: Status, phase, stage.
 
 **Blocker**:
-A **Slice** referenced in another **Slice**'s `blockedBy` field. Slice X is blocked by Slice Y means Y must reach the `done` **Bucket** before X is considered unblocked. Storage is storage-native: the `issue` storage uses GitHub's `dependencies/blocked_by` REST API; the `file` storage stores `blockedBy: string[]` as a flat field on the slice's `store.json`. There is no shared body-trailer convention — see ADR `backend-native-blocker-storage`.
-_Avoid_: Dependency (ambiguous with build/package "dependencies"), parent (parent is a sub-issue concept, the inverse direction).
+A **Slice** referenced in another **Slice**'s `blockedBy` field. Slice X is blocked by Slice Y means Y must reach the `done` **Bucket** before X is unblocked.
+_Avoid_: Dependency, parent.
 
 **Target branch**:
-The branch an entity will be completed back into. For a **PRD**, this is the current branch of the `trowel start` invocation that materialises the PRD; for a **Fix**, it is the current branch of the `trowel fix` invocation that materialises the Fix. If a legacy entity has no stored target, trowel falls back to `git.baseBranch()`.
-_Avoid_: Base branch (repo default branch), BACK_TO branch (temporary restoration branch), merge branch.
+The branch a **Change** will be completed back into. Captured from the current branch when `trowel start` materialises the Change. Legacy records without a stored target fall back to `git.baseBranch()`.
+_Avoid_: Base branch, BACK_TO branch, merge branch.
 
 **Integration branch**:
-The branch that holds the in-flight feature: slice-implementation commits merged in from per-slice branches (or written directly when `perSliceBranches: false`), ready for one final merge to the PRD's **Target branch** when the feature ships. Naming pattern is storage-defined (the `issue` storage uses `${prefix}${issueNumber}-${slug}`; the `file` storage uses `${prefix}${prdId}-${slug}`). The integration branch is created by `createPrd` on both storages from the PRD's **Target branch** — it is AFK-loop infrastructure, not user content.
-_Avoid_: Feature branch (overloaded; trowel reserves "feature branch" for `fix/<slug>` lightweight branches).
-
-**Fix**:
-A standalone work unit identified by a unique id, structurally a **Slice** without a parent **PRD**. Created by `trowel fix`, which (mirroring `trowel start`) runs an interactive grilling session — the grill produces one blob, title and body, instead of a PRD-plus-slices. No CLI seed argument; the grill collects everything itself. The grill writes its result to `.trowel/fix-out.json`; the host then materialises the Fix record via the storage. The Fix records a **Target branch**: the branch the user was on for the `trowel fix` invocation that materialised it. The Fix lives as a directory under `config.docs.fixesDir` on the `file` storage or as a GitHub issue labelled `config.labels.fix` on the `issue` storage. Execution is a separate step (`trowel work fix <id>`) — `trowel fix` is *create-only*, not *run*. Goes through the same Turn machinery as a Slice (implement → optionally review → address, gated by `config.work.review`), but always on its own `fix/<slug>` branch off its **Target branch** instead of off an **Integration branch**. Has no **Slices** of its own. The `config.work.perSliceBranches` flag does **not** apply to Fix — a Fix never commits directly to its **Target branch**; it always has its own branch. Fix ids are drawn from the same project-wide integer pool as **PRD ids** and Slice ids on the `file` storage, and from the same repo-wide GitHub issue-number sequence on the `issue` storage. Becomes closeable when its phase loop converges; **Close-out** ships it.
-_Avoid_: Bug-fix, hotfix, patch, ticket.
+The branch that holds in-flight Change work. Slice commits are merged into it (or written directly when `perSliceBranches: false`) before Close-out ships it to the **Target branch**. New integration branches use `change-<changeId>-<slug>`.
+_Avoid_: Feature branch.
 
 **Close-out**:
-The terminal step that ships a closeable **PRD** or **Fix**. An entity becomes closeable when its internal work is done — a PRD when every **Slice** is CLOSED, a Fix when its phase loop converges. Close-out branches on `config.work.usePrs`: if `true`, it opens a PR from the entity's branch (the PRD's **Integration branch** or the Fix's `fix/<slug>` branch) against the entity's **Target branch**, leaving the entity OPEN until the human merges on GitHub; if `false`, it host-merges the entity's branch into the entity's **Target branch** via `git merge --no-ff` and marks the entity CLOSED immediately. Fires automatically inside `runLoop` once closeability is detected — `trowel work <prd>` and `trowel fix "<desc>"` both route through it. The manual abort command is the *abort* path, not the ship path: it sets state CLOSED without merging or opening a PR, and deletes branches per `config.close.deleteBranch`. During the pre-v1 Change rename, the old manual `close` command is being retired in favor of resource-first `abort` commands.
-_Avoid_: Ship, finalize, deliver, finish.
+The terminal step that ships a closeable **Change**. A Change becomes closeable when every **Slice** is CLOSED. If `config.work.usePrs` is true, Close-out opens/marks-ready a PR from the Integration branch to the Target branch and leaves the Change OPEN until merge reconciliation. If false, Close-out host-merges the Integration branch into the Target branch and marks the Change CLOSED.
+_Avoid_: Abort.
+
+**Abort**:
+The manual abandon path. `trowel change abort <id>` or `trowel slice abort <id>` marks records CLOSED and performs cleanup without merging or opening a shipping PR. Abort is not the success path.
+_Avoid_: Close (old command name), ship.
 
 **Reconciliation**:
-The act of observing external state — specifically a Close-out PR's `merged` status on GitHub — and writing it back to the storage record. Every trowel command that touches a PRD, Slice, or Fix runs reconciliation before acting: it queries `gh` for the relevant PR states and flips OPEN → CLOSED on the storage when GitHub reports merged. Read-only commands (`status`, `list`) run reconciliation too — they are not lock-free reads in the strict ADR sense; they acquire the **Mutation lock** for the brief window of any reconciliation-driven write. The cost is paid because trowel's CLOSED-means-merged-into-targetBranch invariant matters more than read-write separation. See the amendment in ADR `2026-05-17-file-storage-deterministic-shared-ids.md`.
-_Avoid_: Sync, refresh, poll (all are mechanisms; reconciliation is the act).
+The act of observing external state — specifically a Close-out PR's merged status on GitHub — and writing it back to storage. Commands that touch Change/Slice state run reconciliation under the **Mutation lock**.
+_Avoid_: Sync, refresh, poll.
 
 ### Config discovery
 
 **Project root**:
-The directory trowel considers the project's anchor. Resolved by walking up from cwd to the nearest `.trowel/` (preferred) or `.git/` (fallback), whichever is closer.
-_Avoid_: Repo root (ambiguous when `.trowel/` lives in a subdir of a monorepo).
+The directory trowel considers the project anchor. Resolved by walking up from cwd to the nearest `.trowel/` or `.git/`.
+_Avoid_: Repo root.
 
 **Layer**:
-One of the four named config sources trowel reads and merges. Precedence (β): **`project` wins outright** over `private` wins over `global` wins over `default`.
-
-- **`default`** — hard-coded defaults in trowel's source; every knob has a sensible builtin.
-- **`global`** — `~/.trowel/config.json`; applies to every project.
-- **`private`** — user per-project layer at `~/.trowel/projects/<full-path-mirrored>/config.json`; applies to one project on this machine, never committed.
-- **`project`** — project file at `<project root>/.trowel/config.json`; the source of truth for project conventions, wins outright.
-
-The `private` layer is keyed by **full-path mirror**: a project at `/Users/mac/Desktop/code/packages/equipped` reads its private config from `~/.trowel/projects/Users/mac/Desktop/code/packages/equipped/config.json`. No encoding, no hashing — true filesystem mirror.
-
-**Path values inside any layer's config resolve relative to that layer's anchor.** Project-layer paths anchor to the project root (matching every other config-file convention — tsconfig, eslint, prettier). Private-layer paths anchor to the directory of the private config file (`~/.trowel/projects/<mirror>/`). Global-layer paths anchor to `~/.trowel/`. Default-layer paths anchor to project root. Each layer resolves its paths to absolutes at load time; deep-merge then operates on resolved absolute paths, so the merge stays meaningful even when sources have different anchors. A `docs.prdsDir: 'docs/prds'` in the project layer resolves to `<project root>/docs/prds/`; the same string in the private layer resolves to `~/.trowel/projects/<mirror>/docs/prds/`.
-
-The TS type for this enum is `ConfigLayer = 'default' | 'global' | 'private' | 'project'` (see `src/schema.ts`). `InitableLayer` is the subset `Exclude<ConfigLayer, 'default'>` — the three layers `trowel init` can write to.
+One of `default`, `global`, `private`, `project`. Precedence: default < global < private < project. Path values resolve relative to the layer anchor before merging.
 
 **BACK_TO branch**:
-The branch the user was on when they invoked a trowel command that switches branches. Captured at command start; restored via `try/finally` on exit (clean exit, error, or abort).
+The branch the user was on when they invoked a command that switches branches. Captured at command start and restored when the command lifecycle requires it.
 _Avoid_: Original branch, prior branch.
 
 **Mutation lock**:
-A project-wide advisory lock at `<projectRoot>/.trowel/lock` that any command touching a PRD, Slice, or Fix acquires — including read commands (`status`, `list`), because they perform **Reconciliation** which may write. Only `config` and `doctor` (which never touch entity state) run lock-free. Acquisition is via `proper-lockfile` (mtime-refreshed, with stale-lock detection); on contention the caller retries with backoff for up to ~5 seconds and then fails with `trowel busy: another command holds the lock`. The lock makes the **PRD id** compute-on-demand allocation race-free: scanning existing ids and writing the new entity dir happen inside one critical section. Reentrant per async context (via `AsyncLocalStorage`) so command-layer wrappers and storage-method wrappers compose without deadlocking. Acquired at three layers: short-running mutation commands (`close prd`, `close slice`, `close fix`) wrap their entry; the AFK-loop's per-Turn `landX` step in `src/work/phases.ts` wraps the post-Turn mutation window (Turn itself runs unlocked); and `file` storage write methods wrap individually for the storage-direct-call case. `start` deliberately skips command-entry wrapping — its interactive grilling can run for minutes, and the final write phase is covered by the storage-method layer. The posture that read commands also acquire the lock is a deliberate refinement of the original ADR — trowel is single-user and concurrent invocations are out-of-scope; the lock serialises every entity-touching command. Modelled after git's `.git/index.lock`.
-_Avoid_: Mutex (overloaded with in-process locks), semaphore.
+A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by commands that touch Change/Slice state, including read commands because reconciliation may write.
+_Avoid_: Mutex, semaphore.
 
 ### AFK loop
 
 **AFK loop**:
-The auto-iterating agent flow run by `trowel work`. A single loop driver in `src/work/loop.ts` maintains a shared worker pool over the actionable **Slice** queue: each available worker slot claims one currently actionable Slice, runs exactly one phase step (`implement`, `review`, or `address`), releases the slot, and the scheduler immediately refetches storage/PR state before claiming the next Slice. There is no fixed batch barrier — a Slice that finishes implementation early can advance to review while another Slice is still implementing, subject to the same shared concurrency limit. The loop computes each slice's **Bucket** from the storage's raw slice plus PR-state queries (when `usePrs: true`) and orchestrates phases by calling **Storage** CRUD methods + free PR-flow utility functions + GitOps + sandbox spawn. Phase enablement is driven by **Flags** (`usePrs`, `review`, `perSliceBranches`) gated by **Capabilities** (`prFlow`); storages do not contain phase logic. One outer-loop invocation iterates until the **PRD**'s actionable queue drains (every remaining **Slice** is `done`, `draft`, or `blocked`). Loop log lines emitted during `trowel work` carry the current timestamp so concurrent phase progress can be ordered in stdout. The former per-slice step cap is retired because a claim is exactly one phase step; loop safety comes from state refetching, partial/error suppression for the rest of the run, and the fact that every new phase step must win a fresh worker-pool claim.
-_Avoid_: Sandcastle (the equipped-era name; trowel subsumes it), agent runner.
+The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `review`, or `address`), releases the slot, then refetches effective state before the next claim. The loop exits when no actionable Slices remain.
+_Avoid_: Sandcastle, agent runner.
 
 **Agent harness**:
-The CLI binary that runs an agent role inside a **Turn**. One of `claude` (Anthropic Claude Code), `codex` (OpenAI Codex CLI), `pi` (the multi-provider terminal coding harness from pi.dev). Trowel spawns the harness as a child process in the Turn's worktree, hands it the role prompt, and reads the **Verdict** back via `.trowel/turn-out.json`. Harness is chosen per project via `config.agent.harness` and surfaced by `trowel doctor` (installed + version). Each harness has its own spawn flags (`--print`/`--model`/`--dangerously-skip-permissions` for claude; `exec` subcommand for codex; `-p` / `--mode json` for pi); those flags are an implementation detail of the harness adapter, not a config dimension.
-_Avoid_: Agent (already means the AI assistant playing a role), driver, adapter, runtime, backend (retired).
-
-> Note: the vocabulary lands ahead of the code — at the time of writing, the loop hard-codes `claude`; the harness abstraction will land in the same pass that adds `codex` and `pi`.
+The CLI binary that runs an agent role inside a **Turn**. One of `claude`, `codex`, `pi`. Harness is selected via `config.agent.harness` and surfaced by `trowel doctor`.
+_Avoid_: Agent, driver, adapter, backend.
 
 **Implementer / Reviewer / Addresser**:
-The three agent roles inside the **AFK loop**. The **Implementer** writes the first cut of a **Slice**, commits, and exits. The **Reviewer** reads the resulting draft PR and either marks it ready or flags `needs-revision`. The **Addresser** reads the reviewer's feedback (line-level, summary, and thread comments fetched by the host via PR-flow utils) and responds with code changes. Reviewer and Addresser fire only when `config.work.usePrs && config.work.review` are both true; this combination requires the chosen **Storage** to declare capability `prFlow`. The default is `usePrs: false`: the implementer's commit is merged into the **Integration branch** (host-side or directly), and the slice's lifecycle ends at the implementer's verdict.
-_Avoid_: Worker (placeholder term retired with this entry), agent.
+The three agent roles inside the **AFK loop**. Implementer writes the first cut, Reviewer reviews the Slice PR, Addresser responds to reviewer feedback. Reviewer/Addresser require `usePrs && review`.
+_Avoid_: Worker.
 
 **Turn**:
-The bounded execution of one agent **role** (**Implementer**, **Reviewer**, or **Addresser**) against one **Slice**. Each Turn runs as a child process of trowel inside a git worktree, has a definite end (the agent process exits), and produces a **Verdict** plus zero or more commits. Isolation is *worktree-only*: the agent shares the host filesystem outside the worktree, host network, and host PATH. The user's existing `claude` CLI auth in `~/.claude/` is inherited automatically.
-
-Worktrees are **one-per-branch**: each branch trowel checks out (a **Slice branch** under `perSliceBranches: true`, or the **Integration branch** under `perSliceBranches: false`) gets exactly one persistent worktree at `<projectRoot>/.trowel/worktrees/<prdId>/<branch-slug>/`. The worktree is reused across every Turn that checks out that branch (implement, then review, then address, then review again, ...). Between Turns the host resets the working tree to the branch tip (`git restore --staged --worktree .` + `git clean -fd`); the **Verdict** file is the contract for what state survives between Turns, not the working tree. `copyToWorktree` paths are populated once at worktree creation and survive resets because they are gitignored by convention (`git clean -fd` does not touch ignored files). Worktrees are torn down on **orphan** only: when the worktree's branch no longer exists OR the corresponding **Slice** is `CLOSED`. The orphan sweep runs at `trowel work` start; `config.work.worktreeCleanupAge` is the minimum age before an orphan is removed (active worktrees are never swept regardless of age).
-
-Turns are **gh-free**: no GitHub round-trips happen from inside the agent's environment. All `gh` operations (PR creation, label flips, comment fetches, sub-issue closing) happen on the **host** before or after the Turn. The Turn's IPC contract with the host is two files in the worktree's `.trowel/` directory: `turn-in.json` (written by the host before the Turn starts) and `turn-out.json` (written by the agent before it exits).
-_Avoid_: Sandbox (retired — the term overspecified Docker isolation), session (claude-coded — Claude Code's own per-conversation JSONL state in `~/.claude/projects/` is a "session"; one Turn may resume or create one or more of those), run (verb-heavy), container, worker.
+The bounded execution of one agent role against one Slice. A Turn runs in a trowel-managed git worktree, receives `.trowel/turn-in.json`, and must write `.trowel/turn-out.json`.
+_Avoid_: Sandbox, session, run, container.
 
 **Verdict**:
-The agent's self-reported outcome of one **Turn**, written by the agent to `.trowel/turn-out.json` and read by the host post-exit. One of `ready`, `needs-revision`, `no-work-needed`, `partial`. The host translates the verdict into `gh` operations (e.g. `gh pr ready` for a reviewer's `ready`; `gh pr edit --add-label needs-revision` for a reviewer's `needs-revision`). A missing or unparseable verdict file is coerced to `partial`; a verdict invalid for the role (e.g. an implementer reporting `needs-revision`) is coerced to `partial` with a log line.
-_Avoid_: Result, status, outcome (overloaded; the value's purpose is specifically to drive host follow-up).
+The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.json`. One of `ready`, `needs-revision`, `no-work-needed`, `partial`. The host translates verdicts into git/gh/storage operations.
+_Avoid_: Result, status, outcome.
 
 **Slice branch**:
-The per-slice working branch used by the AFK loop when `perSliceBranches: true`. Pattern: `prd-<prdId>/slice-<sliceId>-<slug>`. Created on the **host** before the **Turn** launches; the implementer's Turn runs in a worktree checked out on this branch. After the implementer's `ready` verdict, the loop either opens a draft PR (`usePrs: true`) or merges the branch into the **Integration branch** via `git merge --no-ff` (`usePrs: false`). When `perSliceBranches: false`, no slice branches exist — the implementer commits directly to the **Integration branch**.
-_Avoid_: Feature branch (reserved for `fix/<slug>`), task branch.
+The per-slice working branch used when `perSliceBranches: true`. Pattern: `change-<changeId>/slice-<sliceId>-<slug>`.
+_Avoid_: Feature branch, task branch.
 
 ## Relationships
 
-- A **PRD** has zero or more **Slices**.
-- A **PRD** has exactly one **Target branch** and exactly one **Integration branch** (named per **Storage**).
-- When `config.work.perSliceBranches: true`, every **Slice** has its own **Slice branch**. The post-implementer disposition depends on `usePrs`: `true` → open a draft PR; `false` → `git merge --no-ff` into the **Integration branch**. When `perSliceBranches: false`, no slice branches exist and the implementer commits directly to the **Integration branch**.
-- Each **Turn** produces exactly one **Verdict**; the host translates verdicts into the `gh` and `git` operations that move the **Slice**'s **Bucket** forward.
-- Every **Slice** is in exactly one **Bucket** at any time, assigned by the **AFK loop** (not the storage).
-- A **Slice** may reference zero or more **Blockers** (other slices in the same **PRD**) via its `blockedBy` field; if any blocker is not yet `done`, the slice's bucket is `blocked`.
-- A **Fix** has exactly one **Target branch** and exactly one Fix branch.
-- The **Storage** is chosen per project; `trowel start`'s `--storage <kind>` flag overrides project config for one invocation.
-- **Flag** combinations are validated at config load (e.g. `review: true` requires `usePrs: true`; `usePrs: true` requires `perSliceBranches: true`). Validation is storage-independent — every flag works on every storage.
-- Resolution of every config knob walks layers `default` → `global` → `private` → `project`, with later layers' present values overriding earlier ones.
-
-## Example dialogue
-
-> **Q:** "I ran `trowel start` from `~/Desktop/code/packages/equipped/src/orm/`. Which `.trowel/config.json` does it use?"
-> **A:** It walks up looking for `.trowel/` first. If `~/Desktop/code/packages/equipped/.trowel/` exists, that's the **Project root** — config comes from there as the `project` **Layer**. If not, it keeps walking and stops at the nearest `.git/`, which is at `~/Desktop/code/packages/equipped/`. The **Project root** is the same in both cases (no nested `.trowel/`).
-
-> **Q:** "I want to use a different agent model for one specific project, but I don't want to commit that to the repo."
-> **A:** Drop `{ "agent": { "model": "sonnet" } }` into `~/.trowel/projects/Users/mac/Desktop/code/packages/equipped/config.json` — that's the `private` **Layer**, your per-machine, per-project setting. But if `<project root>/.trowel/config.json` (the `project` **Layer**) sets `agent.model` to something else, `project` wins — that's β precedence.
-
-> **Q:** "I'm on the `file` storage and I set `config.work.usePrs: true`. What happens?"
-> **A:** It works — `usePrs` no longer gates on storage. The loop opens a draft PR per slice branch via `gh pr create`, just like on the `issue` storage. The only constraint is that `perSliceBranches: true` is required (no slice branch → no PR to open); config load rejects the combo otherwise. If your project has no GitHub remote, `gh pr create` will fail at runtime — `trowel doctor` surfaces tool/auth gaps; the loop itself doesn't pre-flight them.
-
-## Flagged ambiguities
-
-- "Capability" was a `Storage`-declared property that gated `Flag` validity (specifically `prFlow`: true on `issue`, false on `file`). It retired when `PR-flow` was decoupled from `Storage` — flags now work uniformly on every storage. The pre-pivot ADR `2026-05-13-storage-behavior-separation.md` introduced the concept; the post-pivot ADR retiring it sits alongside it.
-- "Sub-issue" was used early in design as a synonym for **Slice**, but GitHub already has a "sub-issue" feature. To avoid confusion, **Slice** is canonical; the GitHub sub-issue API is only one possible **Slice marker** mechanism (used by the `issue` **Storage**).
-- "Backend" is the retired name for **Storage**. The codebase (as of this writing) still uses `Backend`, `BackendDeps`, `BackendFactory`, `getBackend`, `config.backend`, and `--backend`; the rename to `Storage`/`StorageDeps`/`StorageFactory`/`getStorage`/`config.storage`/`--storage` is captured in ADR `2026-05-13-storage-behavior-separation.md` and will land with that pivot.
-- "Sandbox" is the retired name for **Turn**. It overspecified Docker isolation; the **Turn** vocabulary covers both `kind: 'host'` (no container) and `kind: 'docker'` (future). Code-level identifiers (`spawnSandbox`, `SpawnSandboxArgs`, `sandbox-in.json`, `sandbox-out.json`, `config.sandbox.*`) are scheduled to rename in the same pass that retires sandcastle. The pre-pivot ADR `2026-05-12-sandcastle-integration.md` describes the old shape.
-- "Session" is informally used in some places (and in the `2026-05-12-sandcastle-integration.md` ADR body) to mean *Claude Code's per-conversation JSONL state* in `~/.claude/projects/`. It is **not** a trowel-level glossary term; the trowel-level concept is **Turn**. One Turn may resume or create one or more of Claude Code's sessions.
+- A **Change** has one or more **Slices**.
+- A **Change** has exactly one **Target branch** and one **Integration branch**.
+- Each **Slice** has zero or more **Blockers**.
+- Each **Slice** is in exactly one **Bucket**.
+- Each **Turn** produces exactly one **Verdict**.
+- Storage is chosen per project; flags apply uniformly across storages.
 
 ## Repo conventions
 
-Settled decisions that cross every part of the codebase. Don't reopen without a concrete forcing function.
-
-- **Distribution.** Personal CLI, single user, single machine, never shared. Lives at `~/Desktop/code/trowel/`, symlinked from `~/.local/bin/trowel`.
-- **Language & runtime.** Node + `tsx`. TypeScript everywhere. `pnpm` for install/scripts/exec — never `npm`.
-- **Validation.** All config + external input goes through a `valleyed` pipe. Prefer `v.validate(pipe, input)` (success/error shape) over `v.assert(pipe, input)` (throws, slower).
-- **CLI parsing.** `commander`. Each command lives at `src/commands/<name>.ts` and is wired in `src/cli.ts`.
-- **Doc-change branch.** Edits to `CONTEXT.md` and `docs/adr/` land on the **Integration branch**, not on `main`.
-- **Failure recovery.** `trowel work <id>` is idempotent — re-run after any abort. `trowel start` is one-shot; aborted runs leave an orphan PRD closeable via `trowel close <id>`. No atomic rollback.
-- **Working-tree precondition.** `trowel start` and `trowel fix` require a clean working tree only before launching a fresh grill session. Resuming from an existing `.trowel/start-out.json` or `.trowel/fix-out.json` skips that clean-tree preflight because grill edits are expected; materialisation uses stash/pop around branch creation as needed. Commands that switch branches still capture and restore the **BACK_TO branch** where that command's lifecycle requires it.
-- **Style.** Tabs, single quotes, kebab-case filenames, `@k11/configs` for tsconfig/eslint/prettier. Mirrors equipped's conventions.
-- **No eager exports.** Never add `export` to a symbol (function, type, const) unless there is already a consumer outside its defining file. If the only callers are inside the same module — including `import.meta.vitest` blocks — keep it `function`/`type`/`const`, not `export function`/`export type`/`export const`. The rule applies symmetrically to deletion: when the last external caller goes away, the `export` keyword goes away with it. Visibility is a property of the call graph, not a default.
+- Personal CLI, single user, single machine, never shared.
+- Node + TypeScript + `tsx`; `pnpm` for scripts.
+- Config/input validation uses `valleyed`.
+- CLI parsing uses `commander`; command modules live in `src/commands/`.
+- Docs/ADR edits land on the Integration branch, not `main`, unless explicitly doing repo-maintenance work.
+- `trowel start` creates Changes. `trowel change work <id>` executes them. Manual abort uses `trowel change abort` / `trowel slice abort`.
+- `trowel start` requires a clean working tree only before launching a fresh grill session; resuming from `.trowel/start-out.json` skips that preflight.
+- Tabs, single quotes, kebab-case filenames, `@k11/configs`.
+- No eager exports.
 
 ## Out of scope
 
-- Multi-user, multi-machine sharing. Trowel is personal-only.
-- Non-git projects. Trowel requires a `.trowel/` or `.git/` to resolve a **Project root**.
-- A `projects` map inside any single config file. The `private` layer is one file per project via directory structure, not entries in a map.
-- Shared **Turn** environments across agent runs. Each Turn gets a fresh worktree; trowel does not pool or reuse them.
-- Containerized isolation for **Turns**. Today Turns run on the host with worktree-only isolation. A future Docker mode is anticipated but not yet a schema dimension; it would re-introduce a sandbox image, the `~/.claude/` bind-mount, and the gh-free network policy.
-- `gh` operations from inside a **Turn**. All GitHub round-trips happen on the host; Turns are gh-free by design.
-- Auto-committing `prdsDir` contents on the `file` storage. Trowel writes PRD/slice JSON and markdown to disk; if the user keeps `prdsDir` in a git repo, they own staging and committing those files. (The integration branch's per-slice commits — made by the AFK loop's implementer from inside the sandbox — are a different matter and are pushed by the loop as today.)
-- Storage-declared software preconditions. Tool availability (`gh`, `claude`) and auth state are `trowel doctor`'s concern, not a `Storage` opinion. The loop runs and lets missing tools fail naturally; `trowel doctor` is the discovery surface.
+- Multi-user/multi-machine sharing.
+- Non-git projects.
+- A projects map inside one config file.
+- Shared Turn environments across agent runs.
+- Containerized Turn isolation for now.
+- `gh` operations inside Turns.
+- Auto-committing file-storage Change/Slice docs.

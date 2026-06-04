@@ -7,5 +7,5 @@ This directory is empty in v0 — the actual prompts (`start.md`, `resume.md`, `
 ## Adding a prompt
 
 1. Create `<name>.md` in this directory.
-2. Use `{{TOKEN}}` for placeholders (e.g. `{{PRD_ID}}`, `{{BRANCH}}`, `{{BACK_TO_BRANCH}}`).
+2. Use `{{TOKEN}}` for placeholders (e.g. `{{CHANGE_ID}}`, `{{BRANCH}}`, `{{BACK_TO_BRANCH}}`).
 3. From a command, call `await loadPrompt('<name>', { TOKEN: value, … })`.

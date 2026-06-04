@@ -6,15 +6,15 @@ Pre-work for every session: read `docs/CONTEXT.md` for vocabulary and repo conve
 
 ---
 
-## 1. PRD/Fix retirement and resource-first Change CLI
+## 1. Change/retired Fix retirement and resource-first Change CLI
 
-**Goal.** Deeply rename the container domain from **PRD** to **Change**, keep **Slice**, retire **Fix** entirely, and move resource-scoped commands to singular resource-first grammar. This is pre-v1, so no compatibility aliases or automatic migration are required.
+**Goal.** Deeply rename the container domain from **Change** to **Change**, keep **Slice**, retire **retired Fix** entirely, and move resource-scoped commands to singular resource-first grammar. This is pre-v1, so no compatibility aliases or automatic migration are required.
 
 **Locked decisions.**
 
-- **PRD** becomes **Change** everywhere: code, docs, config, storage schema, labels, branch names, CLI help, tests.
+- **Change** becomes **Change** everywhere: code, docs, config, storage schema, labels, branch names, CLI help, tests.
 - **Slice** stays **Slice**.
-- **Fix** is removed entirely: no Fix entity, no `trowel fix`, no `fix/<slug>` branch model, no `labels.fix`, no Fix storage paths.
+- **retired Fix** is removed entirely: no retired Fix entity, no `trowel start`, no `fix/<slug>` branch model, no `labels.fix`, no retired Fix storage paths.
 - `trowel start` is the sole Change creation command. It may create a Change with one or more Slices; one-slice Changes are not special.
 - One-slice Changes use the same Integration-branch plus Slice-branch model as every other Change.
 - Change ids and Slice ids stay globally unique in one shared project id pool.
@@ -82,7 +82,7 @@ git diff --check
 
 ## 2. `trowel diagnose` flow
 
-**Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel work prd <id>`, `trowel fix`, or `trowel start`). Does **not** auto-invoke any of them.
+**Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel change work <id>`, `trowel start`, or `trowel start`). Does **not** auto-invoke any of them.
 
 **Files to write.**
 
@@ -97,8 +97,8 @@ async function diagnose(description: string) {
   // 1. Launch Claude with diagnose.md, args { DESCRIPTION }
   //    Claude investigates: reads code, possibly runs tests, asks user questions,
   //    determines whether this is:
-  //      - a known issue → recommend `trowel work prd <id>` (if it's a slice)
-  //      - a small bug → recommend `trowel fix` (then `trowel work fix <id>`)
+  //      - a known issue → recommend `trowel change work <id>` (if it's a slice)
+  //      - a small bug → recommend `trowel start` (then `trowel change work <id>`)
   //      - a larger change → recommend `trowel start`
   //      - already-investigated user error → just explain
   // 2. Print the recommendation; exit 0.
@@ -147,14 +147,14 @@ async function diagnose(description: string) {
 - **Image strategy.** Pre-built image pinned by SHA (pulled from a registry)? Or `docker build` on first use, cached locally? Default pick: pinned pre-built image; `trowel doctor` verifies presence; rebuild is a separate explicit command.
 - **Per-harness image vs unified image.** One image with every harness baked in is convenient but large; per-harness images are smaller but multiply maintenance. Default pick: unified image — the user picked one harness, but having the others available makes `trowel doctor` and ad-hoc switches trivial.
 - **Network policy.** Fully isolated (no egress)? Or allowlisted egress (npm, pypi, github.com:443 read-only)? Or open egress minus `gh` auth? Default pick: open egress, just no GitHub auth — matches sandcastle's posture.
-- **Schema placement of `kind`.** `config.turn.kind`? `config.agent.kind`? Per-PRD override? Default pick: `config.turn.kind` — the Turn is the unit being containerized.
+- **Schema placement of `kind`.** `config.turn.kind`? `config.agent.kind`? Per-Change override? Default pick: `config.turn.kind` — the Turn is the unit being containerized.
 - **Linux-only or also macOS?** Docker Desktop works on macOS but bind-mount perf is poor on large repos. Default pick: support both; document the perf caveat in `trowel doctor`.
 - **What about `copyToWorktree`?** Host mode copies these into the worktree once; Docker mode would see them via the same bind-mount. No change needed unless something needs to be inside the image instead.
 
 **Verification path.**
 
 1. Build/pull the image; `trowel doctor` reports it present and pinned.
-2. Scratch repo with `config.turn.kind: 'docker'`; run `trowel work prd <id>` against a tiny 1-slice PRD. Verify: container starts, agent commits land inside the worktree (visible from host via bind-mount), `turn-out.json` written, verdict parsed, slice transitions.
+2. Scratch repo with `config.turn.kind: 'docker'`; run `trowel change work <id>` against a tiny one-slice Change. Verify: container starts, agent commits land inside the worktree (visible from host via bind-mount), `turn-out.json` written, verdict parsed, slice transitions.
 3. Network policy test: agent attempts a `gh` call inside the container → fails. Agent runs `npm install` (or equivalent for the chosen egress policy) → succeeds.
 4. Crash recovery: kill the container mid-Turn; host sees missing `turn-out.json` and surfaces a clean error (no stuck state).
 5. Host fallback: flip the same project to `kind: 'host'` and re-run; verify the loop still works against the same worktree without container artifacts left behind.
