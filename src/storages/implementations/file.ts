@@ -151,7 +151,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	async function createChange(spec: ChangeSpec): Promise<{ id: string; branch: string }> {
 		return withMutationLock(deps.projectRoot, async () => {
 			const { id, slug, dir } = await allocateEntity(spec.title, deps.changesDir)
-			const branch = `${id}-${slug}`
+			const branch = changeBranchFor(id, slug)
 			const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 
 			await mkdir(dir, { recursive: true })
@@ -166,7 +166,11 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 	}
 
 	async function listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]> {
-		return listStoreSummaries<ChangeStore>(deps.changesDir, opts, (store) => `${store.id}-${store.slug}`)
+		return listStoreSummaries<ChangeStore>(deps.changesDir, opts, (store) => changeBranchFor(store.id, store.slug))
+	}
+
+	function changeBranchFor(id: string, slug: string): string {
+		return `change-${id}-${slug}`
 	}
 
 	async function closeStore(dir: string): Promise<void> {
@@ -290,7 +294,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			const store = await readChangeStore(id)
 			return {
 				id: store.id,
-				branch: `${store.id}-${store.slug}`,
+				branch: changeBranchFor(store.id, store.slug),
 				targetBranch: store.targetBranch,
 				title: store.title,
 				state: store.closedAt === null ? 'OPEN' : 'CLOSED',
@@ -740,7 +744,7 @@ if (import.meta.vitest) {
 		test('writes README.md and store.json under <changesDir>/<id>-<slug>/ and returns matching id+branch', async () => {
 			const storage = createFileStorage(f.deps)
 			const result = await storage.createChange({ title: 'Fix Tabs', body: '# Hi\n\nthe body' })
-			expect(result.branch).toBe(`${result.id}-fix-tabs`)
+			expect(result.branch).toBe(`change-${result.id}-fix-tabs`)
 			const dir = path.join(f.changesDir, `${result.id}-fix-tabs`)
 			expect(await exists(path.join(dir, 'README.md'))).toBe(true)
 			expect(await exists(path.join(dir, 'store.json'))).toBe(true)
@@ -798,7 +802,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const open = await storage.listChanges({ state: 'open' })
 			expect(open).toHaveLength(1)
-			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'bbbbbb-beta', createdAt: '2026-05-11T00:00:00.000Z' })
+			expect(open[0]).toEqual({ id: 'bbbbbb', title: 'Beta', branch: 'change-bbbbbb-beta', createdAt: '2026-05-11T00:00:00.000Z' })
 		})
 
 		test('returns both open and closed Changes when called with { state: "all" }', async () => {
@@ -836,7 +840,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const closed = await storage.listChanges({ state: 'closed' })
 			expect(closed).toHaveLength(1)
-			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'aaaaaa-alpha', createdAt: '2026-05-11T00:00:00.000Z' })
+			expect(closed[0]).toEqual({ id: 'aaaaaa', title: 'Alpha', branch: 'change-aaaaaa-alpha', createdAt: '2026-05-11T00:00:00.000Z' })
 		})
 	})
 

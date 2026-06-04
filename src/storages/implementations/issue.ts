@@ -32,7 +32,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
 		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithTargetBranch(spec.body, targetBranch), labels: [deps.labels.change] })
 		const id = parseGhIssueNumber(createOut)
-		const branch = `${id}-${slugify(spec.title)}`
+		const branch = changeBranchFor(id, spec.title)
 		await deps.git.createLocalBranch(branch, targetBranch)
 		await deps.git.pushSetUpstream(branch)
 		return { id, branch }
@@ -110,11 +110,15 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		if (!issue) return null
 		return {
 			id: String(issue.number),
-			branch: `${issue.number}-${slugify(issue.title)}`,
+			branch: changeBranchFor(String(issue.number), issue.title),
 			targetBranch: targetBranchFromBody(issue.body),
 			title: issue.title,
 			state: issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 		}
+	}
+
+	function changeBranchFor(id: string, title: string): string {
+		return `change-${id}-${slugify(title)}`
 	}
 
 	async function listIssueSummaries(label: string, opts: { state: 'open' | 'closed' | 'all' }, branchFor: (id: string, title: string) => string): Promise<Array<{ id: string; title: string; branch: string; createdAt: string }>> {
@@ -131,7 +135,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]> {
-		return listIssueSummaries(deps.labels.change, opts, (id, title) => `${id}-${slugify(title)}`)
+		return listIssueSummaries(deps.labels.change, opts, changeBranchFor)
 	}
 
 	async function findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null> {
@@ -459,12 +463,12 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			const result = await storage.createChange({ title: 'Fix Tabs on macOS', body: 'the spec' })
-			expect(result).toEqual({ id: '42', branch: '42-fix-tabs-on-macos' })
+			expect(result).toEqual({ id: '42', branch: 'change-42-fix-tabs-on-macos' })
 			expect(calls).toEqual([['createIssue', { title: 'Fix Tabs on macOS', body: expect.stringContaining('the spec'), labels: ['change'] }]])
 			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"develop"')
 			expect(gitCalls).toEqual([
-				['createLocalBranch', '42-fix-tabs-on-macos', 'develop'],
-				['pushSetUpstream', '42-fix-tabs-on-macos'],
+				['createLocalBranch', 'change-42-fix-tabs-on-macos', 'develop'],
+				['pushSetUpstream', 'change-42-fix-tabs-on-macos'],
 			])
 		})
 
@@ -476,11 +480,11 @@ if (import.meta.vitest) {
 
 			const result = await storage.createChange({ title: 'Release Feature', body: 'body', targetBranch: 'release/1.2' })
 
-			expect(result).toEqual({ id: '99', branch: '99-release-feature' })
+			expect(result).toEqual({ id: '99', branch: 'change-99-release-feature' })
 			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"release/1.2"')
 			expect(gitCalls).toEqual([
-				['createLocalBranch', '99-release-feature', 'release/1.2'],
-				['pushSetUpstream', '99-release-feature'],
+				['createLocalBranch', 'change-99-release-feature', 'release/1.2'],
+				['pushSetUpstream', 'change-99-release-feature'],
 			])
 		})
 
@@ -491,14 +495,14 @@ if (import.meta.vitest) {
 			deps.labels.change = 'roadmap'
 			const storage = createIssueStorage(deps)
 			const result = await storage.createChange({ title: 'Add ORM', body: 'b' })
-			expect(result).toEqual({ id: '7', branch: '7-add-orm' })
+			expect(result).toEqual({ id: '7', branch: 'change-7-add-orm' })
 			const [name, args] = calls[0]!
 			expect(name).toBe('createIssue')
 			expect((args as { labels: string[] }).labels).toEqual(['roadmap'])
 			expect((args as { body: string }).body).toContain('"targetBranch":"develop"')
 			expect(gitCalls).toEqual([
-				['createLocalBranch', '7-add-orm', 'develop'],
-				['pushSetUpstream', '7-add-orm'],
+				['createLocalBranch', 'change-7-add-orm', 'develop'],
+				['pushSetUpstream', 'change-7-add-orm'],
 			])
 		})
 
@@ -545,8 +549,8 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			const result = await storage.listChanges({ state: 'open' })
 			expect(result).toEqual([
-				{ id: '42', title: 'Fix Tabs', branch: '42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
-				{ id: '7', title: 'Add ORM', branch: '7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
+				{ id: '42', title: 'Fix Tabs', branch: 'change-42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
+				{ id: '7', title: 'Add ORM', branch: 'change-7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
 			])
 			// No per-issue lookups — branch is derived from the list response.
 			expect(calls.filter((c) => c[0] === 'viewIssue')).toEqual([])
@@ -694,7 +698,7 @@ if (import.meta.vitest) {
 				viewIssue: async () => ({ number: 42, title: 'Fix Tabs', state: 'OPEN', body: 'body\n\n<!-- trowel:{"targetBranch":"release/1.2"} -->' }),
 			})
 			const storage = createIssueStorage(deps)
-			expect(await storage.findChange('42')).toEqual({ id: '42', branch: '42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN' })
+			expect(await storage.findChange('42')).toEqual({ id: '42', branch: 'change-42-fix-tabs', targetBranch: 'release/1.2', title: 'Fix Tabs', state: 'OPEN' })
 		})
 
 		test('maps "CLOSED" GitHub state to CLOSED', async () => {
