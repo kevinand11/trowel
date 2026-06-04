@@ -50,7 +50,7 @@ export type GrillCommandRuntime = {
 	promptText: string
 	runInteractive: (opts: { promptText: string; cwd: string }) => Promise<void>
 	readOut: () => Promise<string | null>
-	preflight: () => Promise<string[]>
+	preflight: () => Promise<void>
 	stdout: (s: string) => void
 	confirm: (msg: string) => Promise<boolean>
 }
@@ -77,21 +77,50 @@ export async function buildGrillCommandRuntime(commandName: 'start', opts: { sto
 			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
 		},
 		readOut: () => readOptionalFile(outPath),
-		preflight: async () => {
-			const failures: string[] = []
-			if (!(await git.isWorkingTreeClean())) failures.push(`working tree is not clean — commit or stash before running trowel ${commandName}`)
-			const harnessV = await harness.detectVersion()
-			if (!harnessV.installed) failures.push(`${harness.kind} CLI not found on PATH (required for trowel ${commandName} with agent.harness=${harness.kind})`)
-			const ghR = await import('../utils/shell.ts').then(({ tryExec }) => tryExec('gh', ['auth', 'status']))
-			if (!ghR.ok) failures.push('gh not authenticated or not on PATH (run `gh auth login`)')
-			return failures
-		},
+		preflight: () => startPreflight({ git, harness, commandName }),
 		stdout: (s) => process.stdout.write(s),
 		confirm: async (msg) => {
 			const { confirm } = await import('@inquirer/prompts')
 			return confirm({ message: msg, default: false })
 		},
 	}
+}
+
+async function startPreflight(args: { git: GitOps; harness: ReturnType<typeof getHarness>; commandName: 'start' }): Promise<void> {
+	const failures = await startPreflightFailures(args)
+	if (failures.length > 0) throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
+}
+
+async function startPreflightFailures(args: { git: GitOps; harness: ReturnType<typeof getHarness>; commandName: 'start' }): Promise<string[]> {
+	return [
+		await dirtyTreeFailure(args.git),
+		await harnessFailure(args.harness, args.commandName),
+		await ghAuthFailure(),
+	].filter((f): f is string => f !== null)
+}
+
+async function dirtyTreeFailure(git: GitOps): Promise<string | null> {
+	if (await git.isWorkingTreeClean()) return null
+	return await confirmDirtyStart(await git.statusShort()) ? null : 'working tree is dirty'
+}
+
+async function harnessFailure(harness: ReturnType<typeof getHarness>, commandName: 'start'): Promise<string | null> {
+	const harnessV = await harness.detectVersion()
+	return harnessV.installed ? null : `${harness.kind} CLI not found on PATH (required for trowel ${commandName} with agent.harness=${harness.kind})`
+}
+
+async function ghAuthFailure(): Promise<string | null> {
+	const ghR = await import('../utils/shell.ts').then(({ tryExec }) => tryExec('gh', ['auth', 'status']))
+	return ghR.ok ? null : 'gh not authenticated or not on PATH (run `gh auth login`)'
+}
+
+async function confirmDirtyStart(statusShort: string): Promise<boolean> {
+	const { confirm } = await import('@inquirer/prompts')
+	if (statusShort.trim()) process.stdout.write(`\nDirty working tree:\n${statusShort.trimEnd()}\n\n`)
+	return confirm({
+		message: 'Working tree is dirty. Commit/stash first for a clean start, or continue and let the start grill account for your current changes. Continue with dirty tree?',
+		default: false,
+	})
 }
 
 export async function exitOnCommandError(commandName: string, fn: () => Promise<void>): Promise<void> {

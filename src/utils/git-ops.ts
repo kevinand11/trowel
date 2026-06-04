@@ -35,6 +35,7 @@ export type GitOps = {
 	cleanUntracked(worktreePath: string): Promise<void>
 	// host-side workflow ops (consumed by `runStart` in `src/commands/start.ts`)
 	isWorkingTreeClean(): Promise<boolean>
+	statusShort(): Promise<string>
 	stashPush(opts: { includeUntracked: boolean }): Promise<void>
 	stashPop(): Promise<void>
 }
@@ -137,6 +138,7 @@ export function createRepoGit(projectRoot: string): GitOps {
 			const stdout = await gitOrThrow(['status', '--porcelain'])
 			return stdout.trim() === ''
 		},
+		statusShort: async () => gitOrThrow(['status', '--short']),
 		stashPush: async ({ includeUntracked }) => {
 			const args = ['stash', 'push']
 			if (includeUntracked) args.push('--include-untracked')

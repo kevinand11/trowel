@@ -14,6 +14,10 @@ _Avoid_: PRD, Fix, ticket, story.
 The canonical unique identifier for a **Change**. Form depends on **Storage**: GitHub issue number (`issue`) or a positive integer drawn from a project-wide pool shared with **Slice** ids (`file`). It is used by commands such as `trowel change status <id>` and `trowel change work <id>`.
 _Avoid_: PRD id, slug, name.
 
+**Grill**:
+The interactive questioning process used by `trowel start` to understand a user request and shape repository work before creating a **Change**. A Grill may inspect the codebase when needed, may conclude that an existing **Change** already covers the request, or may conclude that no repository work is needed. Existing-Change and No-Change are successful outcomes and exit 0.
+_Avoid_: Intake, diagnose, interview.
+
 **Storage**:
 The strategy that decides how a **Change** is persisted, identified, listed, and linked to its **Slices**. One of `file`, `issue`. Storage is pure persistence: id format, Change/Slice CRUD, blocker linkage, slice flags, and branch-naming convention. AFK-loop behavior lives in the loop driver and is selected by **Flags**, not by storage choice.
 _Avoid_: Backend, provider, adapter, driver.
@@ -116,8 +120,8 @@ _Avoid_: Feature branch, task branch.
 - Config/input validation uses `valleyed`.
 - CLI parsing uses `commander`; command modules live in `src/commands/`.
 - Docs/ADR edits land on the Integration branch, not `main`, unless explicitly doing repo-maintenance work.
-- `trowel start` creates Changes. `trowel change work <id>` executes them. Manual abort uses `trowel change abort` / `trowel slice abort`.
-- `trowel start` requires a clean working tree only before launching a fresh grill session; resuming from `.trowel/start-out.json` skips that preflight.
+- `trowel start` is the command that understands a user request by grilling, plans repository work, and creates a Change when needed. It accepts optional variadic positional initial-request words (`trowel start fix flaky auth test` joins them with spaces). If no positional request is provided and non-empty stdin is piped, `start` uses stdin as the initial request. Providing both positional request words and non-empty piped stdin is an error. Otherwise the Grill asks what the user wants. The initial request and dirty-tree context are passed to the start agent in memory; `.trowel/start-out.json` stores only the final Grill outcome. It may investigate the codebase when needed to satisfy the user's request, point to an existing Change, or exit with no Change when no repository work is needed. The start agent decides whether investigation is necessary. Its grill output is a discriminated union: create Change, existing Change, or no Change. If an existing Change appears to cover the request, `start` reports it but does not update it; the host verifies the referenced Change exists. Existing-Change detection may consider open and closed Changes, but `start` only prints `trowel change work <id>` next-step guidance after creating a new Change. For an existing Change, it reports the verified Change and suggests `trowel change status <id>` for inspection. `trowel change work <id>` executes Changes. Manual abort uses `trowel change abort` / `trowel slice abort`.
+- Fresh `trowel start` checks the working tree before launching the grill/investigation. If dirty, it warns: “Working tree is dirty. Commit/stash first for a clean start, or continue and let the start grill account for your current changes. Continue with dirty tree? [y/N]”. If the user declines, it exits without deleting resume state or creating a Change. If the user continues, the start agent receives a dirty-tree note plus `git status --short` so it can treat uncommitted changes as relevant context; normal agent permissions apply, including modifying already-dirty files. Resuming from `.trowel/start-out.json` skips that preflight. After the host successfully handles any start outcome, it deletes `.trowel/start-out.json`.
 - Tabs, single quotes, kebab-case filenames, `@k11/configs`.
 - No eager exports.
 

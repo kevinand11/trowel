@@ -10,8 +10,27 @@ import { list, type ListState } from './commands/list/index.ts'
 import { review } from './commands/review.ts'
 import { start } from './commands/start.ts'
 import { statusChange, statusSlice } from './commands/status/index.ts'
-import * as stubs from './commands/stubs.ts'
 import { work } from './commands/work/index.ts'
+
+async function initialRequest(requestWords: string[]): Promise<string | undefined> {
+	return chooseInitialRequest(requestWords.join(' ').trim(), await pipedStdin())
+}
+
+function chooseInitialRequest(positional: string, stdin: string): string | undefined {
+	return positional ? initialRequestFromPositional(positional, stdin) : stdin || undefined
+}
+
+function initialRequestFromPositional(positional: string, stdin: string): string {
+	if (stdin) throw new Error('provide the start request either as arguments or via stdin, not both')
+	return positional
+}
+
+async function pipedStdin(): Promise<string> {
+	if (process.stdin.isTTY) return ''
+	const chunks: Buffer[] = []
+	for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+	return Buffer.concat(chunks).toString('utf8').trim()
+}
 
 function parseListState(commandName: string, raw: string): ListState {
 	const validStates: ListState[] = ['open', 'closed', 'all']
@@ -27,11 +46,12 @@ export function run(): void {
 
 	program
 		.command('start')
-		.description('Start a new Change: grill, create artifacts, branch, slice')
+		.description('Understand a user request by grilling, plan repository work, and create a Change when needed')
+		.argument('[request...]', 'Initial request words')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (opts: { storage?: string; harness?: string }) => {
-			await start(opts)
+		.action(async (requestWords: string[], opts: { storage?: string; harness?: string }) => {
+			await start({ ...opts, request: await initialRequest(requestWords) })
 		})
 
 	const changeCmd = program.command('change').description('Manage Changes')
@@ -143,14 +163,6 @@ export function run(): void {
 		.description('Print the resolved effective config and loaded layers')
 		.action(async () => {
 			await showConfig()
-		})
-
-	program
-		.command('diagnose')
-		.description('Diagnose a bug; recommends next workflow')
-		.argument('<description>')
-		.action(async (description: string) => {
-			await stubs.diagnose(description)
 		})
 
 	program.parseAsync(process.argv).catch((error: Error) => {

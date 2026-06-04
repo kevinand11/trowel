@@ -414,6 +414,7 @@ if (import.meta.vitest) {
 				await realGit.cleanUntracked(p)
 			},
 			isWorkingTreeClean: async () => realGit.isWorkingTreeClean(),
+			statusShort: async () => realGit.statusShort(),
 			stashPush: async (opts) => realGit.stashPush(opts),
 			stashPop: async () => realGit.stashPop(),
 			mergeAbort: async () => realGit.mergeAbort(),

@@ -332,6 +332,7 @@ if (import.meta.vitest) {
 			restoreAll: recorded('restoreAll'),
 			cleanUntracked: recorded('cleanUntracked'),
 			isWorkingTreeClean: async () => true,
+			statusShort: async () => '',
 			stashPush: recorded('stashPush'),
 			stashPop: recorded('stashPop'),
 			detectVersion: async () => ({ installed: true, version: '0.0.0' }),

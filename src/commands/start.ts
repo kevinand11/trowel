@@ -4,7 +4,7 @@ import { resolveGrillSpec, type GrillSpecResult } from './grill-flow.ts'
 import { buildGrillCommandRuntime, exitOnCommandError } from './runtime.ts'
 import type { Storage } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import { parseStartOut } from '../work/start-out.ts'
+import { parseStartOut, type CreateChangeStartOut, type StartOut } from '../work/start-out.ts'
 
 export type StartRuntime = {
 	projectRoot: string
@@ -13,20 +13,19 @@ export type StartRuntime = {
 	startPromptText: string
 	runInteractive: (opts: { promptText: string; cwd: string }) => Promise<void>
 	readStartOut: () => Promise<string | null>
-	preflight: () => Promise<string[]>
+	preflight: () => Promise<void>
 	stdout: (s: string) => void
 	confirm: (msg: string) => Promise<boolean>
 }
 
-type StartSpec = ReturnType<typeof parseStartOut>
-type StartGrillResult = GrillSpecResult<StartSpec>
+type StartSpec = CreateChangeStartOut
+type StartGrillResult = GrillSpecResult<StartOut>
 type CreatedStartChange = { changeId: string; branch: string; realIds: string[]; spec: StartSpec }
 
 export async function runStart(rt: StartRuntime): Promise<void> {
 	const result = await resolveStartSpec(rt)
 	try {
-		const created = await materialiseStartChange(rt, result)
-		printCreatedStartChange(rt, created)
+		await handleStartOutcome(rt, result)
 		await result.clearOut()
 	} catch (e) {
 		await result.recover()
@@ -53,14 +52,27 @@ function resolveStartSpec(rt: StartRuntime): Promise<StartGrillResult> {
 	})
 }
 
-async function materialiseStartChange(rt: StartRuntime, result: StartGrillResult): Promise<CreatedStartChange> {
-	const { id: changeId, branch } = await rt.storage.createChange({ ...result.spec.change, targetBranch: result.targetBranch })
+async function handleStartOutcome(rt: StartRuntime, result: StartGrillResult): Promise<void> {
+	if (result.spec.outcome === 'create-change') {
+		const created = await materialiseStartChange(rt, result, result.spec)
+		printCreatedStartChange(rt, created)
+		return
+	}
+	if (result.spec.outcome === 'existing-change') {
+		await printExistingStartChange(rt, result.spec.changeId, result.spec.reason)
+		return
+	}
+	printNoStartChange(rt, result.spec.reason)
+}
+
+async function materialiseStartChange(rt: StartRuntime, result: StartGrillResult, spec: StartSpec): Promise<CreatedStartChange> {
+	const { id: changeId, branch } = await rt.storage.createChange({ ...spec.change, targetBranch: result.targetBranch })
 	result.markMaterialised()
 	await rt.git.checkout(branch)
 	if (result.stashed) await rt.git.stashPop()
-	const realIds = await createStartSlices(rt, changeId, result.spec)
-	await updateStartSliceLinks(rt, changeId, result.spec, realIds)
-	return { changeId, branch, realIds, spec: result.spec }
+	const realIds = await createStartSlices(rt, changeId, spec)
+	await updateStartSliceLinks(rt, changeId, spec, realIds)
+	return { changeId, branch, realIds, spec }
 }
 
 async function createStartSlices(rt: StartRuntime, changeId: string, spec: StartSpec): Promise<string[]> {
@@ -89,6 +101,21 @@ function printCreatedStartChange(rt: StartRuntime, created: CreatedStartChange):
 	rt.stdout(`\nNext: trowel change work ${created.changeId}\n`)
 }
 
+async function printExistingStartChange(rt: StartRuntime, changeId: string, reason: string): Promise<void> {
+	const change = await rt.storage.findChange(changeId)
+	if (!change) throw new Error(`start-out.json referenced missing Change '${changeId}'`)
+	rt.stdout(`\nExisting Change ${changeId} appears to cover this:\n`)
+	rt.stdout(`  ${change.title}\n`)
+	if (reason.trim()) rt.stdout(`\nReason: ${reason}\n`)
+	rt.stdout('\nNo new Change created.\n')
+	rt.stdout(`Inspect it with: trowel change status ${changeId}\n`)
+}
+
+function printNoStartChange(rt: StartRuntime, reason: string): void {
+	rt.stdout('\nNo Change created.\n')
+	if (reason.trim()) rt.stdout(`Reason: ${reason}\n`)
+}
+
 function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartChange): void {
 	if (created.realIds.length === 0) return
 	rt.stdout('Slices:\n')
@@ -97,8 +124,14 @@ function printCreatedStartSlices(rt: StartRuntime, created: CreatedStartChange):
 
 function printResumePreview(rt: StartRuntime, spec: ReturnType<typeof parseStartOut>): void {
 	rt.stdout('\nFound existing .trowel/start-out.json from a prior run:\n')
-	rt.stdout(`\n# ${spec.change.title}\n\n${spec.change.body}\n`)
-	printResumeSlices(rt, spec.slices)
+	if (spec.outcome === 'create-change') {
+		rt.stdout(`\n# ${spec.change.title}\n\n${spec.change.body}\n`)
+		printResumeSlices(rt, spec.slices)
+	} else if (spec.outcome === 'existing-change') {
+		rt.stdout(`\nExisting Change: ${spec.changeId}\nReason: ${spec.reason}\n`)
+	} else {
+		rt.stdout(`\nNo Change: ${spec.reason}\n`)
+	}
 	rt.stdout('\n')
 }
 
@@ -117,13 +150,18 @@ function blockedBySuffix(slice: StartSpec['slices'][number]): string {
 	return slice.blockedBy.length > 0 ? ` blocked by [${slice.blockedBy.join(', ')}]` : ''
 }
 
-export async function start(opts: { storage?: string; harness?: string }): Promise<void> {
+function startPromptWithRequest(promptText: string, request: string | undefined): string {
+	if (!request?.trim()) return promptText
+	return `${promptText}\n\n---\n\nInitial user request:\n\n${request.trim()}\n`
+}
+
+export async function start(opts: { storage?: string; harness?: string; request?: string }): Promise<void> {
 	const rtBase = await buildGrillCommandRuntime('start', opts, 'start-out.json')
 	await exitOnCommandError('start', () => runStart({
 		projectRoot: rtBase.projectRoot,
 		storage: rtBase.storage,
 		git: rtBase.git,
-		startPromptText: rtBase.promptText,
+		startPromptText: startPromptWithRequest(rtBase.promptText, opts.request),
 		runInteractive: rtBase.runInteractive,
 		readStartOut: rtBase.readOut,
 		preflight: rtBase.preflight,
@@ -170,6 +208,7 @@ if (import.meta.vitest) {
 
 	function resumeSpec() {
 		return {
+			outcome: 'create-change' as const,
 			change: { title: 'Resume Me', body: 'body from prior run' },
 			slices: [{ title: 'A', body: 'a', blockedBy: [], readyForAgent: true }],
 		}
@@ -177,6 +216,7 @@ if (import.meta.vitest) {
 
 	function minimalStartOutJson(): string {
 		return JSON.stringify({
+			outcome: 'create-change',
 			change: { title: 't', body: 'b' },
 			slices: [{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true }],
 		})
@@ -215,12 +255,14 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const staleSpec = {
+					outcome: 'create-change' as const,
 					change: { title: 'STALE', body: 'old' },
 					slices: [{ title: 'old-slice', body: 'x', blockedBy: [], readyForAgent: true }],
 				}
 				await writeFile(tmp.startOutPath, JSON.stringify(staleSpec))
 
 				const freshSpec = {
+					outcome: 'create-change' as const,
 					change: { title: 'FRESH', body: 'new' },
 					slices: [{ title: 'new-slice', body: 'y', blockedBy: [], readyForAgent: true }],
 				}
@@ -254,6 +296,7 @@ if (import.meta.vitest) {
 				await writeFile(tmp.startOutPath, JSON.stringify({ slices: [] })) // missing change
 
 				const freshSpec = {
+					outcome: 'create-change' as const,
 					change: { title: 'FRESH', body: 'new' },
 					slices: [{ title: 'x', body: 'y', blockedBy: [], readyForAgent: true }],
 				}
@@ -297,6 +340,7 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
+					outcome: 'create-change' as const,
 					change: { title: 'Resume Me', body: 'long body content goes here' },
 					slices: [
 						{ title: 'first slice', body: 'a', blockedBy: [], readyForAgent: true },
@@ -387,6 +431,7 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
+					outcome: 'create-change' as const,
 					change: { title: 'STALE', body: 'old' },
 					slices: [{ title: 'old-slice', body: 'x', blockedBy: [], readyForAgent: true }],
 				}
@@ -405,6 +450,7 @@ if (import.meta.vitest) {
 			try {
 				// Stale file left behind by a prior aborted run
 				await writeFile(tmp.startOutPath, JSON.stringify({
+					outcome: 'create-change' as const,
 					change: { title: 'STALE', body: 'should-not-be-read' },
 					slices: [],
 				}))
@@ -449,6 +495,7 @@ if (import.meta.vitest) {
 			const tmp = await setupTmp()
 			try {
 				const spec = {
+					outcome: 'create-change' as const,
 					change: { title: 'T', body: 'B' },
 					slices: [{ title: 'S', body: 'B', blockedBy: [], readyForAgent: true }],
 				}
@@ -499,6 +546,7 @@ if (import.meta.vitest) {
 
 		test('blockedBy cycle → re-raises, no createChange, BACK_TO restored', async () => {
 			const cyclic = JSON.stringify({
+				outcome: 'create-change' as const,
 				change: { title: 't', body: 'b' },
 				slices: [
 					{ title: 'A', body: 'b', blockedBy: [1], readyForAgent: true },
@@ -587,6 +635,7 @@ if (import.meta.vitest) {
 	describe('runStart: summary', () => {
 		test('prints Change id, integration branch, slice ids, and a commit-reminder hint after success', async () => {
 			const startOut = JSON.stringify({
+				outcome: 'create-change' as const,
 				change: { title: 'Rename Foo', body: 'b' },
 				slices: [
 					{ title: 'A', body: 'b', blockedBy: [], readyForAgent: true },
@@ -613,6 +662,7 @@ if (import.meta.vitest) {
 	describe('runStart: happy path', () => {
 		test('passes the invocation branch as the Change target branch', async () => {
 			const startOutJson = JSON.stringify({
+				outcome: 'create-change' as const,
 				change: { title: 'Target Develop', body: 'spec body' },
 				slices: [],
 			})
@@ -629,6 +679,7 @@ if (import.meta.vitest) {
 
 		test('claude writes valid 2-slice spec → createChange + 2× createSlice + 2× updateSlice with resolved blockedBy and readyForAgent', async () => {
 			const startOutJson = JSON.stringify({
+				outcome: 'create-change' as const,
 				change: { title: 'Rename Foo', body: 'spec body' },
 				slices: [
 					{ title: 'Rename type', body: 'a', blockedBy: [], readyForAgent: true },

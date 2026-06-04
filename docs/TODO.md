@@ -28,38 +28,7 @@ Default pick: keep `change work` for the AFK loop today; design `ship` separatel
 
 ---
 
-## 2. `trowel diagnose` flow
-
-**Goal.** Pure diagnostic. Investigates a bug, then prints a recommendation for the next command (`trowel change work <id>` or `trowel start`). Does **not** auto-invoke any of them.
-
-**Files to write.**
-
-- `src/commands/diagnose.ts` — replaces stub.
-- `src/prompts/diagnose.md`.
-
-**Flow.**
-
-```ts
-async function diagnose(description: string) {
-  // 0. Preflight (diagnosis can run on a dirty tree)
-  // 1. Launch an agent with diagnose.md and args { DESCRIPTION }
-  // 2. Agent investigates: reads code, runs tests if useful, asks questions if needed.
-  // 3. Agent determines whether this is:
-  //      - existing work → recommend `trowel change work <id>`
-  //      - new small/large change → recommend `trowel start`
-  //      - user/config/tooling issue → explain, no Change needed
-  // 4. Print recommendation; exit 0.
-}
-```
-
-Open questions to grill:
-
-- Should diagnose preflight require a clean tree? Default pick: no.
-- Should diagnose persist its analysis? Default pick: no for v0.
-
----
-
-## 3. Sandboxed Turn execution (Docker `kind`)
+## 2. Sandboxed Turn execution (Docker `kind`)
 
 **Goal.** Run **Turns** inside a Docker container instead of directly on the host. Today every Turn runs host-side with worktree-only isolation: the agent shares host filesystem outside the worktree, host network, host PATH, and user auth. A Docker mode would constrain filesystem to the bind-mounted worktree, network to a host-controlled policy, PATH to the image toolchain, and auth to an explicit mount.
 

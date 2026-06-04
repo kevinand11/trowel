@@ -93,7 +93,9 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		startPromptText: '<prompt>',
 		runInteractive: async () => {},
 		readStartOut: async () => opts.startOut,
-		preflight: async () => opts.preflightFailures ?? [],
+		preflight: async () => {
+			if ((opts.preflightFailures ?? []).length > 0) throw new Error(`preflight failed:\n${opts.preflightFailures!.map((f) => `  · ${f}`).join('\n')}`)
+		},
 		stdout: (s) => calls.stdout.push(s),
 		confirm: async () => false,
 	}

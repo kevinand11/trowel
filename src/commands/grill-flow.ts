@@ -7,7 +7,7 @@ export type GrillRuntime<Spec> = {
 	projectRoot: string
 	git: GitOps
 	readOut: () => Promise<string | null>
-	preflight: () => Promise<string[]>
+	preflight: () => Promise<void>
 	stdout: (s: string) => void
 	confirm: (msg: string) => Promise<boolean>
 	parseOut: (raw: string) => Spec
@@ -72,8 +72,7 @@ async function resolveInvalidExistingOut<Spec>(rt: GrillRuntime<Spec>, parseErro
 }
 
 async function prepareFreshGrill<Spec>(rt: GrillRuntime<Spec>, outPath: string, discardExistingOut: boolean): Promise<void> {
-	const failures = await rt.preflight()
-	if (failures.length > 0) throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
+	await rt.preflight()
 	if (discardExistingOut) await unlinkSwallowEnoent(outPath)
 }
 
