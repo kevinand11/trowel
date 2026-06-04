@@ -1,5 +1,3 @@
-import { deleteBranchIfPresent, restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
-import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 import type { StorageKind } from '../../storages/registry.ts'
 import type { ClassifiedSlice, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
@@ -8,6 +6,8 @@ import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { runCloseOut } from '../../work/close-out.ts'
 import { reconcileEntity } from '../../work/reconcile.ts'
 import { classifySlicesForChange } from '../../work/slice-buckets.ts'
+import { deleteBranchIfPresent, restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
+import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
 type ShipRuntime = {
 	storage: Storage
@@ -23,23 +23,27 @@ type ShipRuntime = {
 	listOpenPrs: (branch: string) => Promise<OpenPr[]>
 }
 
-export async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
+async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 	await requireCleanTree(rt)
 	const backTo = await rt.git.currentBranch()
 	const change = await reconciledOpenChange(changeId, rt)
 	if (!change) return
 	const targetBranch = change.targetBranch ?? await rt.git.baseBranch()
-	const blockers = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })).filter((slice) => slice.bucket !== 'done')
-	if (blockers.length > 0) throw notReadyError(changeId, blockers)
+	await requireShippableSlices(changeId, rt)
 	try {
-		if (rt.usePrs) {
-			await shipViaPr(change, targetBranch, rt)
-		} else {
-			await shipViaMerge(change, targetBranch, rt)
-		}
+		await shipOpenChange(change, targetBranch, rt)
 	} finally {
 		await restoreStartingBranch(backTo, targetBranch, rt)
 	}
+}
+
+async function requireShippableSlices(changeId: string, rt: ShipRuntime): Promise<void> {
+	const blockers = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })).filter((slice) => slice.bucket !== 'done')
+	if (blockers.length > 0) throw notReadyError(changeId, blockers)
+}
+
+async function shipOpenChange(change: NonNullable<Awaited<ReturnType<Storage['findChange']>>>, targetBranch: string, rt: ShipRuntime): Promise<void> {
+	return rt.usePrs ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
 async function requireCleanTree(rt: ShipRuntime): Promise<void> {
@@ -209,7 +213,7 @@ if (import.meta.vitest) {
 		test('non-done slices block shipping with id, bucket, and title', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's2', title: 'Needs work', state: 'OPEN', readyForAgent: true })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'OPEN' }) })
 			const { rt } = makeRt({ storage })
-			await expect(runShip('3', rt)).rejects.toThrow(/s2  ready  Needs work/)
+			await expect(runShip('3', rt)).rejects.toThrow(/s2 {2}ready {2}Needs work/)
 		})
 
 		test('non-PR mode merges, closes, and applies local delete policy', async () => {
