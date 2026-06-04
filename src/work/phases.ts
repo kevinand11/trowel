@@ -83,8 +83,8 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  *   `updateSlice({closedAt})`, return `'done'`. (`usePrs: true` is impossible without
  *   slice branches — rejected at config load.)
  * - `perSliceBranches: true`, `usePrs: false`: push slice branch, host-side merge `--no-ff` into
- *   the integration branch, push and delete the slice branch, close the slice via storage,
- *   return `'done'`.
+ *   the integration branch, push the integration branch, close the slice via storage,
+ *   return `'done'`. Slice branch cleanup belongs to explicit Change-level Cleanup.
  * - `perSliceBranches: true`, `usePrs: true`: push slice branch, open a draft PR, return
  *   `'progress'`. The next loop iteration's `findSlices` sees the PR and dispatches the reviewer.
  *   Works on every storage; at runtime requires a GitHub remote + `gh` auth (surfaced via
@@ -103,8 +103,7 @@ async function mergeSliceIntoIntegration(deps: PhaseDeps, slice: Slice, ctx: Pha
 		throw e
 	}
 	await deps.git.push(ctx.integrationBranch)
-	await deps.git.deleteRemoteBranch(branch)
-	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; deleted slice branch`)
+	deps.log(`${tag} merged ${branch} into ${ctx.integrationBranch}; slice branch retained for Cleanup`)
 	await finalizeSlice(deps, ctx.changeId, slice.id)
 	deps.log(`${tag} finalized slice`)
 }
@@ -429,7 +428,7 @@ if (import.meta.vitest) {
 			expect(outcome).toBe('done')
 			const methods = calls.map((c) => c.method)
 			expect(methods).toContain('mergeNoFf')
-			expect(methods).toContain('deleteRemoteBranch')
+			expect(methods).not.toContain('deleteRemoteBranch')
 			expect(storageState.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 			expect(logs.some((l) => /no-work-needed but slice branch has 2 unmerged commit/.test(l))).toBe(true)
 		})

@@ -67,8 +67,8 @@ export async function ensureWorktree(args: {
 	const wt: TurnWorktree = { worktreePath, branch: args.branch, changeId: args.changeId }
 
 	const existing = await findRegisteredWorktree(args.git, worktreePath)
-	if (await reuseOrClearRegisteredWorktree(existing, wt, args.git)) return wt
-	if (!existing) await removeStaleWorktreePath(worktreePath)
+	if (existing) return reuseRegisteredWorktree(existing, wt)
+	await assertNoStaleWorktreePath(worktreePath)
 
 	await createWorktree(wt, args.git)
 	await copyWorktreeEntries(args.projectRoot, wt.worktreePath, args.copyToWorktree, args.log)
@@ -79,15 +79,13 @@ async function findRegisteredWorktree(git: GitOps, worktreePath: string): Promis
 	return (await git.worktreeList()).find((w) => w.path === worktreePath)
 }
 
-async function reuseOrClearRegisteredWorktree(existing: GitWorktree | undefined, wt: TurnWorktree, git: GitOps): Promise<boolean> {
-	if (!existing) return false
-	if (existing.branch === wt.branch) return true
-	await destroyWorktree(wt, git)
-	return false
+function reuseRegisteredWorktree(existing: GitWorktree, wt: TurnWorktree): TurnWorktree {
+	if (existing.branch === wt.branch) return wt
+	throw new Error(`worktree path '${wt.worktreePath}' is registered for branch '${existing.branch ?? '(detached)'}', expected '${wt.branch}'; run Change ship or abort Cleanup, or move the worktree aside`)
 }
 
-async function removeStaleWorktreePath(worktreePath: string): Promise<void> {
-	if (await pathExists(worktreePath)) await rm(worktreePath, { recursive: true, force: true })
+async function assertNoStaleWorktreePath(worktreePath: string): Promise<void> {
+	if (await pathExists(worktreePath)) throw new Error(`worktree path '${worktreePath}' already exists but is not a registered git worktree; run Change ship or abort Cleanup, or move it aside`)
 }
 
 async function createWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
@@ -315,6 +313,23 @@ if (import.meta.vitest) {
 			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: ['.env.local'], git })
 			const copied = await fsReadFile(path.join(wt.worktreePath, '.env.local'), 'utf8')
 			expect(copied).toBe('SECRET=1\n')
+		})
+
+		test('ensureWorktree refuses a registered worktree path for a different branch without removing it', async () => {
+			const wtPath = path.join(projectRoot, '.trowel', 'worktrees', 'p1', 'feature-a')
+			await fsMkdir(path.dirname(wtPath), { recursive: true })
+			await git.worktreeAdd(wtPath, 'feature-b')
+			await expect(ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })).rejects.toThrow(/registered for branch 'feature-b'/)
+			expect((await git.worktreeList()).find((w) => w.path === wtPath)).toBeDefined()
+			expect((await fsStat(wtPath)).isDirectory()).toBe(true)
+		})
+
+		test('ensureWorktree refuses a stale path without deleting it', async () => {
+			const wtPath = path.join(projectRoot, '.trowel', 'worktrees', 'p1', 'feature-a')
+			await fsMkdir(wtPath, { recursive: true })
+			await fsWriteFile(path.join(wtPath, 'keep.txt'), 'do not delete\n')
+			await expect(ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })).rejects.toThrow(/already exists/)
+			expect(await fsReadFile(path.join(wtPath, 'keep.txt'), 'utf8')).toBe('do not delete\n')
 		})
 
 		test('resetWorktree discards uncommitted changes but preserves gitignored files', async () => {
