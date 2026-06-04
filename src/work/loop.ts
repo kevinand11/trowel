@@ -50,12 +50,14 @@ async function findNextActionableSlice(
 	fetchEnriched: () => Promise<Slice[]>,
 	failed: Set<string>,
 	running: Map<string, Promise<void>>,
+	claimedThisFill: Set<string>,
 	config: ClassifySliceConfig,
 ): Promise<ClassifiedSlice | null> {
 	const slices = classifySlices(await fetchEnriched())
 	return slices.find((slice) => {
 		if (failed.has(slice.id)) return false
 		if (running.has(slice.id)) return false
+		if (claimedThisFill.has(slice.id)) return false
 		const resume = classify(slice, config)
 		return resume !== 'done' && resume !== 'blocked'
 	}) ?? null
@@ -85,6 +87,7 @@ export async function runLoop(changeId: string, deps: LoopDeps): Promise<void> {
 	while (true) {
 		await fillClaimSlots(state)
 		if (await stopIfIdle(state)) return
+		if (state.running.size === 0) continue
 		await Promise.race(state.running.values())
 	}
 }
@@ -118,9 +121,11 @@ function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 }
 
 async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
+	const claimedThisFill = new Set<string>()
 	while (state.running.size < state.limit) {
-		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.config)
+		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, claimedThisFill, state.config)
 		if (!slice) return
+		claimedThisFill.add(slice.id)
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
 		launchClaim(state.changeId, slice, state.deps, state.failed, state.running)
@@ -129,7 +134,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 
 async function stopIfIdle(state: WorkerLoopState): Promise<boolean> {
 	if (state.running.size > 0) return false
-	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.config)
+	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, new Set(), state.config)
 	if (remaining) return false
 	state.deps.log(`${state.tag} no actionable slices; exiting after ${state.claims} claim(s)`)
 	return true

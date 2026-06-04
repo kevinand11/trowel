@@ -349,7 +349,7 @@ if (import.meta.vitest) {
 			])
 		})
 
-		test('landImplement + usePrs=false + ready: pushes slice, checks out integration, merges --no-ff, pushes integration, deletes slice branch, closes sub-issue; returns done', async () => {
+		test('landImplement + usePrs=false + ready: pushes slice, checks out integration, merges --no-ff, pushes integration, retains slice branch, closes sub-issue; returns done', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
 			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: true }))
 			expect(outcome).toBe('done')
@@ -358,8 +358,8 @@ if (import.meta.vitest) {
 				['checkout', 'changes-issue-142'],
 				['mergeNoFf', 'change-142/slice-145-session-middleware'],
 				['push', 'changes-issue-142'],
-				['deleteRemoteBranch', 'change-142/slice-145-session-middleware'],
 			])
+			expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
 			expectClosedWithoutDraftPr(calls)
 		})
 

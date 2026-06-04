@@ -666,11 +666,11 @@ if (import.meta.vitest) {
 				)
 
 				expect(outcome).toBe('done')
-				expect(calls.map((c) => c[0])).toEqual(['push', 'checkout', 'mergeNoFf', 'push', 'deleteRemoteBranch'])
+				expect(calls.map((c) => c[0])).toEqual(['push', 'checkout', 'mergeNoFf', 'push'])
 				expect(calls).toContainEqual(['push', sliceBranch])
 				expect(calls).toContainEqual(['checkout', integration])
 				expect(calls).toContainEqual(['mergeNoFf', sliceBranch])
-				expect(calls).toContainEqual(['deleteRemoteBranch', sliceBranch])
+				expect(calls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
 				const after = await storage.findSlices(changeId)
 				expect(after[0]!.state).toBe('done')
 			} finally {
