@@ -4,8 +4,7 @@ import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 
 /**
- * Unified terminal step that ships a closeable Change or Fix. See ADR
- * `2026-05-17-fix-entity-unified-close-out.md`. Branches on `config.work.usePrs`:
+ * Terminal step that ships a closeable Change. Branches on `config.work.usePrs`:
  *
  * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
  *   doesn't already exist), then marks it ready. Entity stays OPEN; **Reconciliation** flips OPEN →
@@ -17,7 +16,7 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
  */
 export type CloseOutEntity = {
-	kind: 'change' | 'fix'
+	kind: 'change'
 	id: string
 	branch: string
 	targetBranch?: string
@@ -109,8 +108,7 @@ async function restoreAfterFailedCloseOutMerge(current: string, targetBranch: st
 }
 
 async function markEntityClosed(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
-	if (entity.kind === 'change') await deps.storage.closeChange(entity.id)
-	else await deps.storage.closeFix(entity.id)
+	await deps.storage.closeChange(entity.id)
 }
 
 async function deleteAutoBranchIfAllowed(entity: CloseOutEntity, deps: CloseOutDeps, tag: string): Promise<void> {
@@ -120,7 +118,7 @@ async function deleteAutoBranchIfAllowed(entity: CloseOutEntity, deps: CloseOutD
 }
 
 function bodyFor(entity: CloseOutEntity): string {
-	return entity.kind === 'fix' ? `Closes #${entity.id}` : `Closes Change ${entity.id}`
+	return `Closes Change ${entity.id}`
 }
 
 /**
@@ -176,32 +174,7 @@ if (import.meta.vitest) {
 		return { git, calls }
 	}
 
-	async function runFixCloseOutWithPr(state: 'OPEN' | 'MERGED'): Promise<{ closed: { change: string[]; fix: string[] }; calls: Array<[string, ...unknown[]]> }> {
-		const { storage, closed } = fakeStorage()
-		const { git } = fakeGit()
-		const { gh, calls } = recordingGhOps({
-			findAnyPrByHead: async () => ({ number: 11, state }),
-		})
-		await runCloseOut(
-			{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
-			{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'always', mergeNoVerify: false } },
-		)
-		return { closed, calls }
-	}
-
 	describe('runCloseOut', () => {
-		test('Fix + usePrs:false: host-merges to targetBranch, marks Fix CLOSED, deletes branch on always', async () => {
-			const { storage, closed } = fakeStorage()
-			const { git, calls } = fakeGit()
-			const { gh } = recordingGhOps()
-			await runCloseOut(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', targetBranch: 'hotfix/base', title: 'X' },
-				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'always', mergeNoVerify: false } },
-			)
-			expect(calls).toEqual(['checkout(hotfix/base)', 'mergeNoFf(fix/5-x)', 'push(hotfix/base)', 'deleteBranch(fix/5-x)'])
-			expect(closed.fix).toEqual(['5'])
-		})
-
 		test('Change + usePrs:false: host-merges integration to targetBranch, marks Change CLOSED, retains branch on never', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
@@ -221,17 +194,10 @@ if (import.meta.vitest) {
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
+				{ kind: 'change', id: '5', branch: 'change/5-x', title: 'X' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'prompt', mergeNoVerify: false } },
 			)
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
-		})
-
-		test('Fix + usePrs:true, PR exists open: marks ready, does not create', async () => {
-			const { closed, calls } = await runFixCloseOutWithPr('OPEN')
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
-			expect(calls).toContainEqual(['markPrReady', 11])
-			expect(closed.fix).toEqual([])
 		})
 
 		test('Change + usePrs:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
@@ -252,12 +218,6 @@ if (import.meta.vitest) {
 				body: 'Closes Change 3',
 			}])
 			expect(calls).toContainEqual(['markPrReady', 22])
-		})
-
-		test('Fix + usePrs:true, PR already merged: no-op (reconciliation owns CLOSED)', async () => {
-			const { closed, calls } = await runFixCloseOutWithPr('MERGED')
-			expect(calls.find((c) => c[0] === 'markPrReady')).toBeUndefined()
-			expect(closed.fix).toEqual([])
 		})
 	})
 }

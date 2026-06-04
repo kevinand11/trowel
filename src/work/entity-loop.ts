@@ -1,6 +1,5 @@
 import { runCloseOut } from './close-out.ts'
 import { createEffectiveSliceReader } from './effective-slices.ts'
-import { runFixEntity } from './fix-entity-loop.ts'
 import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
 import { reconcileEntity, type LoopEntityRef } from './reconcile.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
@@ -10,14 +9,9 @@ import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
 /**
- * The unit of work `trowel work` operates on. Changes have slices (the legacy loop); Fixes are
- * single-blob entities that go through the same Turn machinery but with their own branch off
- * targetBranch. See ADR `2026-05-17-fix-entity-unified-close-out.md` and
- * `2026-06-03-entity-target-branch-captured-from-invocation.md`.
+ * The unit of work `trowel change work` operates on.
  */
-export type LoopEntity =
-	| { kind: 'change'; id: string; integrationBranch: string; targetBranch?: string; title: string }
-	| { kind: 'fix'; id: string; branch: string; targetBranch?: string; title: string }
+export type LoopEntity = { kind: 'change'; id: string; integrationBranch: string; targetBranch?: string; title: string }
 
 export type EntityLoopDeps = {
 	storage: Storage
@@ -35,16 +29,9 @@ export type EntityLoopDeps = {
  * Reconciliation-only pass.
  */
 export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): Promise<void> {
-	const ref: LoopEntityRef = entity.kind === 'change'
-		? { kind: 'change', id: entity.id, branch: entity.integrationBranch }
-		: { kind: 'fix', id: entity.id, branch: entity.branch }
+	const ref: LoopEntityRef = { kind: 'change', id: entity.id, branch: entity.integrationBranch }
 	await reconcileEntity(ref, { storage: deps.storage, gh: deps.gh, log: deps.log })
-
-	if (entity.kind === 'change') {
-		await runChangeEntity(entity, deps)
-		return
-	}
-	await runFixEntity(entity, deps)
+	await runChangeEntity(entity, deps)
 }
 
 async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
@@ -130,53 +117,6 @@ if (import.meta.vitest) {
 		)
 		return changeClosed
 	}
-
-	describe('runEntityLoop: fix', () => {
-		test('ready implementer + usePrs:false → host-merges fix → base + closes Fix', async () => {
-			let closedFix: string | null = null
-			const storage = makeStorage({
-				findFix: async (id) => ({ id, branch: 'fix/5-x', title: 'X', body: '', state: 'OPEN', readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }),
-				closeFix: async (id) => { closedFix = id },
-			})
-			const { gh } = recordingGhOps()
-			const verdicts: TurnOut[] = [{ verdict: 'ready', commits: 1 }]
-			let i = 0
-			await runEntityLoop(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
-				{ storage, git: noopGit(), gh, spawnTurn: async () => verdicts[i++]!, log: () => {}, config: baseConfig },
-			)
-			expect(closedFix).toBe('5')
-		})
-
-		test('CLOSED Fix → no-op', async () => {
-			const storage = makeStorage({
-				findFix: async (id) => ({ id, branch: 'fix/5-x', title: 'X', body: '', state: 'CLOSED', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null }),
-			})
-			const { gh } = recordingGhOps()
-			let spawned = 0
-			await runEntityLoop(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
-				{ storage, git: noopGit(), gh, spawnTurn: async () => { spawned++; return { verdict: 'partial', commits: 0 } }, log: () => {}, config: baseConfig },
-			)
-			expect(spawned).toBe(0)
-		})
-
-		test('reconciliation runs before loop body (merged PR → CLOSED before spawn)', async () => {
-			let state: 'OPEN' | 'CLOSED' = 'OPEN'
-			let spawned = 0
-			const storage = makeStorage({
-				findFix: async (id) => ({ id, branch: 'fix/5-x', title: 'X', body: '', state, readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }),
-				closeFix: async () => { state = 'CLOSED' },
-			})
-			const { gh } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 7, state: 'MERGED' }) })
-			await runEntityLoop(
-				{ kind: 'fix', id: '5', branch: 'fix/5-x', title: 'X' },
-				{ storage, git: noopGit(), gh, spawnTurn: async () => { spawned++; return { verdict: 'ready', commits: 1 } }, log: () => {}, config: baseConfig },
-			)
-			expect(spawned).toBe(0)
-			expect(state).toBe('CLOSED')
-		})
-	})
 
 	describe('runEntityLoop: change', () => {
 		test('all slices already CLOSED + usePrs:false → Close-out fires, Change CLOSED', async () => {
