@@ -350,6 +350,7 @@ if (import.meta.vitest) {
 			createRemoteBranch: recorded('createRemoteBranch'),
 			createLocalBranch: recorded('createLocalBranch'),
 			pushSetUpstream: recorded('pushSetUpstream'),
+			fastForward: recorded('fastForward'),
 			currentBranch: async () => 'change-branch',
 			baseBranch: async () => 'main',
 			branchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
