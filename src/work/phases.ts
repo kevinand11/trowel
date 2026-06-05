@@ -5,6 +5,7 @@ import type { PhaseCtx, PhaseOutcome, PreparedPhase, Slice, Storage } from '../s
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
+import { slug as slugify } from '../utils/slug.ts'
 
 /**
  * Dependency bag for the loop-level phase primitives. The loop builds this once per run from
@@ -29,7 +30,12 @@ function withPhaseLock<T>(deps: PhaseDeps, fn: () => Promise<T>): Promise<T> {
 }
 
 function sliceBranchFor(slice: Slice): string {
+	if (slice.sliceBranch === null) throw new Error(`Slice '${slice.id}' has no stored Slice branch; run implement preparation first`)
 	return slice.sliceBranch
+}
+
+function sliceBranchName(changeId: string, sliceId: string, title: string): string {
+	return `${changeId}/${sliceId}-${slugify(title)}`
 }
 
 async function pushSliceBranchIfNeeded(deps: PhaseDeps, branch: string, commits: number, tag: string): Promise<void> {
@@ -39,12 +45,19 @@ async function pushSliceBranchIfNeeded(deps: PhaseDeps, branch: string, commits:
 }
 
 /**
- * Prepare the implementer Turn on the Slice's stored Slice branch. Branch creation is a
- * start-time concern: work only verifies that the stored branch still exists remotely, fetches it,
- * and fails loudly if metadata points at a missing branch.
+ * Prepare the implementer Turn on the Slice's durable Slice branch. New Slice records may start
+ * with null Slice branch metadata; first preparation assigns and stores the branch using the
+ * current work.perSliceBranches setting. Non-null stored metadata remains authoritative.
  */
 export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = sliceBranchFor(slice)
+	return withPhaseLock(deps, () => prepareImplementLocked(deps, slice, ctx))
+}
+
+async function prepareImplementLocked(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
+	const branch = slice.sliceBranch ?? await assignSliceBranch(deps, slice, ctx)
+	// Preserve the assigned branch for landImplement in this same Turn; durable identity is already
+	// stored through updateSliceMetadata above.
+	slice.sliceBranch = branch
 	assertPrHeadCanTargetChangeBranch(slice, ctx, branch)
 	await verifyStoredSliceBranch(deps, slice, ctx, branch)
 	await deps.git.fetch(branch)
@@ -52,6 +65,18 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 		branch,
 		turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
 	}
+}
+
+async function assignSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<string> {
+	const branch = ctx.config.perSliceBranches ? await createPerSliceBranch(deps, slice, ctx) : ctx.changeBranch
+	await deps.storage.updateSliceMetadata(ctx.changeId, slice.id, { sliceBranch: branch })
+	return branch
+}
+
+async function createPerSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<string> {
+	const branch = sliceBranchName(ctx.changeId, slice.id, slice.title)
+	await deps.git.createRemoteBranch(branch, ctx.changeBranch)
+	return branch
 }
 
 async function verifyStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<void> {
@@ -326,10 +351,10 @@ if (import.meta.vitest) {
 		remoteBranchExists?: (b: string) => boolean
 		branchExists?: (b: string) => boolean
 		commitsAhead?: number
-	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; needsRevision: boolean }; logs: string[] } {
+	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; needsRevision: boolean; sliceBranch: string | null }; logs: string[] } {
 		const calls: GitCall[] = []
 		const logs: string[] = []
-		const storageState = { closedAt: null as string | null, needsRevision: true }
+		const storageState = { closedAt: null as string | null, needsRevision: true, sliceBranch: null as string | null }
 		const recorded = (method: string) => (...args: unknown[]) => { calls.push({ method, args }); return Promise.resolve() }
 		const git: GitOps = {
 			fetch: recorded('fetch'),
@@ -389,7 +414,10 @@ if (import.meta.vitest) {
 				if (patch.closedAt !== undefined) storageState.closedAt = patch.closedAt
 				if (patch.needsRevision !== undefined) storageState.needsRevision = patch.needsRevision
 			},
-			updateSliceMetadata: async () => {},
+			updateSliceMetadata: async (_p, _s, patch) => {
+				calls.push({ method: 'updateSliceMetadata', args: [_p, _s, patch] })
+				if (patch.sliceBranch !== undefined) storageState.sliceBranch = patch.sliceBranch
+			},
 		}
 		const gh: GhOps = {
 			findPrNumberByHead: async (head) => { calls.push({ method: 'findPrNumberByHead', args: [head] }); return 132 },
@@ -450,6 +478,28 @@ if (import.meta.vitest) {
 			const { deps } = makePhaseDeps()
 			const shared = { ...slice, sliceBranch: 'change-branch' }
 			await expect(prepareImplement(deps, shared, { ...ctx, config: { usePrs: true, review: false, perSliceBranches: true } })).rejects.toThrow(/same head and base/)
+		})
+
+		test('null Slice branch + perSliceBranches:true creates and stores a fresh per-Slice branch at preparation time', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			const unassigned = { ...slice, sliceBranch: null }
+			const prep = await prepareImplement(deps, unassigned, ctx)
+			expect(prep.branch).toBe('pid/42-a-slice')
+			expect(storageState.sliceBranch).toBe('pid/42-a-slice')
+			expect(unassigned.sliceBranch).toBe('pid/42-a-slice')
+			expect(calls).toContainEqual({ method: 'createRemoteBranch', args: ['pid/42-a-slice', 'change-branch'] })
+			expect(calls).toContainEqual({ method: 'updateSliceMetadata', args: ['pid', '42', { sliceBranch: 'pid/42-a-slice' }] })
+			expect(calls).toContainEqual({ method: 'fetch', args: ['pid/42-a-slice'] })
+		})
+
+		test('null Slice branch + perSliceBranches:false stores the Change branch at preparation time', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			const unassigned = { ...slice, sliceBranch: null }
+			const prep = await prepareImplement(deps, unassigned, { ...ctx, config: { usePrs: false, review: false, perSliceBranches: false } })
+			expect(prep.branch).toBe('change-branch')
+			expect(storageState.sliceBranch).toBe('change-branch')
+			expect(calls.map((c) => c.method)).not.toContain('createRemoteBranch')
+			expect(calls).toContainEqual({ method: 'updateSliceMetadata', args: ['pid', '42', { sliceBranch: 'change-branch' }] })
 		})
 	})
 

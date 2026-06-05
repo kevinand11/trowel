@@ -9,9 +9,13 @@ import type { GhOps } from '../utils/gh-ops.ts'
  * multi-step orchestration: PR-state enrichment, slice-branch naming, and feedback merging.
  */
 
-/** Canonical per-slice branch name (storage-agnostic). */
-function sliceBranchFor(_changeId: string, slice: Slice): string {
+/** Canonical per-slice branch name (storage-agnostic), once assigned. */
+function sliceBranchFor(_changeId: string, slice: Slice): string | null {
 	return slice.sliceBranch
+}
+
+function assignedBranches(slices: Slice[], changeId: string): string[] {
+	return slices.map((s) => sliceBranchFor(changeId, s)).filter((branch): branch is string => branch !== null)
 }
 
 /**
@@ -21,7 +25,7 @@ function sliceBranchFor(_changeId: string, slice: Slice): string {
 export async function enrichSlicesFromOpenPrs(gh: GhOps, changeId: string, slices: Slice[]): Promise<Slice[]> {
 	const activeSlices = slices.filter((s) => s.closedAt === null)
 	if (activeSlices.length === 0) return slices
-	const branches = activeSlices.map((s) => sliceBranchFor(changeId, s))
+	const branches = assignedBranches(activeSlices, changeId)
 	const openPrsByBranch = await getOpenPrsByBranch(gh, branches)
 	return Promise.all(slices.map(async (s) => enrichSliceFromPrs(gh, changeId, s, openPrsByBranch)))
 }
@@ -29,6 +33,7 @@ export async function enrichSlicesFromOpenPrs(gh: GhOps, changeId: string, slice
 async function enrichSliceFromPrs(gh: GhOps, changeId: string, slice: Slice, openPrsByBranch: Map<string, OpenPrForState>): Promise<Slice> {
 	if (slice.closedAt !== null) return slice
 	const branch = sliceBranchFor(changeId, slice)
+	if (branch === null) return { ...slice, prState: null }
 	const openPr = openPrsByBranch.get(branch)
 	if (openPr !== undefined) return enrichSliceFromOpenPr(slice, openPr)
 	return { ...slice, prState: await mergedPrState(gh, branch) }

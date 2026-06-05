@@ -67,8 +67,8 @@ export type Slice = {
 	needsRevision: boolean
 	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
 	blockedBy: string[]
-	/** Stored branch this Slice's Turns run on. */
-	sliceBranch: string
+	/** Stored branch this Slice's Turns run on. Null until first implementation preparation assigns it. */
+	sliceBranch: string | null
 	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. Always null on the file storage. */
 	prState: SlicePrState
 }

@@ -104,7 +104,7 @@ async function confirmAbortInFlightChange(changeId: string, rt: AbortRuntime): P
 
 async function closeOpenSlicePrs(slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
 	if (!rt.usePrs) return
-	const storedSliceHeads = new Set(slices.map((slice) => slice.sliceBranch))
+	const storedSliceHeads = new Set(slices.map((slice) => slice.sliceBranch).filter((branch): branch is string => branch !== null))
 	for (const pr of await rt.gh.listOpenPrs()) {
 		if (storedSliceHeads.has(pr.headRefName)) await closePrWithoutMerging(pr.number, rt)
 	}
