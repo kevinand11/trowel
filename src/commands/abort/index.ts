@@ -133,9 +133,8 @@ async function closePrWithoutMerging(prNumber: number, rt: AbortRuntime): Promis
 }
 
 async function closeOpenSliceRecords(changeId: string, slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
-	const closedAt = new Date().toISOString()
 	for (const slice of slices) {
-		if (slice.closedAt === null) await rt.storage.updateSlice(changeId, slice.id, { closedAt })
+		if (slice.closedAt === null) await rt.storage.abortSlice(changeId, slice.id)
 	}
 }
 
@@ -265,13 +264,15 @@ if (import.meta.vitest) {
 				return state.slices.map((slice) => ({ ...slice }))
 			},
 			updateSliceMetadata: async () => {},
-			updateSlice: async (_changeId, sliceId, patch) => {
-				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)
+			setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async () => {},
+			markSliceAudited: async () => {},
+			finalizeSlice: async () => {},
+			abortSlice: async (_changeId, sliceId) => {
+				calls.push(`abortSlice(${sliceId})`)
 				const slice = state.slices.find((s) => s.id === sliceId)
-				if (slice && patch.closedAt !== undefined) {
-					slice.closedAt = patch.closedAt
-					slice.state = patch.closedAt === null ? 'open' : 'done'
-				}
+				if (slice) slice.closedAt = new Date().toISOString()
 			},
 		}
 		return { storage, calls }
@@ -428,7 +429,7 @@ if (import.meta.vitest) {
 
 			expect(ghCalls).toContainEqual(['closePr', 10, { comment: 'Closed via trowel' }])
 			expect(ghCalls.map((call) => call[0])).not.toContain('mergePr')
-			expect(storageCalls.some((call) => /^updateSlice\(s1,\{"closedAt":"\d{4}-/.test(call))).toBe(true)
+			expect(storageCalls).toContain('abortSlice(s1)')
 			expect(storageCalls).toContain('closeChange(42)')
 			expect(storageState.change!.closedAt).not.toBeNull()
 			expect(gitCalls).toContain('deleteBranch(change-42-feature)')

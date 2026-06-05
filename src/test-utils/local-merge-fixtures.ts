@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { setupTestRepoWithBare } from './git-repo.ts'
-import type { ChangeRecord, Slice, SlicePatch, Storage } from '../storages/types.ts'
+import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
 import { exec } from '../utils/shell.ts'
 
@@ -89,9 +89,23 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 		},
 		createSlice: async () => { throw new Error('not used') },
 		findSlices: async (changeId) => changeId === state.change.id ? [{ ...state.slice }] : [],
-		updateSlice: async (changeId, sliceId, patch) => {
-			if (changeId !== state.change.id || sliceId !== state.slice.id) return
-			applySlicePatch(state.slice, patch)
+		setSliceReadyForAgent: async (changeId, sliceId, ready) => {
+			if (changeId === state.change.id && sliceId === state.slice.id) state.slice.readyForAgent = ready
+		},
+		setSliceBlockers: async (changeId, sliceId, blockedBy) => {
+			if (changeId === state.change.id && sliceId === state.slice.id) state.slice.blockedBy = blockedBy
+		},
+		markSliceImplemented: async (changeId, sliceId, at) => {
+			if (changeId === state.change.id && sliceId === state.slice.id) state.slice.implementedAt = at
+		},
+		markSliceAudited: async (changeId, sliceId, at) => {
+			if (changeId === state.change.id && sliceId === state.slice.id) state.slice.auditedAt = at
+		},
+		finalizeSlice: async (changeId, sliceId) => {
+			if (changeId === state.change.id && sliceId === state.slice.id) state.slice.closedAt = new Date().toISOString()
+		},
+		abortSlice: async (changeId, sliceId) => {
+			if (changeId === state.change.id && sliceId === state.slice.id) state.slice.closedAt = new Date().toISOString()
 		},
 		updateSliceMetadata: async (_changeId, sliceId, patch) => {
 			if (sliceId !== state.slice.id) return
@@ -100,13 +114,6 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 	}
 }
 
-function applySlicePatch(slice: Slice, patch: SlicePatch): void {
-	if (patch.closedAt !== undefined) slice.closedAt = patch.closedAt
-	if (patch.implementedAt !== undefined) slice.implementedAt = patch.implementedAt
-	if (patch.auditedAt !== undefined) slice.auditedAt = patch.auditedAt
-	if (patch.readyForAgent !== undefined) slice.readyForAgent = patch.readyForAgent
-	if (patch.blockedBy !== undefined) slice.blockedBy = patch.blockedBy
-}
 
 async function commitOnBranch(repo: string, branch: string, file: string, content: string): Promise<void> {
 	const tempRoot = await mkdtemp(path.join(tmpdir(), 'trowel-turn-wt-'))

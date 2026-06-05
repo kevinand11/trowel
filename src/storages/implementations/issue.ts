@@ -1,7 +1,7 @@
 import { classifySlices } from '../../utils/slice-state.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice } from '../../work/slice-types.ts'
-import type { Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
+import type { Slice, Storage, StorageDeps, StorageFactory } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
@@ -120,12 +120,6 @@ export const createIssueStorage: StorageFactory = (deps) => {
 		return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
 	}
 
-	async function applySliceProcessMilestonePatch(sliceId: string, patch: SlicePatch): Promise<void> {
-		const metadataPatch: TrowelMetadata = withoutUndefined({ implementedAt: patch.implementedAt, auditedAt: patch.auditedAt })
-		if (Object.keys(metadataPatch).length === 0) return
-		await updateIssueMetadata(sliceId, metadataPatch)
-	}
-
 	async function replaceBlockedBy(sliceId: string, blockedBy: string[]): Promise<void> {
 		const currentByNumber = await currentBlockersByNumber(sliceId)
 		const target = new Set(blockedBy)
@@ -153,10 +147,8 @@ export const createIssueStorage: StorageFactory = (deps) => {
 		}
 	}
 
-	async function applyIssueClosedAtPatch(sliceId: string, closedAt: SlicePatch['closedAt']): Promise<void> {
-		if (closedAt === undefined) return
-		if (closedAt === null) await deps.gh.reopenIssue(entityIdToGhNumber(sliceId))
-		else await closeSliceIssueForAbort(sliceId)
+	async function closeSliceIssueForFinalize(sliceId: string): Promise<void> {
+		await deps.gh.closeIssue(entityIdToGhNumber(sliceId))
 	}
 
 	async function closeSliceIssueForAbort(sliceId: string): Promise<void> {
@@ -216,12 +208,12 @@ export const createIssueStorage: StorageFactory = (deps) => {
 			const rawIssues = await deps.gh.listSubIssues(entityIdToGhNumber(changeId))
 			return Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue)))
 		},
-		updateSlice: async (_changeId, sliceId, patch) => {
-			await applyLabelPatch(sliceId, patch)
-			await applySliceProcessMilestonePatch(sliceId, patch)
-			if (patch.blockedBy !== undefined) await replaceBlockedBy(sliceId, patch.blockedBy)
-			await applyIssueClosedAtPatch(sliceId, patch.closedAt)
-		},
+		setSliceReadyForAgent: async (_changeId, sliceId, ready) => applyLabelPatch(sliceId, { readyForAgent: ready }),
+		setSliceBlockers: async (_changeId, sliceId, blockedBy) => replaceBlockedBy(sliceId, blockedBy),
+		markSliceImplemented: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { implementedAt: at }),
+		markSliceAudited: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { auditedAt: at }),
+		finalizeSlice: async (_changeId, sliceId) => closeSliceIssueForFinalize(sliceId),
+		abortSlice: async (_changeId, sliceId) => closeSliceIssueForAbort(sliceId),
 		updateSliceMetadata: async (_changeId, sliceId, patch) => updateIssueMetadata(sliceId, patch),
 	}
 }
@@ -894,51 +886,39 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('issue storage: updateSlice', () => {
-		test('readyForAgent:true adds the configured label', async () => {
+	describe('issue storage: slice intent writes', () => {
+		test('setSliceReadyForAgent(true) adds the configured label', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { readyForAgent: true })
+			await storage.setSliceReadyForAgent('42', '57', true)
 			expect(calls).toEqual([['editIssueLabels', 57, { add: ['ready-for-agent'] }]])
 		})
 
-		test('readyForAgent:false removes the configured label', async () => {
+		test('setSliceReadyForAgent(false) removes the configured label', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { readyForAgent: false })
+			await storage.setSliceReadyForAgent('42', '57', false)
 			expect(calls).toEqual([['editIssueLabels', 57, { remove: ['ready-for-agent'] }]])
 		})
 
-		test('state CLOSED runs closeIssue; state OPEN runs reopenIssue', async () => {
-			const { deps, calls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { closedAt: '2026-06-04T00:00:00Z' })
-			await storage.updateSlice('42', '57', { closedAt: null })
-			expect(calls).toEqual([
-				['closeIssue', 57],
-				['reopenIssue', 57],
-			])
-		})
-
-		test('state CLOSED passes the configured abort comment when present', async () => {
+		test('finalizeSlice closes without abort comment', async () => {
 			const { deps, calls } = makeDeps()
 			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { closedAt: '2026-06-04T00:00:00Z' })
-			expect(calls).toEqual([['closeIssue', 57, { comment: 'Closed via trowel' }]])
+			await storage.finalizeSlice('42', '57')
+			expect(calls).toEqual([['closeIssue', 57]])
 		})
 
-		test('combined patch fires multiple gh calls in expected order', async () => {
+		test('abortSlice passes the configured abort comment when present', async () => {
 			const { deps, calls } = makeDeps()
+			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '57', { readyForAgent: false, closedAt: '2026-06-04T00:00:00Z' })
-			expect(calls).toHaveLength(2)
-			expect(calls).toContainEqual(['editIssueLabels', 57, { remove: ['ready-for-agent'] }])
-			expect(calls).toContainEqual(['closeIssue', 57])
+			await storage.abortSlice('42', '57')
+			expect(calls).toEqual([['closeIssue', 57, { comment: 'Closed via trowel' }]])
 		})
 	})
 
-	describe('issue storage: updateSlice with blockedBy', () => {
+	describe('issue storage: setSliceBlockers', () => {
 		test('diffs old vs new: removes deleted blockers, adds new ones', async () => {
 			const issues = new Map([
 				[8, issueRecord(8, 800)],
@@ -953,7 +933,7 @@ if (import.meta.vitest) {
 				},
 			})
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '100', { blockedBy: ['8', '9'] })
+			await storage.setSliceBlockers('42', '100', ['8', '9'])
 
 			// 7 was in old, removed → removeBlockedBy with internal id 700
 			expect(calls).toContainEqual(['removeBlockedBy', 100, 700])
@@ -968,7 +948,7 @@ if (import.meta.vitest) {
 				listBlockedBy: async () => [{ id: 700, number: 7 }],
 			})
 			const storage = createIssueStorage(deps)
-			await storage.updateSlice('42', '100', { blockedBy: ['7'] })
+			await storage.setSliceBlockers('42', '100', ['7'])
 			expect(calls.find((c) => c[0] === 'addBlockedBy' || c[0] === 'removeBlockedBy')).toBeUndefined()
 		})
 	})

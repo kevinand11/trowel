@@ -295,8 +295,32 @@ export const createFileStorage: StorageFactory = (deps) => {
 		})
 	}
 
-	async function updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
+	async function updateSliceStore(changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
 		return withMutationLock(deps.projectRoot, async () => updateStore<SliceStore>(await findSliceDir(changeId, sliceId), patch))
+	}
+
+	async function setSliceReadyForAgent(changeId: string, sliceId: string, ready: boolean): Promise<void> {
+		return updateSliceStore(changeId, sliceId, { readyForAgent: ready })
+	}
+
+	async function setSliceBlockers(changeId: string, sliceId: string, blockedBy: string[]): Promise<void> {
+		return updateSliceStore(changeId, sliceId, { blockedBy })
+	}
+
+	async function markSliceImplemented(changeId: string, sliceId: string, at: string): Promise<void> {
+		return updateSliceStore(changeId, sliceId, { implementedAt: at })
+	}
+
+	async function markSliceAudited(changeId: string, sliceId: string, at: string): Promise<void> {
+		return updateSliceStore(changeId, sliceId, { auditedAt: at })
+	}
+
+	async function finalizeSlice(changeId: string, sliceId: string): Promise<void> {
+		return updateSliceStore(changeId, sliceId, { closedAt: new Date().toISOString() })
+	}
+
+	async function abortSlice(changeId: string, sliceId: string): Promise<void> {
+		return updateSliceStore(changeId, sliceId, { closedAt: new Date().toISOString() })
 	}
 
 	function sliceFromStore(store: SliceStore, body: string): Slice {
@@ -337,7 +361,12 @@ export const createFileStorage: StorageFactory = (deps) => {
 		updateChangeMetadata,
 		createSlice,
 		findSlices,
-		updateSlice,
+		setSliceReadyForAgent,
+		setSliceBlockers,
+		markSliceImplemented,
+		markSliceAudited,
+		finalizeSlice,
+		abortSlice,
 		updateSliceMetadata,
 	}
 }
@@ -594,8 +623,8 @@ if (import.meta.vitest) {
 		const { id: changeId } = await createMaterialisedChange(storage)
 		const a = await createMaterialisedSlice(storage, changeId, { title: 'A', body: 'spec', blockedBy: [] })
 		const b = await createMaterialisedSlice(storage, changeId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-		if (doneA) await storage.updateSlice(changeId, a.id, { closedAt: new Date().toISOString() })
-		await storage.updateSlice(changeId, b.id, { readyForAgent: true })
+		if (doneA) await storage.finalizeSlice(changeId, a.id)
+		await storage.setSliceReadyForAgent(changeId, b.id, true)
 		return classifySlices(await storage.findSlices(changeId)).find((s) => s.id === b.id)!.state
 	}
 
@@ -633,7 +662,7 @@ if (import.meta.vitest) {
 			await f.deps.git.pushSetUpstream(result.changeBranch)
 			const sliceBranch = branchMode === 'shared' ? result.changeBranch : undefined
 			const slice = await createMaterialisedSlice(storage, result.id, { title, body: 'spec', blockedBy: [] }, sliceBranch)
-			await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
+			await storage.setSliceReadyForAgent(result.id, slice.id, true)
 			f.calls.git.length = 0
 			return { result, slice }
 		}
@@ -1093,7 +1122,7 @@ if (import.meta.vitest) {
 			const a = await createMaterialisedSlice(storage, changeId, { title: 'Alpha', body: 'aa', blockedBy: [] })
 			const b = await createMaterialisedSlice(storage, changeId, { title: 'Beta', body: 'bb', blockedBy: [] })
 			// Mark b as closed; needs-revision is PR-derived and not stored by file storage.
-			await storage.updateSlice(changeId, b.id, { closedAt: new Date().toISOString() })
+			await storage.finalizeSlice(changeId, b.id)
 
 			const slices = classifySlices(await storage.findSlices(changeId))
 			expect(slices).toHaveLength(2)
@@ -1151,14 +1180,14 @@ if (import.meta.vitest) {
 
 		test('readyForAgent and no deps → open', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
+			await storage.setSliceReadyForAgent(changeId, slice.id, true)
 			const [updated] = classifySlices(await storage.findSlices(changeId))
 			expect(updated!.state).toBe('open')
 		})
 
 		test('CLOSED → done', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.updateSlice(changeId, slice.id, { closedAt: new Date().toISOString() })
+			await storage.finalizeSlice(changeId, slice.id)
 			const [updated] = classifySlices(await storage.findSlices(changeId))
 			expect(updated!.state).toBe('done')
 		})
@@ -1173,7 +1202,7 @@ if (import.meta.vitest) {
 
 		test('file storage never returns in-flight (no PR concept)', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
+			await storage.setSliceReadyForAgent(changeId, slice.id, true)
 			const slices = classifySlices(await storage.findSlices(changeId))
 			expect(slices.every((x) => x.state !== 'in-flight')).toBe(true)
 		})
@@ -1326,31 +1355,28 @@ if (import.meta.vitest) {
 		test('flips readyForAgent without writing needsRevision', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
+			await storage.setSliceReadyForAgent(changeId, slice.id, true)
 			let store = JSON.parse(
 				await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'),
 			)
 			expect(store.readyForAgent).toBe(true)
 			expect(store).not.toHaveProperty('needsRevision')
 
-			await storage.updateSlice(changeId, slice.id, { readyForAgent: false })
+			await storage.setSliceReadyForAgent(changeId, slice.id, false)
 			store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(false)
 			expect(store).not.toHaveProperty('needsRevision')
 		})
 
-		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {
+		test('finalizeSlice stamps closedAt', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
-			await storage.updateSlice(changeId, slice.id, { closedAt: new Date().toISOString() })
+			await storage.finalizeSlice(changeId, slice.id)
 			let store = JSON.parse(
 				await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'),
 			)
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 
-			await storage.updateSlice(changeId, slice.id, { closedAt: null })
-			store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
-			expect(store.closedAt).toBeNull()
 		})
 
 		test('updates blockedBy as a full-array replace', async () => {
@@ -1358,12 +1384,12 @@ if (import.meta.vitest) {
 			const { id: changeId } = await createMaterialisedChange(storage)
 			const s = await createMaterialisedSlice(storage, changeId, { title: 'Foo', body: 'b', blockedBy: ['old1', 'old2'] })
 
-			await storage.updateSlice(changeId, s.id, { blockedBy: ['new1'] })
+			await storage.setSliceBlockers(changeId, s.id, ['new1'])
 			const found = (await storage.findSlices(changeId)).find((x) => x.id === s.id)!
 			expect(found.blockedBy).toEqual(['new1'])
 
 			// Empty array clears blockers.
-			await storage.updateSlice(changeId, s.id, { blockedBy: [] })
+			await storage.setSliceBlockers(changeId, s.id, [])
 			const found2 = (await storage.findSlices(changeId)).find((x) => x.id === s.id)!
 			expect(found2.blockedBy).toEqual([])
 		})
@@ -1371,7 +1397,7 @@ if (import.meta.vitest) {
 		test('throws when the slice does not exist', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'P', body: 'b' })
-			await expect(storage.updateSlice(changeId, 'zzzzzz', { readyForAgent: true })).rejects.toThrow(/no slice/i)
+			await expect(storage.setSliceReadyForAgent(changeId, 'zzzzzz', true)).rejects.toThrow(/no slice/i)
 		})
 	})
 }

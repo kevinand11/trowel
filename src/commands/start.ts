@@ -104,10 +104,9 @@ async function createStartSlices(rt: StartRuntime, changeId: string, spec: Start
 
 async function updateStartSliceLinks(rt: StartRuntime, changeId: string, spec: StartSpec, realIds: string[]): Promise<void> {
 	for (const [i, slice] of spec.slices.entries()) {
-		await rt.storage.updateSlice(changeId, realIds[i]!, {
-			blockedBy: slice.blockedBy.map((idx) => realIds[idx]!),
-			readyForAgent: slice.readyForAgent,
-		})
+		const sliceId = realIds[i]!
+		await rt.storage.setSliceBlockers(changeId, sliceId, slice.blockedBy.map((idx) => realIds[idx]!))
+		await rt.storage.setSliceReadyForAgent(changeId, sliceId, slice.readyForAgent)
 	}
 }
 
@@ -721,8 +720,10 @@ if (import.meta.vitest) {
 				'checkout(abc123-rename-foo)',
 				'createSlice(abc123,Rename type)',
 				'createSlice(abc123,Update callsites)',
-				'updateSlice(abc123,slice-a)',
-				'updateSlice(abc123,slice-b)',
+				'setSliceBlockers(abc123,slice-a)',
+				'setSliceReadyForAgent(abc123,slice-a)',
+				'setSliceBlockers(abc123,slice-b)',
+				'setSliceReadyForAgent(abc123,slice-b)',
 			])
 		})
 
@@ -808,9 +809,13 @@ if (import.meta.vitest) {
 				{ changeId: 'abc123', spec: { title: 'Rename type', body: 'a', blockedBy: [] } },
 				{ changeId: 'abc123', spec: { title: 'Update callsites', body: 'b', blockedBy: [] } },
 			])
-			expect(calls.updateSlice).toEqual([
-				{ changeId: 'abc123', sliceId: 'slice-a', patch: { blockedBy: [], readyForAgent: true } },
-				{ changeId: 'abc123', sliceId: 'slice-b', patch: { blockedBy: ['slice-a'], readyForAgent: false } },
+			expect(calls.setSliceBlockers).toEqual([
+				{ changeId: 'abc123', sliceId: 'slice-a', blockedBy: [] },
+				{ changeId: 'abc123', sliceId: 'slice-b', blockedBy: ['slice-a'] },
+			])
+			expect(calls.setSliceReadyForAgent).toEqual([
+				{ changeId: 'abc123', sliceId: 'slice-a', ready: true },
+				{ changeId: 'abc123', sliceId: 'slice-b', ready: false },
 			])
 			expect(gitState.current).toBe('abc123-rename-foo')
 		})

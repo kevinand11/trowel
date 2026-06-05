@@ -72,7 +72,7 @@ function terminalOutcomeForState(state: ResumeState): ProcessOutcome | null {
 }
 
 async function finalizeLandedSlice(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<SliceStepResult> {
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { closedAt: new Date().toISOString() })
+	await deps.storage.finalizeSlice(ctx.changeId, slice.id)
 	deps.log(`${tag} finalized landed slice`)
 	return { outcome: 'progress' }
 }

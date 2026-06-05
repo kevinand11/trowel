@@ -171,7 +171,12 @@ if (import.meta.vitest) {
 				throw new Error('nyi')
 			},
 			findSlices: async () => [],
-			updateSlice: async () => {},
+			setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async () => {},
+			markSliceAudited: async () => {},
+			finalizeSlice: async () => {},
+			abortSlice: async () => {},
 			updateSliceMetadata: async () => {},
 			...overrides,
 		}

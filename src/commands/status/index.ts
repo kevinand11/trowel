@@ -179,7 +179,12 @@ if (import.meta.vitest) {
 				throw new Error('nyi')
 			},
 			findSlices: async () => state.rawSlices,
-			updateSlice: async () => {},
+			setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async () => {},
+			markSliceAudited: async () => {},
+			finalizeSlice: async () => {},
+			abortSlice: async () => {},
 			updateSliceMetadata: async () => {},
 		}
 	}
@@ -321,7 +326,12 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => [rawSlice],
-				updateSlice: async () => {},
+				setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async () => {},
+			markSliceAudited: async () => {},
+			finalizeSlice: async () => {},
+			abortSlice: async () => {},
 				updateSliceMetadata: async () => {},
 			}
 			const { gh } = recordingGhOps()
@@ -384,7 +394,12 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => [rawSlice],
-				updateSlice: async () => {},
+				setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async () => {},
+			markSliceAudited: async () => {},
+			finalizeSlice: async () => {},
+			abortSlice: async () => {},
 				updateSliceMetadata: async () => {},
 			}
 			const { gh } = recordingGhOps()
@@ -585,7 +600,12 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => rawSlices,
-				updateSlice: async () => {},
+				setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async () => {},
+			markSliceAudited: async () => {},
+			finalizeSlice: async () => {},
+			abortSlice: async () => {},
 				updateSliceMetadata: async () => {},
 			}
 		}

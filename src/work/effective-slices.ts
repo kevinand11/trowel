@@ -1,8 +1,8 @@
 import { enrichSlicesFromOpenPrs } from './pr-flow.ts'
+import type { ClassifiedSlice } from './slice-types.ts'
 import type { Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import { classifySlices } from '../utils/slice-state.ts'
-import type { ClassifiedSlice } from './slice-types.ts'
 
 export type EffectiveSliceReader = {
 	findSlices(changeId: string): Promise<ClassifiedSlice[]>

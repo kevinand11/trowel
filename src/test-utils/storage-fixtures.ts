@@ -20,6 +20,12 @@ export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): C
 }
 
 const noop = async (): Promise<void> => {}
+const noopSetReadyForAgent = async (): Promise<void> => {}
+const noopSetBlockers = async (): Promise<void> => {}
+const noopMarkImplemented = async (): Promise<void> => {}
+const noopMarkAudited = async (): Promise<void> => {}
+const noopFinalizeSlice = async (): Promise<void> => {}
+const noopAbortSlice = async (): Promise<void> => {}
 const defaultCreatedEntity = async (): Promise<{ id: string; title: string }> => ({ id: 'x', title: 'x' })
 const emptyChangeSummaries = async (): Promise<Awaited<ReturnType<Storage['listChanges']>>> => []
 
@@ -32,7 +38,12 @@ export function fakeSliceStorage(slices: Slice[], _changeId: string | null = 'p1
 		createSlice: unusedCreateSlice,
 		findSlices: async () => slices,
 		updateChangeMetadata: noop,
-		updateSlice: noop,
+		setSliceReadyForAgent: noopSetReadyForAgent,
+		setSliceBlockers: noopSetBlockers,
+		markSliceImplemented: noopMarkImplemented,
+		markSliceAudited: noopMarkAudited,
+		finalizeSlice: noopFinalizeSlice,
+		abortSlice: noopAbortSlice,
 		updateSliceMetadata: noop,
 		...overrides,
 	}

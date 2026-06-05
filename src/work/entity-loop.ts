@@ -146,7 +146,7 @@ if (import.meta.vitest) {
 		git?: GitOps
 		gh?: GhOps
 		spawnTurn?: EntityLoopDeps['spawnTurn']
-		updateSlice?: Storage['updateSlice']
+		finalizeSlice?: Storage['finalizeSlice']
 	}
 
 	async function runLoopFixture(opts: LoopFixtureOpts = {}): Promise<{ changeClosed: boolean; logs: string[]; spawned: number }> {
@@ -164,7 +164,7 @@ if (import.meta.vitest) {
 		const storage = makeStorage({
 			findChange: async (id) => (id === change.id ? change : null),
 			findSlices: async () => slices,
-			updateSlice: opts.updateSlice ?? (async () => {}),
+			finalizeSlice: opts.finalizeSlice ?? (async () => {}),
 			closeChange: async () => {
 				changeClosed = true
 			},
@@ -246,8 +246,8 @@ if (import.meta.vitest) {
 			const landed: ClassifiedSlice = { ...doneSlice, state: 'landed', closedAt: null, prState: 'merged' }
 			const result = await runLoopFixture({
 				slices: [landed],
-				updateSlice: async (_changeId, sliceId, patch) => {
-					if (sliceId === landed.id && patch.closedAt !== undefined) landed.closedAt = patch.closedAt
+				finalizeSlice: async (_changeId, sliceId) => {
+					if (sliceId === landed.id) landed.closedAt = new Date().toISOString()
 				},
 			})
 			expect(result.spawned).toBe(0)

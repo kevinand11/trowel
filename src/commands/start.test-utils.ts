@@ -1,5 +1,5 @@
 import type { StartRuntime } from './start.ts'
-import type { ChangeMetadataPatch, ChangeSpec, SliceMetadataPatch, SlicePatch, SliceSpec } from '../storages/types.ts'
+import type { ChangeMetadataPatch, ChangeSpec, SliceMetadataPatch, SliceSpec } from '../storages/types.ts'
 import { noopGitOps } from '../test-utils/git-ops-fixtures.ts'
 import { fakeSliceStorage } from '../test-utils/storage-fixtures.ts'
 
@@ -7,7 +7,8 @@ export type FakeCalls = {
 	createChange: ChangeSpec[]
 	createSlice: Array<{ changeId: string; spec: SliceSpec }>
 	updateChangeMetadata: Array<{ changeId: string; patch: ChangeMetadataPatch }>
-	updateSlice: Array<{ changeId: string; sliceId: string; patch: SlicePatch }>
+	setSliceBlockers: Array<{ changeId: string; sliceId: string; blockedBy: string[] }>
+	setSliceReadyForAgent: Array<{ changeId: string; sliceId: string; ready: boolean }>
 	updateSliceMetadata: Array<{ changeId: string; sliceId: string; patch: SliceMetadataPatch }>
 	stdout: string[]
 	git: string[]
@@ -34,7 +35,7 @@ export type MakeFakesOpts = {
 }
 
 export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeCalls; gitState: FakeGitState } {
-	const calls: FakeCalls = { createChange: [], createSlice: [], updateChangeMetadata: [], updateSlice: [], updateSliceMetadata: [], stdout: [], git: [], order: [] }
+	const calls: FakeCalls = { createChange: [], createSlice: [], updateChangeMetadata: [], setSliceBlockers: [], setSliceReadyForAgent: [], updateSliceMetadata: [], stdout: [], git: [], order: [] }
 	const gitState: FakeGitState = {
 		current: opts.currentBranch ?? 'main',
 		clean: opts.cleanTree ?? true,
@@ -61,9 +62,13 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 			const id = createSliceIds[sliceCursor++] ?? `s${sliceCursor}`
 			return { id, title: spec.title }
 		},
-		updateSlice: async (changeId, sliceId, patch) => {
-			calls.updateSlice.push({ changeId, sliceId, patch })
-			calls.order.push(`updateSlice(${changeId},${sliceId})`)
+		setSliceBlockers: async (changeId, sliceId, blockedBy) => {
+			calls.setSliceBlockers.push({ changeId, sliceId, blockedBy })
+			calls.order.push(`setSliceBlockers(${changeId},${sliceId})`)
+		},
+		setSliceReadyForAgent: async (changeId, sliceId, ready) => {
+			calls.setSliceReadyForAgent.push({ changeId, sliceId, ready })
+			calls.order.push(`setSliceReadyForAgent(${changeId},${sliceId})`)
 		},
 		updateSliceMetadata: async (changeId, sliceId, patch) => {
 			calls.updateSliceMetadata.push({ changeId, sliceId, patch })

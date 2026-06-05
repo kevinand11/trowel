@@ -5,7 +5,7 @@ import type { ClassifiedSlice } from './slice-types.ts'
 import type { ClassifySliceConfig } from './types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { Slice, SlicePatch, Storage } from '../storages/types.ts'
+import type { Slice, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { classifySlices } from '../utils/slice-state.ts'
@@ -206,11 +206,26 @@ if (import.meta.vitest) {
 			},
 			findSlices: async () => state.slices.map((s) => ({ ...s })),
 			updateChangeMetadata: async () => {},
-			updateSlice: async (_p, sliceId, patch) => {
-				applyTestSlicePatch(
-					state.slices.find((x) => x.id === sliceId),
-					patch,
-				)
+			setSliceReadyForAgent: async (_changeId, sliceId, ready) => {
+				setTestReadyForAgent(state.slices.find((x) => x.id === sliceId), ready)
+			},
+			setSliceBlockers: async (_changeId, sliceId, blockedBy) => {
+				const slice = state.slices.find((x) => x.id === sliceId)
+				if (slice) slice.blockedBy = blockedBy
+			},
+			markSliceImplemented: async (_changeId, sliceId, at) => {
+				const slice = state.slices.find((x) => x.id === sliceId)
+				if (slice) slice.implementedAt = at
+			},
+			markSliceAudited: async (_changeId, sliceId, at) => {
+				const slice = state.slices.find((x) => x.id === sliceId)
+				if (slice) slice.auditedAt = at
+			},
+			finalizeSlice: async (_changeId, sliceId) => {
+				setTestSliceClosedAt(state.slices.find((x) => x.id === sliceId))
+			},
+			abortSlice: async (_changeId, sliceId) => {
+				setTestSliceClosedAt(state.slices.find((x) => x.id === sliceId))
 			},
 			updateSliceMetadata: async (_changeId, sliceId, patch) => {
 				const slice = state.slices.find((x) => x.id === sliceId)
@@ -220,24 +235,12 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function applyTestSlicePatch(slice: Slice | undefined, patch: SlicePatch): void {
-		if (!slice) return
-		setTestSliceClosedAt(slice, patch.closedAt)
-		setTestReadyForAgent(slice, patch.readyForAgent)
-		setTestProcessMilestones(slice, patch)
+	function setTestSliceClosedAt(slice: Slice | undefined): void {
+		if (slice) slice.closedAt = new Date().toISOString()
 	}
 
-	function setTestSliceClosedAt(slice: Slice, closedAt: SlicePatch['closedAt']): void {
-		if (closedAt !== undefined) slice.closedAt = closedAt
-	}
-
-	function setTestProcessMilestones(slice: Slice, patch: SlicePatch): void {
-		if (patch.implementedAt !== undefined) slice.implementedAt = patch.implementedAt
-		if (patch.auditedAt !== undefined) slice.auditedAt = patch.auditedAt
-	}
-
-	function setTestReadyForAgent(slice: Slice, value: boolean | undefined): void {
-		if (value !== undefined) slice.readyForAgent = value
+	function setTestReadyForAgent(slice: Slice | undefined, value: boolean): void {
+		if (slice) slice.readyForAgent = value
 	}
 
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')

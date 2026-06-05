@@ -154,7 +154,7 @@ async function landImplementNoWork(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx)
 	const recovered = await recoverNoWorkNeededSliceBranch(deps, slice, ctx)
 	if (recovered) return recovered
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { readyForAgent: false })
+	await deps.storage.setSliceReadyForAgent(ctx.changeId, slice.id, false)
 	deps.log(`${tag} no-work-needed: cleared readyForAgent`)
 	return 'no-work'
 }
@@ -183,12 +183,12 @@ async function landImplementReady(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, 
 }
 
 async function markSliceImplemented(deps: PhaseDeps, changeId: string, sliceId: string, tag: string): Promise<void> {
-	await deps.storage.updateSlice(changeId, sliceId, { implementedAt: new Date().toISOString() })
+	await deps.storage.markSliceImplemented(changeId, sliceId, new Date().toISOString())
 	deps.log(`${tag} recorded implementedAt`)
 }
 
 async function finalizeSlice(deps: PhaseDeps, changeId: string, sliceId: string): Promise<void> {
-	await deps.storage.updateSlice(changeId, sliceId, { closedAt: new Date().toISOString() })
+	await deps.storage.finalizeSlice(changeId, sliceId)
 }
 
 export async function integrateSlice(deps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx): Promise<PhaseOutcome> {
@@ -246,7 +246,7 @@ async function landAuditLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, 
 	const branch = sliceBranchFor(slice)
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { auditedAt: new Date().toISOString() })
+	await deps.storage.markSliceAudited(ctx.changeId, slice.id, new Date().toISOString())
 	deps.log(`${tag} recorded auditedAt`)
 	return 'progress'
 }
@@ -414,10 +414,19 @@ if (import.meta.vitest) {
 				prState: null,
 			}),
 			findSlices: async () => [],
-			updateSlice: async (_p, _s, patch) => {
-				if (patch.closedAt !== undefined) storageState.closedAt = patch.closedAt
-				if (patch.implementedAt !== undefined) storageState.implementedAt = patch.implementedAt
-				if (patch.auditedAt !== undefined) storageState.auditedAt = patch.auditedAt
+			setSliceReadyForAgent: async () => {},
+			setSliceBlockers: async () => {},
+			markSliceImplemented: async (_p, _s, at) => {
+				storageState.implementedAt = at
+			},
+			markSliceAudited: async (_p, _s, at) => {
+				storageState.auditedAt = at
+			},
+			finalizeSlice: async () => {
+				storageState.closedAt = new Date().toISOString()
+			},
+			abortSlice: async () => {
+				storageState.closedAt = new Date().toISOString()
 			},
 			updateSliceMetadata: async (_p, _s, patch) => {
 				calls.push({ method: 'updateSliceMetadata', args: [_p, _s, patch] })

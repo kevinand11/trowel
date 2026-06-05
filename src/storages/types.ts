@@ -102,6 +102,11 @@ export interface Storage {
 	// Slice lifecycle
 	createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice>
 	findSlices(changeId: string): Promise<Slice[]>
-	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>
+	setSliceReadyForAgent(changeId: string, sliceId: string, ready: boolean): Promise<void>
+	setSliceBlockers(changeId: string, sliceId: string, blockedBy: string[]): Promise<void>
+	markSliceImplemented(changeId: string, sliceId: string, at: string): Promise<void>
+	markSliceAudited(changeId: string, sliceId: string, at: string): Promise<void>
+	finalizeSlice(changeId: string, sliceId: string): Promise<void>
+	abortSlice(changeId: string, sliceId: string): Promise<void>
 	updateSliceMetadata(changeId: string, sliceId: string, patch: SliceMetadataPatch): Promise<void>
 }

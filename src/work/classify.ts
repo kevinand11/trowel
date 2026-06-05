@@ -1,5 +1,5 @@
-import type { ClassifySliceConfig, ResumeState } from './types.ts'
 import type { ClassifiedSlice } from './slice-types.ts'
+import type { ClassifySliceConfig, ResumeState } from './types.ts'
 
 /**
  * Decide what the loop should do next for this slice. Pure: reads computed Slice state,
