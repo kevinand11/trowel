@@ -422,6 +422,10 @@ if (import.meta.vitest) {
 				calls.git.push(['pushSetUpstream', b])
 				await realGit.pushSetUpstream(b)
 			},
+			fastForward: async (ref: string) => {
+				calls.git.push(['fastForward', ref])
+				await realGit.fastForward(ref)
+			},
 			currentBranch: async () => {
 				const r = await realGit.currentBranch()
 				calls.git.push(['currentBranch'])

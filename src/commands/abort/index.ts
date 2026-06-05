@@ -36,7 +36,7 @@ async function runAbortChange(changeId: string, rt: AbortRuntime): Promise<void>
 	const back = await rt.git.currentBranch()
 	const { change, slices, state } = await classifiedChangeOrThrow(changeId, rt)
 	const targetBranch = await changeTargetBranch(change, rt)
-	if (abortMayRunCleanup(state)) await refuseCurrentCleanupBranch({ change, slices, rt })
+	if (abortMayRunCleanup(state)) await refuseCurrentCleanupBranch({ change, slices, targetBranch, rt })
 	try {
 		await abortChangeByState({ change, slices, state }, targetBranch, rt)
 	} finally {
