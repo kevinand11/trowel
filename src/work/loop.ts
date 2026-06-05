@@ -47,21 +47,27 @@ async function findNextActionableSlice(
 ): Promise<ClassifiedSlice | null> {
 	const slices = classifySlices(await fetchEnriched())
 	return slices.find((slice) => {
+		const branchKey = schedulerBranchKey(slice)
 		if (failed.has(slice.id)) return false
 		if (running.has(slice.id)) return false
-		if (runningBranches.has(slice.sliceBranch)) return false
+		if (runningBranches.has(branchKey)) return false
 		if (claimedThisFill.has(slice.id)) return false
-		if (claimedBranchesThisFill.has(slice.sliceBranch)) return false
+		if (claimedBranchesThisFill.has(branchKey)) return false
 		const resume = classify(slice, config)
 		return resume !== 'done' && resume !== 'blocked'
 	}) ?? null
 }
 
+function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>): string {
+	return slice.sliceBranch ?? '__unassigned-slice-branch__'
+}
+
 function launchClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>, runningBranches: Set<string>): void {
-	runningBranches.add(slice.sliceBranch)
+	const branchKey = schedulerBranchKey(slice)
+	runningBranches.add(branchKey)
 	const task = processClaim(changeId, slice, deps, failed).finally(() => {
 		running.delete(slice.id)
-		runningBranches.delete(slice.sliceBranch)
+		runningBranches.delete(branchKey)
 	})
 	running.set(slice.id, task)
 }
@@ -127,7 +133,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, claimedThisFill, claimedBranchesThisFill, state.config)
 		if (!slice) return
 		claimedThisFill.add(slice.id)
-		claimedBranchesThisFill.add(slice.sliceBranch)
+		claimedBranchesThisFill.add(schedulerBranchKey(slice))
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
 		launchClaim(state.changeId, slice, state.deps, state.failed, state.running, state.runningBranches)

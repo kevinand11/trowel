@@ -33,8 +33,8 @@ import type {
 
 type ChangeStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null; targetBranch: string; changeBranch: string }
 type ChangeStoreDraft = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & Partial<Pick<ChangeStore, 'targetBranch' | 'changeBranch'>>
-type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & { sliceBranch: string; readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
-type SliceStoreDraft = Omit<SliceStore, 'sliceBranch'> & Partial<Pick<SliceStore, 'sliceBranch'>>
+type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & { sliceBranch: string | null; readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
+type SliceStoreDraft = SliceStore
 type MutableStore = { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[]; closedAt: string | null }
 type StateFilter = { state: 'open' | 'closed' | 'all' }
 type SliceHit = { changeId: string; slice: Slice }
@@ -58,7 +58,7 @@ function applyClosedAtPatch(store: MutableStore, closedAt: SlicePatch['closedAt'
 	if (closedAt !== undefined) store.closedAt = closedAt
 }
 
-function applyStringPatch<T, K extends keyof T>(store: T, key: K, value: T[K] | undefined): void {
+function applyValuePatch<T, K extends keyof T>(store: T, key: K, value: T[K] | undefined): void {
 	if (value !== undefined) store[key] = value
 }
 
@@ -112,9 +112,12 @@ function validateChangeStore(value: unknown, source: string): ChangeStore {
 
 function validateSliceStore(value: unknown, source: string): SliceStore {
 	const store = value as Partial<SliceStore>
-	const missing = requiredStringKeys(store, ['sliceBranch'])
-	if (missing.length > 0) throw new Error(`${source} is missing required Slice branch metadata: ${missing.join(', ')}`)
+	if (!validSliceBranchValue(store.sliceBranch)) throw new Error(`${source} is missing required Slice branch metadata: sliceBranch`)
 	return store as SliceStore
+}
+
+function validSliceBranchValue(value: unknown): value is string | null {
+	return value === null || (typeof value === 'string' && value.length > 0)
 }
 
 function requiredStringKeys(value: Record<string, unknown>, keys: string[]): string[] {
@@ -200,8 +203,8 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return withMutationLock(deps.projectRoot, async () => {
 			const storePath = path.join(await findChangeDir(changeId), 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8')) as ChangeStoreDraft
-			applyStringPatch(store, 'targetBranch', patch.targetBranch)
-			applyStringPatch(store, 'changeBranch', patch.changeBranch)
+			applyValuePatch(store, 'targetBranch', patch.targetBranch)
+			applyValuePatch(store, 'changeBranch', patch.changeBranch)
 			await writeFile(storePath, jsonWithNewline(store))
 		})
 	}
@@ -221,6 +224,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				title: spec.title,
 				createdAt: new Date().toISOString(),
 				closedAt: null,
+				sliceBranch: null,
 				readyForAgent: false,
 				needsRevision: false,
 				blockedBy: spec.blockedBy,
@@ -268,7 +272,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return withMutationLock(deps.projectRoot, async () => {
 			const storePath = path.join(await findSliceDir(changeId, sliceId), 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8')) as SliceStoreDraft
-			applyStringPatch(store, 'sliceBranch', patch.sliceBranch)
+			applyValuePatch(store, 'sliceBranch', patch.sliceBranch)
 			await writeFile(storePath, jsonWithNewline(store))
 		})
 	}
@@ -739,7 +743,7 @@ if (import.meta.vitest) {
 				await f.deps.git.createLocalBranch(changeBranch, 'main')
 				await f.deps.git.pushSetUpstream(changeBranch)
 				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec', blockedBy: [] })
-				await f.deps.git.createRemoteBranch(slice.sliceBranch, changeBranch)
+				await f.deps.git.createRemoteBranch(slice.sliceBranch!, changeBranch)
 				f.calls.git.length = 0
 
 				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
@@ -999,7 +1003,8 @@ if (import.meta.vitest) {
 			expect(await exists(path.join(dir, 'README.md'))).toBe(true)
 			expect(await exists(path.join(dir, 'store.json'))).toBe(true)
 			const store = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
-			expect(store).not.toHaveProperty('sliceBranch')
+			expect(store.sliceBranch).toBeNull()
+			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: null })
 		})
 	})
 

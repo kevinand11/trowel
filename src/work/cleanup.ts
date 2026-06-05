@@ -76,7 +76,7 @@ async function cleanupLocalBranches(args: CleanupChangeArgs): Promise<void> {
 export async function cleanupLocalBranchCandidates(change: Pick<ChangeRecord, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], git: GitOps): Promise<string[]> {
 	const local = new Set(await git.listLocalBranches())
 	const candidates = new Set<string>([change.changeBranch])
-	for (const slice of slices) candidates.add(slice.sliceBranch)
+	for (const slice of slices) if (slice.sliceBranch !== null) candidates.add(slice.sliceBranch)
 	return [...candidates].filter((branch) => local.has(branch))
 }
 

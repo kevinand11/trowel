@@ -76,9 +76,9 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	}
 
 	async function createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice> {
-		// Parent linkage lives in the GitHub sub-issues API (`addSubIssue` below); no body
-		// trailer needed. See ADR `storage-behavior-separation` step 4.
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body })
+		// Parent linkage lives in the GitHub sub-issues API (`addSubIssue` below); Slice branch
+		// metadata starts as null and is filled by prepareImplement.
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithMetadata(spec.body, { sliceBranch: null }) })
 		const sliceNumber = parseGhIssueNumber(createOut)
 		const internalId = await deps.gh.getIssueInternalId(sliceNumber)
 		await deps.gh.addSubIssue(changeId, internalId)
@@ -146,12 +146,21 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return requiredMetadataString(body, source, 'changeBranch')
 	}
 
-	function requiredSliceBranch(body: string | null | undefined, source: string): string {
-		return requiredMetadataString(body, source, 'sliceBranch')
+	function requiredSliceBranch(body: string | null | undefined, source: string): string | null {
+		return requiredMetadataStringOrNull(body, source, 'sliceBranch')
+	}
+
+	function requiredMetadataStringOrNull(body: string | null | undefined, source: string, key: string): string | null {
+		const metadata = metadataFromBody(body)
+		if (metadata[key] === null) return null
+		return requiredMetadataStringValue(metadata[key], source, key)
 	}
 
 	function requiredMetadataString(body: string | null | undefined, source: string, key: string): string {
-		const value = metadataFromBody(body)[key]
+		return requiredMetadataStringValue(metadataFromBody(body)[key], source, key)
+	}
+
+	function requiredMetadataStringValue(value: unknown, source: string, key: string): string {
 		if (typeof value !== 'string' || value.length === 0) throw new Error(`${source} is missing required Trowel metadata: ${key}. Repair legacy issue storage with \`trowel repair branch-metadata --dry-run\`, review the patches, then run \`trowel repair branch-metadata --apply\`.`)
 		return value
 	}
@@ -268,7 +277,7 @@ if (import.meta.vitest) {
 	type GhOverrides = Partial<import('../../utils/gh-ops.ts').GhOps>
 	type GitCall = [string, ...string[]]
 
-	function trowelBody(body: string, metadata: Record<string, string>): string {
+	function trowelBody(body: string, metadata: Record<string, unknown>): string {
 		return `${body}\n\n<!-- trowel:${JSON.stringify(metadata)} -->`
 	}
 
@@ -593,7 +602,7 @@ if (import.meta.vitest) {
 			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec', blockedBy: [] })
 
 			expect(slice).toEqual({ id: '57', title: 'Implement Tab Parser' })
-			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: 'the slice spec' }])
+			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: trowelBody('the slice spec', { sliceBranch: null }) }])
 			expect(calls[1]).toEqual(['getIssueInternalId', '57'])
 			expect(calls[2]).toEqual(['addSubIssue', '42', '12345678'])
 			expect(calls.find((c) => c[0] === 'editIssueBody')).toBeUndefined()
@@ -769,6 +778,14 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			await expect(storage.findChange('42')).rejects.toThrow(/missing required Trowel metadata: changeBranch[\s\S]*trowel repair branch-metadata --dry-run[\s\S]*--apply/)
+		})
+
+		test('findSlices accepts null Slice branch metadata before first implementation preparation', async () => {
+			const { deps } = makeDeps({
+				listSubIssues: async () => [{ number: 57, title: 'Slice', body: trowelBody('body', { sliceBranch: null }), state: 'open', labels: [] }],
+			})
+			const storage = createIssueStorage(deps)
+			expect((await storage.findSlices('42'))[0]).toMatchObject({ id: '57', sliceBranch: null })
 		})
 
 		test('findSlices fails loudly with repair guidance when required Slice branch metadata is missing', async () => {

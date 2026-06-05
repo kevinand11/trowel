@@ -29,7 +29,6 @@ export type MakeFakesOpts = {
 	preflightFailures?: string[]
 	createChangeThrows?: Error
 	stashPopThrows?: Error
-	perSliceBranches?: boolean
 	updateChangeMetadataThrows?: Error
 	updateSliceMetadataThrows?: Error
 }
@@ -115,7 +114,6 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		},
 		stdout: (s) => calls.stdout.push(s),
 		confirm: async () => false,
-		perSliceBranches: opts.perSliceBranches ?? true,
 	}
 
 	return { rt, calls, gitState }

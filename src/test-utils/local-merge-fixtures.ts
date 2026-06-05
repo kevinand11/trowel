@@ -35,7 +35,7 @@ export async function setupLocalSliceMergeFixture(opts: {
 		change: { id: changeId, changeBranch, targetBranch: 'main', title: 'Feature', state: 'OPEN' as const, closedAt: null },
 		slice: testSlice(changeId, opts.slice),
 	}
-	if (state.slice.sliceBranch !== changeBranch) await createRemoteSliceBranch(fixture.work, state.slice.sliceBranch, changeBranch)
+	if (state.slice.sliceBranch !== null && state.slice.sliceBranch !== changeBranch) await createRemoteSliceBranch(fixture.work, state.slice.sliceBranch, changeBranch)
 
 	return {
 		projectRoot: fixture.work,
