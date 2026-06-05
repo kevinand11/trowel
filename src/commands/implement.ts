@@ -93,7 +93,7 @@ if (import.meta.vitest) {
 					gh,
 					usePrs: false,
 					runOnePhase: async (changeId, slice) => {
-						const ctx = { changeId, changeBranch: fixture.state.change.changeBranch, config: { usePrs: false, review: false, perSliceBranches: true } }
+						const ctx = { changeId, changeBranch: fixture.state.change.changeBranch, config: { usePrs: false, audit: false, perSliceBranches: true } }
 						const deps: PhaseDeps = { storage: fixture.storage, git: fixture.git, gh, log: (msg) => logs.push(msg), mergeNoVerify: false, projectRoot: fixture.projectRoot }
 						const prep = await prepareImplement(deps, slice, ctx)
 						await fixture.commitOnBranch(prep.branch, 'manual.txt', 'manual\n')
@@ -102,8 +102,9 @@ if (import.meta.vitest) {
 				})
 
 				expect(await fixture.currentBranch()).toBe('main')
-				expect(fixture.state.slice.state).toBe('done')
-				expect(logs.join('\n')).toContain(`merged ${fixture.state.slice.sliceBranch} into ${fixture.state.change.changeBranch}`)
+				expect(fixture.state.slice.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+				expect(fixture.state.slice.closedAt).toBeNull()
+				expect(logs.join('\n')).toContain('recorded implementedAt')
 			} finally {
 				await fixture.cleanup()
 			}

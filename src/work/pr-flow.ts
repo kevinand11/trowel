@@ -126,7 +126,7 @@ if (import.meta.vitest) {
 	describe('enrichSlicesFromOpenPrs', () => {
 		const makeSlice = (overrides: Partial<Slice> = {}): Slice => ({
 			id: '57', title: 'Implement Parser', body: 'b',
-			state: 'open', closedAt: null, readyForAgent: true, needsRevision: false,
+			state: 'open', closedAt: null, implementedAt: null, auditedAt: null, readyForAgent: true, needsRevision: false,
 			blockedBy: [], sliceBranch: `change-42/slice-${overrides.id ?? '57'}-implement-parser`, prState: null,
 			...overrides,
 		})

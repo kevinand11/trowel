@@ -220,6 +220,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'open',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],

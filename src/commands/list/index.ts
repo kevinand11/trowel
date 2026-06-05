@@ -60,6 +60,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'open',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
@@ -93,8 +95,10 @@ if (import.meta.vitest) {
 			expect(changeSliceSummary([
 				fakeSlice({ id: 'd', state: 'done', closedAt: 'x' }),
 				fakeSlice({ id: 'o', state: 'open' }),
+				fakeSlice({ id: 'i', state: 'implemented', implementedAt: 'x' }),
+				fakeSlice({ id: 'a', state: 'audited', implementedAt: 'x', auditedAt: 'y' }),
 				fakeSlice({ id: 'l', state: 'landed', prState: 'merged' }),
-			])).toBe('1 done · 1 landed · 1 open')
+			])).toBe('1 done · 1 landed · 1 audited · 1 implemented · 1 open')
 		})
 	})
 

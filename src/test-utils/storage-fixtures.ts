@@ -7,6 +7,8 @@ export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): C
 		body: 'spec',
 		state: 'open',
 		closedAt: null,
+		implementedAt: null,
+		auditedAt: null,
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],

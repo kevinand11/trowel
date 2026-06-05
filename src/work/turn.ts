@@ -76,6 +76,8 @@ if (import.meta.vitest) {
 			body: 'wire JWT validation',
 			state: 'open',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],

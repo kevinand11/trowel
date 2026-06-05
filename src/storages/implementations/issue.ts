@@ -6,6 +6,7 @@ import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeMetad
 type LabelPatch = { readyForAgent?: boolean; needsRevision?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
 type TrowelMetadata = Record<string, unknown>
+type ProcessMilestones = { implementedAt: string | null; auditedAt: string | null }
 
 export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage => {
 	async function closeIssueIfOpen(id: string): Promise<void> {
@@ -49,12 +50,15 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	async function sliceFromSubIssue(issue: GhSubIssue): Promise<Slice> {
 		const closedAt = issueClosedAt(issue)
+		const milestones = processMilestones(issue.body, `issue #${issue.number}`)
 		return {
 			id: String(issue.number),
 			title: issue.title,
 			body: bodyWithoutMetadata(issue.body),
 			state: closedAt === null ? 'draft' : 'done',
 			closedAt,
+			implementedAt: milestones.implementedAt,
+			auditedAt: milestones.auditedAt,
 			readyForAgent: hasIssueLabel(issue, deps.labels.readyForAgent),
 			needsRevision: hasIssueLabel(issue, deps.labels.needsRevision),
 			blockedBy: await blockedByForIssue(issue),
@@ -78,7 +82,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	async function createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice> {
 		// Parent linkage lives in the GitHub sub-issues API (`addSubIssue` below); Slice branch
 		// metadata starts as null and is filled by prepareImplement.
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithMetadata(spec.body, { sliceBranch: null }) })
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithMetadata(spec.body, { sliceBranch: null, implementedAt: null, auditedAt: null }) })
 		const sliceNumber = parseGhIssueNumber(createOut)
 		const internalId = await deps.gh.getIssueInternalId(sliceNumber)
 		await deps.gh.addSubIssue(changeId, internalId)
@@ -148,6 +152,19 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	function requiredSliceBranch(body: string | null | undefined, source: string): string | null {
 		return requiredMetadataStringOrNull(body, source, 'sliceBranch')
+	}
+
+	function processMilestones(body: string | null | undefined, source: string): ProcessMilestones {
+		return {
+			implementedAt: optionalMetadataStringOrNull(body, source, 'implementedAt'),
+			auditedAt: optionalMetadataStringOrNull(body, source, 'auditedAt'),
+		}
+	}
+
+	function optionalMetadataStringOrNull(body: string | null | undefined, source: string, key: string): string | null {
+		const metadata = metadataFromBody(body)
+		if (metadata[key] === undefined || metadata[key] === null) return null
+		return requiredMetadataStringValue(metadata[key], source, key)
 	}
 
 	function requiredMetadataStringOrNull(body: string | null | undefined, source: string, key: string): string | null {
@@ -225,8 +242,15 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	async function updateSlice(_changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
 		await applyLabelPatch(sliceId, patch)
+		await applySliceProcessMilestonePatch(sliceId, patch)
 		if (patch.blockedBy !== undefined) await replaceBlockedBy(sliceId, patch.blockedBy)
 		await applyIssueClosedAtPatch(sliceId, patch.closedAt)
+	}
+
+	async function applySliceProcessMilestonePatch(sliceId: string, patch: SlicePatch): Promise<void> {
+		const metadataPatch: TrowelMetadata = withoutUndefined({ implementedAt: patch.implementedAt, auditedAt: patch.auditedAt })
+		if (Object.keys(metadataPatch).length === 0) return
+		await updateIssueMetadata(sliceId, metadataPatch)
 	}
 
 	async function replaceBlockedBy(sliceId: string, blockedBy: string[]): Promise<void> {
@@ -324,6 +348,8 @@ if (import.meta.vitest) {
 				body: 'wire JWT',
 				state: 'open',
 				closedAt: null,
+				implementedAt: null,
+				auditedAt: null,
 				readyForAgent: true,
 				needsRevision: false,
 				blockedBy: [],
@@ -338,22 +364,17 @@ if (import.meta.vitest) {
 		}
 
 		function makeIssueFixture(overrides: GhOverrides = {}): ReturnType<typeof makeDeps> & { storage: Storage; phase: PhaseDeps } {
-			const fixture = makeDeps(overrides)
+			const fixture = makeDeps({ viewIssue: async (id) => ({ number: Number(id), title: 'Session Middleware', state: 'OPEN', body: trowelBody('wire JWT', { sliceBranch: 'change-142/slice-145-session-middleware', implementedAt: null, auditedAt: null }), closedAt: null }), ...overrides })
 			const storage = createIssueStorage(fixture.deps)
 			return { ...fixture, storage, phase: phaseDeps(fixture.deps, storage) }
 		}
 
-		function phaseContext(config = { usePrs: true, review: false, perSliceBranches: true }) {
+		function phaseContext(config = { usePrs: true, audit: false, perSliceBranches: true }) {
 			return { changeId: '142', changeBranch: 'changes-issue-142', config }
 		}
 
 		function reviewContext() {
-			return phaseContext({ usePrs: true, review: true, perSliceBranches: true })
-		}
-
-		function expectClosedWithoutDraftPr(calls: Array<[string, ...unknown[]]>): void {
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
-			expect(calls).toContainEqual(['closeIssue', '145'])
+			return phaseContext({ usePrs: true, audit: true, perSliceBranches: true })
 		}
 
 		function expectNoPhaseSideEffects(outcome: string, gitCalls: GitCall[], calls: Array<[string, ...unknown[]]>): void {
@@ -371,47 +392,34 @@ if (import.meta.vitest) {
 			expect(gitCalls).toContainEqual(['fetch', 'change-142/slice-145-session-middleware'])
 		})
 
-		test('landImplement + usePrs=true + ready: pushes slice branch and opens a draft PR; returns progress', async () => {
+		test('landImplement + ready: pushes slice branch and records implementedAt; returns progress', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
 			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext())
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'change-142/slice-145-session-middleware'])
-			expect(calls).toContainEqual([
-				'createDraftPr',
-				{
-					title: 'Session Middleware',
-					head: 'change-142/slice-145-session-middleware',
-					base: 'changes-issue-142',
-					body: 'Closes #145',
-				},
-			])
+			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
+			expect(calls.map((c) => c[0])).not.toContain('createDraftPr')
 		})
 
-		test('landImplement + usePrs=false + ready: pushes slice, checks out Change branch, merges --no-ff, pushes Change branch, retains slice branch, closes sub-issue; returns done', async () => {
+		test('landImplement + usePrs=false + ready: records implementedAt without merging; returns progress', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: true }))
-			expect(outcome).toBe('done')
-			expect(gitCalls).toEqual([
-				['push', 'change-142/slice-145-session-middleware'],
-				['checkout', 'changes-issue-142'],
-				['mergeNoFf', 'change-142/slice-145-session-middleware'],
-				['push', 'changes-issue-142'],
-			])
-			expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
-			expectClosedWithoutDraftPr(calls)
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, audit: false, perSliceBranches: true }))
+			expect(outcome).toBe('progress')
+			expect(gitCalls).toEqual([['push', 'change-142/slice-145-session-middleware']])
+			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
 		})
 
-		test('landImplement + stored Slice branch equals Change branch + ready: pushes Change branch directly, closes sub-issue via updateSlice; returns done', async () => {
+		test('landImplement + stored Slice branch equals Change branch + ready: pushes Change branch and records implementedAt; returns progress', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
-			expect(outcome).toBe('done')
+			const outcome = await landImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, audit: false, perSliceBranches: false }))
+			expect(outcome).toBe('progress')
 			expect(gitCalls).toEqual([['push', 'changes-issue-142']])
-			expectClosedWithoutDraftPr(calls)
+			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
 		})
 
 		test('prepareImplement + stored Slice branch equals Change branch: runs on stored branch and fetches it', async () => {
 			const { phase, gitCalls } = makeIssueFixture()
-			const prep = await prepareImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
+			const prep = await prepareImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), phaseContext({ usePrs: false, audit: false, perSliceBranches: false }))
 			expect(prep.branch).toBe('changes-issue-142')
 			expect(gitCalls).toEqual([['fetch', 'changes-issue-142']])
 		})
@@ -602,7 +610,7 @@ if (import.meta.vitest) {
 			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec', blockedBy: [] })
 
 			expect(slice).toEqual({ id: '57', title: 'Implement Tab Parser' })
-			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: trowelBody('the slice spec', { sliceBranch: null }) }])
+			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: trowelBody('the slice spec', { sliceBranch: null, implementedAt: null, auditedAt: null }) }])
 			expect(calls[1]).toEqual(['getIssueInternalId', '57'])
 			expect(calls[2]).toEqual(['addSubIssue', '42', '12345678'])
 			expect(calls.find((c) => c[0] === 'editIssueBody')).toBeUndefined()
@@ -645,8 +653,8 @@ if (import.meta.vitest) {
 			const slices = classifySlices(await storage.findSlices('42'))
 			expect(calls[0]).toEqual(['listSubIssues', '42'])
 			expect(slices).toEqual([
-				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: 'change-42/slice-57-implement-parser', prState: null },
-				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'done', closedAt: '2026-06-04T00:00:00Z', readyForAgent: false, needsRevision: true, blockedBy: [], sliceBranch: 'change-42/slice-58-wire-cli', prState: null },
+				{ id: '57', title: 'Implement Parser', body: 'parser spec', state: 'open', closedAt: null, implementedAt: null, auditedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: 'change-42/slice-57-implement-parser', prState: null },
+				{ id: '58', title: 'Wire CLI', body: 'cli spec', state: 'done', closedAt: '2026-06-04T00:00:00Z', implementedAt: null, auditedAt: null, readyForAgent: false, needsRevision: true, blockedBy: [], sliceBranch: 'change-42/slice-58-wire-cli', prState: null },
 			])
 		})
 

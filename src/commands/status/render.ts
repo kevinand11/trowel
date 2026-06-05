@@ -42,6 +42,8 @@ export function renderStatusSlice(change: ChangeRecord, slice: ClassifiedSlice, 
 	lines.push(`Change:  ${change.id}  ${change.title}`)
 	lines.push(`State:   ${slice.state}`)
 	lines.push(`closed-at:       ${slice.closedAt ?? '(none)'}`)
+	lines.push(`implemented-at:  ${slice.implementedAt ?? '(none)'}`)
+	lines.push(`audited-at:      ${slice.auditedAt ?? '(none)'}`)
 	lines.push(`ready-for-agent: ${slice.readyForAgent}`)
 	lines.push(`needs-revision:  ${slice.needsRevision}`)
 	lines.push(...blockedByLines(slice, siblings))

@@ -53,7 +53,7 @@ export type ChangeRecord = {
  * Populated by PR-state enrichment after storage reads raw Slice records.
  */
 export type SlicePrState = 'draft' | 'ready' | 'merged' | null
-export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'needs-revision' | 'landed' | 'done'
+export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'implemented' | 'audited' | 'needs-revision' | 'landed' | 'done'
 
 export type Slice = {
 	id: string
@@ -63,6 +63,10 @@ export type Slice = {
 	state: SliceState
 	/** Raw terminal timestamp. `null` means the Slice has not been finalized. */
 	closedAt: string | null
+	/** Implementer success milestone. `null` means the Implementer has not declared ready. */
+	implementedAt: string | null
+	/** Auditor success milestone. `null` means Auditing has not passed. */
+	auditedAt: string | null
 	readyForAgent: boolean
 	needsRevision: boolean
 	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
@@ -75,7 +79,7 @@ export type Slice = {
 
 export type ClassifiedSlice = Slice
 
-export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'closedAt' | 'blockedBy'>>
+export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'closedAt' | 'implementedAt' | 'auditedAt' | 'blockedBy'>>
 export type CreatedChange = Pick<ChangeRecord, 'id' | 'title'>
 export type CreatedSlice = Pick<Slice, 'id' | 'title'>
 export type ChangeMetadataPatch = Partial<Pick<ChangeRecord, 'targetBranch' | 'changeBranch'>>
@@ -105,17 +109,18 @@ export type PreparedPhase = {
 /**
  * Loop dispatch state for one slice. Computed by `classify` in `src/work/classify.ts`.
  *
- * - `'done'` — slice has nothing more for the loop to do (done, draft, PR ready,
- *   or PR draft with `config.review: false`). The loop skips it.
+ * - `'done'` — slice has nothing more for the loop to do (done, draft, or PR ready). The loop skips it.
  * - `'blocked'` — at least one unfinished blocker exists. Loop skips; will reconsider once a blocker closes.
  * - `'finalize'` — record `closedAt` for a landed Slice.
- * - `'implement'` — run the implementer sandbox next.
- * - `'review'` — run the reviewer sandbox next (issue storage only; only reachable with `usePrs && review`).
- * - `'address'` — run the addresser sandbox next (issue storage only; only reachable with `usePrs && review`).
+ * - `'implement'` — run the Implementer Turn next.
+ * - `'audit'` — run the Auditor Turn next for an implemented distinct Slice branch.
+ * - `'integrate'` — host-integrate an implemented/audited Slice.
+ * - `'review'` — legacy draft-PR reviewer path.
+ * - `'address'` — run the addresser sandbox next for PR review feedback.
  */
-export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'review' | 'address'
+export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'audit' | 'integrate' | 'review' | 'address'
 
-export type ClassifySliceConfig = { usePrs: boolean; review: boolean; perSliceBranches: boolean }
+export type ClassifySliceConfig = { usePrs: boolean; audit: boolean; perSliceBranches: boolean }
 
 /**
  * Per-loop-invocation context passed to storage methods that need to act against a specific Change's
