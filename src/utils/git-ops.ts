@@ -23,6 +23,7 @@ export type GitOps = {
 	// file storage's createChange uses these for Change branch creation
 	createLocalBranch(name: string, baseBranch: string): Promise<void>
 	pushSetUpstream(branch: string): Promise<void>
+	fastForward(ref: string): Promise<void>
 	// host-side close cleanup (consumed by `src/commands/abort/index.ts`)
 	currentBranch(): Promise<string>
 	baseBranch(): Promise<string>
@@ -81,6 +82,7 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		createRemoteBranch: forbiddenGitMutation('createRemoteBranch'),
 		createLocalBranch: forbiddenGitMutation('createLocalBranch'),
 		pushSetUpstream: forbiddenGitMutation('pushSetUpstream'),
+		fastForward: forbiddenGitMutation('fastForward'),
 		currentBranch: git.currentBranch,
 		baseBranch: git.baseBranch,
 		branchExists: git.branchExists,
@@ -169,6 +171,9 @@ export function createRepoGit(projectRoot: string): GitOps {
 		},
 		pushSetUpstream: async (b) => {
 			await gitOrThrow(['push', '-q', '-u', 'origin', b])
+		},
+		fastForward: async (ref) => {
+			await gitOrThrow(['merge', '--ff-only', '-q', ref])
 		},
 		currentBranch: async () => {
 			const r = await tryExec('git', ['-C', projectRoot, 'rev-parse', '--abbrev-ref', 'HEAD'])

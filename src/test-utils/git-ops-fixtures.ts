@@ -30,6 +30,7 @@ export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 		createRemoteBranch: noop,
 		createLocalBranch: noop,
 		pushSetUpstream: noop,
+		fastForward: noop,
 		resolveRef: async (ref) => ref,
 		checkoutDetached: noop,
 		resetHard: noop,
