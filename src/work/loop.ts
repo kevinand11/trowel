@@ -44,10 +44,11 @@ async function findNextActionableSlice(
 	claimedThisFill: Set<string>,
 	claimedBranchesThisFill: Set<string>,
 	config: ClassifySliceConfig,
+	changeBranch: string,
 ): Promise<ClassifiedSlice | null> {
 	const slices = classifySlices(await fetchEnriched())
 	return slices.find((slice) => {
-		const branchKey = schedulerBranchKey(slice)
+		const branchKey = schedulerBranchKey(slice, { perSliceBranches: config.perSliceBranches, changeBranch })
 		if (failed.has(slice.id)) return false
 		if (running.has(slice.id)) return false
 		if (runningBranches.has(branchKey)) return false
@@ -58,12 +59,13 @@ async function findNextActionableSlice(
 	}) ?? null
 }
 
-function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>): string {
-	return slice.sliceBranch ?? '__unassigned-slice-branch__'
+function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>, opts: { perSliceBranches: boolean; changeBranch: string }): string {
+	if (slice.sliceBranch !== null) return slice.sliceBranch
+	return opts.perSliceBranches ? '__unassigned-slice-branch__' : opts.changeBranch
 }
 
 function launchClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>, runningBranches: Set<string>): void {
-	const branchKey = schedulerBranchKey(slice)
+	const branchKey = schedulerBranchKey(slice, { perSliceBranches: deps.config.perSliceBranches, changeBranch: deps.changeBranch })
 	runningBranches.add(branchKey)
 	const task = processClaim(changeId, slice, deps, failed).finally(() => {
 		running.delete(slice.id)
@@ -130,10 +132,10 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 	const claimedThisFill = new Set<string>()
 	const claimedBranchesThisFill = new Set<string>()
 	while (state.running.size < state.limit) {
-		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, claimedThisFill, claimedBranchesThisFill, state.config)
+		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, claimedThisFill, claimedBranchesThisFill, state.config, state.deps.changeBranch)
 		if (!slice) return
 		claimedThisFill.add(slice.id)
-		claimedBranchesThisFill.add(schedulerBranchKey(slice))
+		claimedBranchesThisFill.add(schedulerBranchKey(slice, { perSliceBranches: state.config.perSliceBranches, changeBranch: state.deps.changeBranch }))
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
 		launchClaim(state.changeId, slice, state.deps, state.failed, state.running, state.runningBranches)
@@ -142,7 +144,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 
 async function stopIfIdle(state: WorkerLoopState): Promise<boolean> {
 	if (state.running.size > 0) return false
-	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, new Set(), new Set(), state.config)
+	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, new Set(), new Set(), state.config, state.deps.changeBranch)
 	if (remaining) return false
 	state.deps.log(`${state.tag} no actionable slices; exiting after ${state.claims} claim(s)`)
 	return true
@@ -171,7 +173,10 @@ if (import.meta.vitest) {
 			updateSlice: async (_p, sliceId, patch) => {
 				applyTestSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
 			},
-			updateSliceMetadata: async () => {},
+			updateSliceMetadata: async (_changeId, sliceId, patch) => {
+				const slice = state.slices.find((x) => x.id === sliceId)
+				if (slice && patch.sliceBranch !== undefined) slice.sliceBranch = patch.sliceBranch
+			},
 			...overrides,
 		}
 	}
@@ -407,6 +412,25 @@ if (import.meta.vitest) {
 		test('scheduler serializes Slices that share the same stored Slice branch even when config allows 3', async () => {
 			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id, sliceBranch: 'change-p1-shared' }))
 			expect(await peakConcurrentImplementers(slices, 3, false)).toBe(1)
+		})
+
+		test('scheduler treats unassigned Slices as the Change branch in shared-branch mode', async () => {
+			const assigned = makeSlice({ id: 'assigned', sliceBranch: 'change-branch' })
+			const unassigned = makeSlice({ id: 'unassigned', sliceBranch: null })
+			const storage = makeStorage({ slices: [assigned, unassigned] })
+			let live = 0
+			let peak = 0
+			await runLoop('p1', makeDeps(storage, {
+				spawnTurn: async () => {
+					live += 1
+					peak = Math.max(peak, live)
+					await new Promise((resolve) => setTimeout(resolve, 5))
+					live -= 1
+					return { verdict: 'ready', commits: 1 }
+				},
+				config: { usePrs: false, review: false, perSliceBranches: false, maxConcurrent: 2, mergeNoVerify: false },
+			}))
+			expect(peak).toBe(1)
 		})
 
 		test('scheduler honors config.maxConcurrent for distinct stored Slice branches', async () => {
