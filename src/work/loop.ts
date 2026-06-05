@@ -145,7 +145,7 @@ if (import.meta.vitest) {
 
 	function makeStorage(state: FakeState, overrides: Partial<Storage> = {}): Storage {
 		return {
-			createChange: async () => ({ id: 'x', changeBranch: 'x' }),
+			createChange: async () => ({ id: 'x', title: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
 			closeChange: async () => {},

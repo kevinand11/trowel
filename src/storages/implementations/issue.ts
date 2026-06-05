@@ -1,8 +1,7 @@
 import { parseGhIssueNumber } from '../../utils/gh-ops.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
-import { slug as slugify } from '../../utils/slug.ts'
 import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeMetadataPatch, ChangeRecord, ChangeSpec, ChangeSummary, Slice, SliceMetadataPatch, SlicePatch, SliceSpec } from '../types.ts'
+import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeMetadataPatch, ChangeRecord, ChangeSpec, ChangeSummary, CreatedChange, CreatedSlice, Slice, SliceMetadataPatch, SlicePatch, SliceSpec } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean; needsRevision?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
@@ -29,15 +28,10 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 	function labelPatchOptions(label: string, value: boolean): { add: string[] } | { remove: string[] } {
 		return value ? { add: [label] } : { remove: [label] }
 	}
-	async function createChange(spec: ChangeSpec): Promise<{ id: string; changeBranch: string }> {
-		const targetBranch = spec.targetBranch ?? await deps.git.baseBranch()
-		const createOut = await deps.gh.createIssue({ title: spec.title, body: bodyWithMetadata(spec.body, { targetBranch }), labels: [deps.labels.change] })
+	async function createChange(spec: ChangeSpec): Promise<CreatedChange> {
+		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body, labels: [deps.labels.change] })
 		const id = parseGhIssueNumber(createOut)
-		const changeBranch = changeBranchFor(id, spec.title)
-		await deps.git.createLocalBranch(changeBranch, targetBranch)
-		await deps.git.pushSetUpstream(changeBranch)
-		await deps.gh.editIssueBody(id, bodyWithMetadata(spec.body, { targetBranch, changeBranch }))
-		return { id, changeBranch }
+		return { id, title: spec.title }
 	}
 
 	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
@@ -81,13 +75,11 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 		return (issue.issue_dependencies_summary?.total_blocked_by ?? 0) > 0 ? fetchBlockedBy(issue.number) : []
 	}
 
-	async function createSlice(changeId: string, spec: SliceSpec): Promise<Slice> {
+	async function createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice> {
 		// Parent linkage lives in the GitHub sub-issues API (`addSubIssue` below); no body
 		// trailer needed. See ADR `storage-behavior-separation` step 4.
 		const createOut = await deps.gh.createIssue({ title: spec.title, body: spec.body })
 		const sliceNumber = parseGhIssueNumber(createOut)
-		const sliceBranch = sliceBranchFor(changeId, sliceNumber, spec.title)
-		await deps.gh.editIssueBody(sliceNumber, bodyWithMetadata(spec.body, { sliceBranch }))
 		const internalId = await deps.gh.getIssueInternalId(sliceNumber)
 		await deps.gh.addSubIssue(changeId, internalId)
 
@@ -96,18 +88,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			await deps.gh.addBlockedBy(sliceNumber, blockerInternalId)
 		}
 
-		return classifySlices([{
-			id: sliceNumber,
-			title: spec.title,
-			body: spec.body,
-			state: 'draft',
-			closedAt: null,
-			readyForAgent: false,
-			needsRevision: false,
-			blockedBy: [...spec.blockedBy],
-			sliceBranch,
-			prState: null,
-		}])[0]!
+		return { id: sliceNumber, title: spec.title }
 	}
 
 	async function closeChange(id: string): Promise<void> {
@@ -126,14 +107,6 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 			state: closedAt === null && issue.state.toUpperCase() === 'OPEN' ? 'OPEN' : 'CLOSED',
 			closedAt,
 		}
-	}
-
-	function changeBranchFor(id: string, title: string): string {
-		return `change-${id}-${slugify(title)}`
-	}
-
-	function sliceBranchFor(changeId: string, sliceId: string, title: string): string {
-		return `change-${changeId}/slice-${sliceId}-${slugify(title)}`
 	}
 
 	async function listIssueSummaries(label: string, opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]> {
@@ -519,23 +492,19 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: createChange', () => {
-		test('creates the issue then creates the Change branch locally and pushes it upstream', async () => {
+		test('creates the issue record and returns allocated id+title without branch metadata', async () => {
 			const { deps, calls, gitCalls } = makeDeps({
 				createIssue: async () => 'https://github.com/o/r/issues/42\n',
 			})
 			const storage = createIssueStorage(deps)
 			const result = await storage.createChange({ title: 'Fix Tabs on macOS', body: 'the spec' })
-			expect(result).toEqual({ id: '42', changeBranch: 'change-42-fix-tabs-on-macos' })
-			expect(calls[0]).toEqual(['createIssue', { title: 'Fix Tabs on macOS', body: expect.stringContaining('the spec'), labels: ['change'] }])
-			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"develop"')
-			expect(calls).toContainEqual(['editIssueBody', '42', expect.stringContaining('"changeBranch":"change-42-fix-tabs-on-macos"')])
-			expect(gitCalls).toEqual([
-				['createLocalBranch', 'change-42-fix-tabs-on-macos', 'develop'],
-				['pushSetUpstream', 'change-42-fix-tabs-on-macos'],
-			])
+			expect(result).toEqual({ id: '42', title: 'Fix Tabs on macOS' })
+			expect(calls[0]).toEqual(['createIssue', { title: 'Fix Tabs on macOS', body: 'the spec', labels: ['change'] }])
+			expect(calls.find((c) => c[0] === 'editIssueBody')).toBeUndefined()
+			expect(gitCalls).toEqual([])
 		})
 
-		test('stores explicit targetBranch metadata and creates the Change branch from it', async () => {
+		test('createChange ignores targetBranch because branch metadata is updated after branch creation', async () => {
 			const { deps, calls, gitCalls } = makeDeps({
 				createIssue: async () => 'https://github.com/o/r/issues/99\n',
 			})
@@ -543,12 +512,9 @@ if (import.meta.vitest) {
 
 			const result = await storage.createChange({ title: 'Release Feature', body: 'body', targetBranch: 'release/1.2' })
 
-			expect(result).toEqual({ id: '99', changeBranch: 'change-99-release-feature' })
-			expect((calls[0]![1] as { body: string }).body).toContain('"targetBranch":"release/1.2"')
-			expect(gitCalls).toEqual([
-				['createLocalBranch', 'change-99-release-feature', 'release/1.2'],
-				['pushSetUpstream', 'change-99-release-feature'],
-			])
+			expect(result).toEqual({ id: '99', title: 'Release Feature' })
+			expect(calls[0]).toEqual(['createIssue', { title: 'Release Feature', body: 'body', labels: ['change'] }])
+			expect(gitCalls).toEqual([])
 		})
 
 		test('applies configured labels.change to the createIssue call', async () => {
@@ -558,15 +524,12 @@ if (import.meta.vitest) {
 			deps.labels.change = 'roadmap'
 			const storage = createIssueStorage(deps)
 			const result = await storage.createChange({ title: 'Add ORM', body: 'b' })
-			expect(result).toEqual({ id: '7', changeBranch: 'change-7-add-orm' })
+			expect(result).toEqual({ id: '7', title: 'Add ORM' })
 			const [name, args] = calls[0]!
 			expect(name).toBe('createIssue')
 			expect((args as { labels: string[] }).labels).toEqual(['roadmap'])
-			expect((args as { body: string }).body).toContain('"targetBranch":"develop"')
-			expect(gitCalls).toEqual([
-				['createLocalBranch', 'change-7-add-orm', 'develop'],
-				['pushSetUpstream', 'change-7-add-orm'],
-			])
+			expect((args as { body: string }).body).toBe('b')
+			expect(gitCalls).toEqual([])
 		})
 
 		test('throws if gh createIssue fails', async () => {
@@ -621,7 +584,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: createSlice', () => {
-		test('creates issue, resolves internal id, links as sub-issue, returns Slice', async () => {
+		test('creates issue, resolves internal id, links as sub-issue, returns id+title', async () => {
 			const { deps, calls } = makeDeps({
 				createIssue: async () => 'https://github.com/o/r/issues/57\n',
 				getIssueInternalId: async () => '12345678',
@@ -629,22 +592,11 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec', blockedBy: [] })
 
-			expect(slice).toEqual({
-				id: '57',
-				title: 'Implement Tab Parser',
-				body: 'the slice spec',
-				state: 'draft',
-				closedAt: null,
-				readyForAgent: false,
-				needsRevision: false,
-				blockedBy: [],
-				sliceBranch: 'change-42/slice-57-implement-tab-parser',
-				prState: null,
-			})
+			expect(slice).toEqual({ id: '57', title: 'Implement Tab Parser' })
 			expect(calls[0]).toEqual(['createIssue', { title: 'Implement Tab Parser', body: 'the slice spec' }])
-			expect(calls[1]).toEqual(['editIssueBody', '57', expect.stringContaining('"sliceBranch":"change-42/slice-57-implement-tab-parser"')])
-			expect(calls[2]).toEqual(['getIssueInternalId', '57'])
-			expect(calls[3]).toEqual(['addSubIssue', '42', '12345678'])
+			expect(calls[1]).toEqual(['getIssueInternalId', '57'])
+			expect(calls[2]).toEqual(['addSubIssue', '42', '12345678'])
+			expect(calls.find((c) => c[0] === 'editIssueBody')).toBeUndefined()
 		})
 	})
 
@@ -657,7 +609,7 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'spec', blockedBy: ['99'] })
-			expect(slice.blockedBy).toEqual(['99'])
+			expect(slice).toEqual({ id: '57', title: 'Implement Tab Parser' })
 			expect(calls).toContainEqual(['addBlockedBy', '57', '999000'])
 		})
 

@@ -106,7 +106,7 @@ async function closeOpenSlicePrs(changeId: string, slices: ClassifiedSlice[], rt
 }
 
 function sliceBranchPrefix(changeId: string): string {
-	return `change-${changeId}/slice-`
+	return `${changeId}/`
 }
 
 async function closeOpenCloseOutPr(change: ChangeRecord, rt: AbortRuntime): Promise<void> {

@@ -337,7 +337,7 @@ if (import.meta.vitest) {
 			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 		}
 		const storage: Storage = {
-			createChange: async () => ({ id: 'p', changeBranch: 'b' }),
+			createChange: async () => ({ id: 'p', title: 'p' }),
 			findChange: async () => null,
 			listChanges: async () => [],
 			closeChange: async () => {},

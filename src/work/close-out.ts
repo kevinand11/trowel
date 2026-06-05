@@ -142,7 +142,7 @@ if (import.meta.vitest) {
 	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { change: string[] } } {
 		const closed = { change: [] as string[] }
 		const storage: Storage = {
-			createChange: async () => ({ id: 'x', changeBranch: 'x' }),
+			createChange: async () => ({ id: 'x', title: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
 			closeChange: async (id) => { closed.change.push(id) },

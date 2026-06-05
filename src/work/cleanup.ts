@@ -70,7 +70,7 @@ async function cleanupLocalBranchSet(change: Pick<ChangeRecord, 'id' | 'changeBr
 }
 
 function sliceBranchPrefix(changeId: string): string {
-	return `change-${changeId}/slice-`
+	return `${changeId}/`
 }
 
 async function branchDeletionAllowedByPolicy(changeId: string, branches: string[], rt: CleanupRuntime): Promise<boolean> {
@@ -123,7 +123,7 @@ if (import.meta.vitest) {
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
 	function fakeSlice(id: string, title: string): Pick<Slice, 'id' | 'sliceBranch'> {
-		return { id, sliceBranch: `change-42/slice-${id}-${title.toLowerCase()}` }
+		return { id, sliceBranch: `42/${id}-${title.toLowerCase()}` }
 	}
 
 	type CleanupGitState = {
@@ -226,7 +226,7 @@ if (import.meta.vitest) {
 		})
 
 		test('prompt policy asks once for the full local branch set', async () => {
-			const localBranches = new Set(['change-42-x', 'change-42/slice-s1-a', 'change-42/slice-stale-old-title', 'unrelated'])
+			const localBranches = new Set(['change-42-x', '42/s1-a', '42/stale-old-title', 'unrelated'])
 			const { git, calls } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
 			const prompts: string[] = []
 
@@ -245,8 +245,8 @@ if (import.meta.vitest) {
 
 			expect(prompts).toHaveLength(1)
 			expect(prompts[0]).toContain('change-42-x')
-			expect(prompts[0]).toContain('change-42/slice-s1-a')
-			expect(prompts[0]).toContain('change-42/slice-stale-old-title')
+			expect(prompts[0]).toContain('42/s1-a')
+			expect(prompts[0]).toContain('42/stale-old-title')
 			expect(prompts[0]).not.toContain('unrelated')
 			expect(calls.find((call) => call.startsWith('deleteBranch'))).toBeUndefined()
 		})
@@ -282,7 +282,7 @@ if (import.meta.vitest) {
 
 		test('skips and reports local branches with commits not present on their remote counterpart', async () => {
 			const changeBranch = 'change-42-x'
-			const sliceBranch = 'change-42/slice-s1-a'
+			const sliceBranch = '42/s1-a'
 			const localBranches = new Set([changeBranch, sliceBranch])
 			const { git, calls } = fakeCleanupGit({
 				current: 'main',
