@@ -45,7 +45,7 @@ type ChangeWorkState = { change: ChangeRecord; slices: ClassifiedSlice[]; state:
 async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeWorkState> {
 	const change = await deps.storage.findChange(entity.id)
 	if (!change) throw new Error(`Change '${entity.id}' not found`)
-	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs })
+	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs, needsRevisionLabel: deps.config.needsRevisionLabel })
 	const slices = await reader.findSlices(entity.id)
 	const state = await classifyChange(change, slices, { gh: deps.gh, git: deps.git })
 	return { change, slices, state }

@@ -89,7 +89,7 @@ async function runSlicePhase(role: Role, slice: ClassifiedSlice, ctx: LoopPhaseC
 }
 
 function phaseDepsFor(deps: LoopDeps): PhaseDeps {
-	return { storage: deps.storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: deps.config.mergeNoVerify, projectRoot: deps.projectRoot }
+	return { storage: deps.storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: deps.config.mergeNoVerify, projectRoot: deps.projectRoot, needsRevisionLabel: deps.config.needsRevisionLabel }
 }
 
 function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: LoopPhaseCtx) {

@@ -22,6 +22,7 @@ export async function runManualSliceCommand(opts: {
 				storage: wiring.storage,
 				gh: wiring.gh,
 				usePrs: wiring.config.ship.pr,
+				needsRevisionLabel: wiring.config.labels.needsRevision,
 				runOnePhase: (changeId, slice) => wiring.runOnePhase(changeId, slice, opts.role),
 			},
 			requiredState: opts.requiredState,

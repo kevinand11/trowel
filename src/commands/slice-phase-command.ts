@@ -6,6 +6,7 @@ export type SlicePhaseRuntime = {
 	storage: Storage
 	gh: GhOps
 	usePrs: boolean
+	needsRevisionLabel?: string
 	runOnePhase: (changeId: string, slice: Slice) => Promise<void>
 }
 
@@ -18,7 +19,7 @@ export async function runSlicePhaseCommand(opts: {
 	const hit = await opts.runtime.storage.findSlice(opts.sliceId)
 	if (!hit) throw new Error(`slice '${opts.sliceId}' not found`)
 	const { changeId } = hit
-	const siblings = await classifySlicesForChange({ storage: opts.runtime.storage, gh: opts.runtime.gh, changeId, usePrs: opts.runtime.usePrs })
+	const siblings = await classifySlicesForChange({ storage: opts.runtime.storage, gh: opts.runtime.gh, changeId, usePrs: opts.runtime.usePrs, needsRevisionLabel: opts.runtime.needsRevisionLabel })
 	const slice = siblings.find((s) => s.id === opts.sliceId)
 	if (!slice) throw new Error(`slice '${opts.sliceId}' disappeared between findSlice and findSlices`)
 	if (slice.state !== opts.requiredState) {

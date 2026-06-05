@@ -22,21 +22,21 @@ function assignedBranches(slices: Slice[], changeId: string): string[] {
  * Enrich non-finalized slices with their `prState`. Open PRs are fetched in one bulk call;
  * branches without an open PR are checked for a merged PR so the Slice can enter `landed`.
  */
-export async function enrichSlicesFromOpenPrs(gh: GhOps, changeId: string, slices: Slice[]): Promise<Slice[]> {
+export async function enrichSlicesFromOpenPrs(gh: GhOps, changeId: string, slices: Slice[], opts: { needsRevisionLabel?: string } = {}): Promise<Slice[]> {
 	const activeSlices = slices.filter((s) => s.closedAt === null)
 	if (activeSlices.length === 0) return slices
 	const branches = assignedBranches(activeSlices, changeId)
 	const openPrsByBranch = await getOpenPrsByBranch(gh, branches)
-	return Promise.all(slices.map(async (s) => enrichSliceFromPrs(gh, changeId, s, openPrsByBranch)))
+	return Promise.all(slices.map(async (s) => enrichSliceFromPrs(gh, changeId, s, openPrsByBranch, opts)))
 }
 
-async function enrichSliceFromPrs(gh: GhOps, changeId: string, slice: Slice, openPrsByBranch: Map<string, OpenPrForState>): Promise<Slice> {
+async function enrichSliceFromPrs(gh: GhOps, changeId: string, slice: Slice, openPrsByBranch: Map<string, OpenPrForState>, opts: { needsRevisionLabel?: string }): Promise<Slice> {
 	if (slice.closedAt !== null) return slice
 	const branch = sliceBranchFor(changeId, slice)
-	if (branch === null) return { ...slice, prState: null }
+	if (branch === null) return { ...slice, prState: null, needsRevision: false }
 	const openPr = openPrsByBranch.get(branch)
-	if (openPr !== undefined) return enrichSliceFromOpenPr(slice, openPr)
-	return { ...slice, prState: await mergedPrState(gh, branch) }
+	if (openPr !== undefined) return enrichSliceFromOpenPr(slice, openPr, opts)
+	return { ...slice, prState: await mergedPrState(gh, branch), needsRevision: false }
 }
 
 /**
@@ -68,16 +68,20 @@ function initialPrStateMap(branches: string[]): Map<string, SlicePrState> {
 
 type OpenPrForState = Awaited<ReturnType<GhOps['listOpenPrs']>>[number]
 
-function enrichSliceFromOpenPr(slice: Slice, pr: OpenPrForState): Slice {
-	return { ...slice, prState: prStateForOpenPr(pr), needsRevision: slice.needsRevision || hasNeedsRevisionPrLabel(pr) }
+function enrichSliceFromOpenPr(slice: Slice, pr: OpenPrForState, opts: { needsRevisionLabel?: string }): Slice {
+	return { ...slice, prState: prStateForOpenPr(pr), needsRevision: prNeedsRevision(pr, opts.needsRevisionLabel ?? 'needs-revision') }
 }
 
 function prStateForOpenPr(pr: OpenPrForState): SlicePrState {
 	return pr.isDraft ? 'draft' : 'ready'
 }
 
-function hasNeedsRevisionPrLabel(pr: OpenPrForState): boolean {
-	return pr.labels?.some((label) => label.name === 'needs-revision') ?? false
+function prNeedsRevision(pr: OpenPrForState, label: string): boolean {
+	return hasNeedsRevisionPrLabel(pr, label) || pr.reviewDecision === 'CHANGES_REQUESTED'
+}
+
+function hasNeedsRevisionPrLabel(pr: OpenPrForState, label: string): boolean {
+	return pr.labels?.some((entry) => entry.name === label) ?? false
 }
 
 /**
@@ -158,12 +162,28 @@ if (import.meta.vitest) {
 			expect(out[0]!.prState).toBe('merged')
 		})
 
-		test('copies an open PR needs-revision label into slice needsRevision', async () => {
+		test('derives needsRevision from an open PR needs-revision label', async () => {
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 1, headRefName: 'change-42/slice-57-implement-parser', isDraft: false, labels: [{ name: 'needs-revision' }] }],
 			})
 			const out = await enrichSlicesFromOpenPrs(gh, '42', [makeSlice({ id: '57', title: 'Implement Parser', needsRevision: false })])
 			expect(out[0]!).toMatchObject({ prState: 'ready', needsRevision: true })
+		})
+
+		test('derives needsRevision from an open PR review decision', async () => {
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 1, headRefName: 'change-42/slice-57-implement-parser', isDraft: false, reviewDecision: 'CHANGES_REQUESTED' }],
+			})
+			const out = await enrichSlicesFromOpenPrs(gh, '42', [makeSlice({ id: '57', title: 'Implement Parser', needsRevision: false })])
+			expect(out[0]!).toMatchObject({ prState: 'ready', needsRevision: true })
+		})
+
+		test('clears stale storage needsRevision when no PR review signal exists', async () => {
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 1, headRefName: 'change-42/slice-57-implement-parser', isDraft: false, labels: [] }],
+			})
+			const out = await enrichSlicesFromOpenPrs(gh, '42', [makeSlice({ id: '57', title: 'Implement Parser', needsRevision: true })])
+			expect(out[0]!).toMatchObject({ prState: 'ready', needsRevision: false })
 		})
 
 		test('skips gh calls when no active slices exist', async () => {

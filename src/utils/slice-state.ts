@@ -21,11 +21,12 @@ type ClassifyContext = {
  *
  *   done             closedAt !== null
  *   landed           prState === 'merged'
- *   needs-revision   needsRevision
- *   in-flight        open draft/ready PR
+ *   needs-revision   needsRevision (derived from PR review surface)
+ *   awaiting-review  open non-draft PR
  *   blocked          unmetDepIds.length > 0
  *   audited          auditedAt !== null
  *   implemented      implementedAt !== null
+ *   in-flight        open draft PR with no process milestone
  *   open             readyForAgent
  *   draft            catch-all
  */
@@ -38,10 +39,11 @@ const SLICE_STATE_RULES: SliceStateRule[] = [
 	{ state: 'done', matches: (s) => s.closedAt !== null },
 	{ state: 'landed', matches: (s) => s.prState === 'merged' },
 	{ state: 'needs-revision', matches: (s) => s.needsRevision },
-	{ state: 'in-flight', matches: (s) => s.prState === 'draft' || s.prState === 'ready' },
+	{ state: 'awaiting-review', matches: (s) => s.prState === 'ready' },
 	{ state: 'blocked', matches: (_s, ctx) => ctx.unmetDepIds.length > 0 },
 	{ state: 'audited', matches: (s) => s.auditedAt !== null },
 	{ state: 'implemented', matches: (s) => s.implementedAt !== null },
+	{ state: 'in-flight', matches: (s) => s.prState === 'draft' },
 	{ state: 'open', matches: (s) => s.readyForAgent },
 ]
 
@@ -81,8 +83,16 @@ if (import.meta.vitest) {
 			expect(classify({ ...base, needsRevision: true, readyForAgent: true, prState: 'ready' }, { unmetDepIds: ['x'] })).toBe('needs-revision')
 		})
 
-		test('open PR (no needsRevision) → in-flight (even with deps / ready)', () => {
-			expect(classify({ ...base, readyForAgent: true, prState: 'draft' }, { unmetDepIds: ['x'] })).toBe('in-flight')
+		test('open non-draft PR (no needsRevision) → awaiting-review (even with deps / ready)', () => {
+			expect(classify({ ...base, readyForAgent: true, prState: 'ready' }, { unmetDepIds: ['x'] })).toBe('awaiting-review')
+		})
+
+		test('draft PR with implementedAt remains implemented for loop processing', () => {
+			expect(classify({ ...base, implementedAt: '2026-06-04T00:00:00.000Z', prState: 'draft' }, noCtx)).toBe('implemented')
+		})
+
+		test('draft PR without process milestone → in-flight', () => {
+			expect(classify({ ...base, readyForAgent: true, prState: 'draft' }, noCtx)).toBe('in-flight')
 		})
 
 		test('unmet deps (no PR, no needsRevision) → blocked (even with ready)', () => {
