@@ -74,7 +74,7 @@ async function abortChangeByState(target: ClassifiedChange, targetBranch: string
 }
 
 async function abortOpenOrReadyChange(change: ChangeRecord, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
-	await closeOpenSlicePrs(change.id, slices, rt)
+	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
 	await rt.storage.closeChange(change.id)
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
@@ -83,7 +83,7 @@ async function abortOpenOrReadyChange(change: ChangeRecord, slices: ClassifiedSl
 async function abortInFlightChange(change: ChangeRecord, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
 	if (!(await confirmAbortInFlightChange(change.id, rt))) return
 	await closeOpenCloseOutPr(change, rt)
-	await closeOpenSlicePrs(change.id, slices, rt)
+	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
 	await rt.storage.closeChange(change.id)
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
@@ -97,16 +97,12 @@ async function confirmAbortInFlightChange(changeId: string, rt: AbortRuntime): P
 	return false
 }
 
-async function closeOpenSlicePrs(changeId: string, slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
+async function closeOpenSlicePrs(slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
 	if (!rt.usePrs) return
-	const canonicalHeads = new Set(slices.map((slice) => slice.sliceBranch))
+	const storedSliceHeads = new Set(slices.map((slice) => slice.sliceBranch))
 	for (const pr of await rt.gh.listOpenPrs()) {
-		if (canonicalHeads.has(pr.headRefName) || pr.headRefName.startsWith(sliceBranchPrefix(changeId))) await closePrWithoutMerging(pr.number, rt)
+		if (storedSliceHeads.has(pr.headRefName)) await closePrWithoutMerging(pr.number, rt)
 	}
-}
-
-function sliceBranchPrefix(changeId: string): string {
-	return `${changeId}/`
 }
 
 async function closeOpenCloseOutPr(change: ChangeRecord, rt: AbortRuntime): Promise<void> {
@@ -353,6 +349,27 @@ if (import.meta.vitest) {
 			expect(storageState.change!.closedAt).not.toBeNull()
 			expect(gitCalls).toContain('deleteBranch(change-42-feature)')
 			expect(gitCalls).toContain(`deleteBranch(${sliceBranch})`)
+		})
+
+		test('open Change: closes Slice PRs only when their heads match stored Slice branches exactly', async () => {
+			const storedSliceBranch = '42/s1-first-slice'
+			const legacyPrefixBranch = 'change-42/slice-stale-old-title'
+			const newPrefixBranch = '42/stale-new-prefix'
+			const { ghCalls } = await runAbortChangeWith({
+				storageState: { change: fakeChange(), slices: [fakeSlice({ id: 's1', sliceBranch: storedSliceBranch })] },
+				gh: {
+					listOpenPrs: async () => [
+						{ number: 10, headRefName: storedSliceBranch, isDraft: true },
+						{ number: 11, headRefName: legacyPrefixBranch, isDraft: true },
+						{ number: 12, headRefName: newPrefixBranch, isDraft: true },
+					],
+				},
+				runtime: { usePrs: true },
+			})
+
+			expect(ghCalls).toContainEqual(['closePr', 10, { comment: 'Closed via trowel' }])
+			expect(ghCalls).not.toContainEqual(['closePr', 11, { comment: 'Closed via trowel' }])
+			expect(ghCalls).not.toContainEqual(['closePr', 12, { comment: 'Closed via trowel' }])
 		})
 
 		test('ready Change: closes any open Slice PRs, closes the Change, and does not touch already-done slice records', async () => {

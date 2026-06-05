@@ -65,12 +65,7 @@ async function cleanupLocalBranchSet(change: Pick<ChangeRecord, 'id' | 'changeBr
 	const local = new Set(await git.listLocalBranches())
 	const candidates = new Set<string>([change.changeBranch])
 	for (const slice of slices) candidates.add(slice.sliceBranch)
-	for (const branch of local) if (branch.startsWith(sliceBranchPrefix(change.id))) candidates.add(branch)
 	return [...candidates].filter((branch) => local.has(branch))
-}
-
-function sliceBranchPrefix(changeId: string): string {
-	return `${changeId}/`
 }
 
 async function branchDeletionAllowedByPolicy(changeId: string, branches: string[], rt: CleanupRuntime): Promise<boolean> {
@@ -225,8 +220,8 @@ if (import.meta.vitest) {
 			expect(calls).toContain(`worktreeRemove(${wtB})`)
 		})
 
-		test('prompt policy asks once for the full local branch set', async () => {
-			const localBranches = new Set(['change-42-x', '42/s1-a', '42/stale-old-title', 'unrelated'])
+		test('prompt policy asks once for the stored local branch set', async () => {
+			const localBranches = new Set(['change-42-x', '42/s1-a', '42/s2-b', '42/stale-old-title', 'change-42/slice-stale-old-title', 'unrelated'])
 			const { git, calls } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
 			const prompts: string[] = []
 
@@ -246,7 +241,9 @@ if (import.meta.vitest) {
 			expect(prompts).toHaveLength(1)
 			expect(prompts[0]).toContain('change-42-x')
 			expect(prompts[0]).toContain('42/s1-a')
-			expect(prompts[0]).toContain('42/stale-old-title')
+			expect(prompts[0]).toContain('42/s2-b')
+			expect(prompts[0]).not.toContain('42/stale-old-title')
+			expect(prompts[0]).not.toContain('change-42/slice-stale-old-title')
 			expect(prompts[0]).not.toContain('unrelated')
 			expect(calls.find((call) => call.startsWith('deleteBranch'))).toBeUndefined()
 		})
