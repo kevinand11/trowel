@@ -96,7 +96,7 @@ async function updateChangeMetadataOrThrow(rt: StartRuntime, changeId: string, p
 async function createStartSlices(rt: StartRuntime, changeId: string, spec: StartSpec): Promise<string[]> {
 	const realIds: string[] = []
 	for (const slice of spec.slices) {
-		const created = await rt.storage.createSlice(changeId, { title: slice.title, body: slice.body, blockedBy: [] })
+		const created = await rt.storage.createSlice(changeId, { title: slice.title, body: slice.body })
 		realIds.push(created.id)
 	}
 	return realIds
@@ -806,8 +806,8 @@ if (import.meta.vitest) {
 
 			expect(calls.createChange).toEqual([{ title: 'Rename Foo', body: 'spec body' }])
 			expect(calls.createSlice).toEqual([
-				{ changeId: 'abc123', spec: { title: 'Rename type', body: 'a', blockedBy: [] } },
-				{ changeId: 'abc123', spec: { title: 'Update callsites', body: 'b', blockedBy: [] } },
+				{ changeId: 'abc123', spec: { title: 'Rename type', body: 'a' } },
+				{ changeId: 'abc123', spec: { title: 'Update callsites', body: 'b' } },
 			])
 			expect(calls.setSliceBlockers).toEqual([
 				{ changeId: 'abc123', sliceId: 'slice-a', blockedBy: [] },

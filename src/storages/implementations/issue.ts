@@ -203,11 +203,6 @@ export const createIssueStorage: StorageFactory = (deps) => {
 			})
 			await deps.gh.addSubIssue(entityIdToGhNumber(changeId), issue.internalId)
 
-			for (const blockerId of spec.blockedBy) {
-				const blocker = await deps.gh.viewIssue(entityIdToGhNumber(blockerId))
-				await deps.gh.addBlockedBy(issue.number, blocker.internalId)
-			}
-
 			return { id: String(issue.number), title: issue.title }
 		},
 		findSlices: async (changeId) => {
@@ -572,7 +567,7 @@ if (import.meta.vitest) {
 				createIssue: async ({ title }) => ({ ...createdIssue(57, title), internalId: 57000 }),
 			})
 			const storage = createIssueStorage(deps)
-			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec', blockedBy: [] })
+			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'the slice spec' })
 
 			expect(slice).toEqual({ id: '57', title: 'Implement Tab Parser' })
 			expect(calls[0]).toEqual([
@@ -587,27 +582,13 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('issue storage: createSlice with blockedBy', () => {
-		test('addBlockedBy for each blocker, resolving each blocker number → internal id', async () => {
-			const { deps, calls } = makeDeps({
-				createIssue: async ({ title }) => createdIssue(57, title),
-				viewIssue: async (number) => {
-					if (number === 99) return issueRecord(99, 999000)
-					throw new Error(`unexpected issue ${number}`)
-				},
-			})
-			const storage = createIssueStorage(deps)
-			const slice = await storage.createSlice('42', { title: 'Implement Tab Parser', body: 'spec', blockedBy: ['99'] })
-			expect(slice).toEqual({ id: '57', title: 'Implement Tab Parser' })
-			expect(calls).toContainEqual(['addBlockedBy', 57, 999000])
-		})
-
-		test('blockedBy: [] → no addBlockedBy calls', async () => {
+	describe('issue storage: createSlice blocker handling', () => {
+		test('createSlice never writes blockers directly', async () => {
 			const { deps, calls } = makeDeps({
 				createIssue: async ({ title }) => createdIssue(57, title),
 			})
 			const storage = createIssueStorage(deps)
-			await storage.createSlice('42', { title: 'A', body: 'b', blockedBy: [] })
+			await storage.createSlice('42', { title: 'A', body: 'b' })
 			expect(calls.find((c) => c[0] === 'addBlockedBy')).toBeUndefined()
 		})
 	})

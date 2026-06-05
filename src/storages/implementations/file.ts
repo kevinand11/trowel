@@ -42,6 +42,8 @@ type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & {
 	blockedBy: string[]
 }
 type SliceStoreDraft = SliceStore
+type TestSliceSpec = SliceSpec & { blockedBy?: string[] }
+
 type MutableStore = {
 	readyForAgent: boolean
 	blockedBy: string[]
@@ -233,7 +235,7 @@ export const createFileStorage: StorageFactory = (deps) => {
 				auditedAt: null,
 				sliceBranch: null,
 				readyForAgent: false,
-				blockedBy: spec.blockedBy,
+				blockedBy: [],
 			}
 			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(store))
 
@@ -587,19 +589,20 @@ if (import.meta.vitest) {
 	async function createMaterialisedSlice(
 		storage: Storage,
 		changeId: string,
-		spec: SliceSpec = { title: 'A', body: 'spec', blockedBy: [] },
+		spec: TestSliceSpec = { title: 'A', body: 'spec' },
 		sliceBranch?: string,
 	): Promise<Slice> {
-		const created = await storage.createSlice(changeId, spec)
+		const created = await storage.createSlice(changeId, { title: spec.title, body: spec.body })
 		await storage.updateSliceMetadata(changeId, created.id, {
 			sliceBranch: sliceBranch ?? testSliceBranch(changeId, created.id, created.title),
 		})
+		if (spec.blockedBy !== undefined) await storage.setSliceBlockers(changeId, created.id, spec.blockedBy)
 		return (await storage.findSlices(changeId)).find((s) => s.id === created.id)!
 	}
 
 	async function createChangeWithSlice(
 		f: Fixture,
-		spec: SliceSpec = { title: 'A', body: 'spec', blockedBy: [] },
+		spec: TestSliceSpec = { title: 'A', body: 'spec' },
 	): Promise<{ storage: Storage; changeId: string; slice: Slice }> {
 		const storage = createFileStorage(f.deps)
 		const { id: changeId } = await createMaterialisedChange(storage)
@@ -610,7 +613,7 @@ if (import.meta.vitest) {
 	async function stateForReadySliceBlockedByA(f: Fixture, doneA: boolean): Promise<string> {
 		const storage = createFileStorage(f.deps)
 		const { id: changeId } = await createMaterialisedChange(storage)
-		const a = await createMaterialisedSlice(storage, changeId, { title: 'A', body: 'spec', blockedBy: [] })
+		const a = await createMaterialisedSlice(storage, changeId, { title: 'A', body: 'spec' })
 		const b = await createMaterialisedSlice(storage, changeId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
 		if (doneA) await storage.finalizeSlice(changeId, a.id)
 		await storage.setSliceReadyForAgent(changeId, b.id, true)
@@ -650,7 +653,7 @@ if (import.meta.vitest) {
 			await f.deps.git.createLocalBranch(result.changeBranch, 'main')
 			await f.deps.git.pushSetUpstream(result.changeBranch)
 			const sliceBranch = branchMode === 'shared' ? result.changeBranch : undefined
-			const slice = await createMaterialisedSlice(storage, result.id, { title, body: 'spec', blockedBy: [] }, sliceBranch)
+			const slice = await createMaterialisedSlice(storage, result.id, { title, body: 'spec' }, sliceBranch)
 			await storage.setSliceReadyForAgent(result.id, slice.id, true)
 			f.calls.git.length = 0
 			return { result, slice }
@@ -721,7 +724,7 @@ if (import.meta.vitest) {
 				const slice = await createMaterialisedSlice(
 					storage,
 					changeId,
-					{ title: 'Implement A', body: 'spec', blockedBy: [] },
+					{ title: 'Implement A', body: 'spec' },
 					changeBranch,
 				)
 				f.calls.git.length = 0
@@ -799,7 +802,7 @@ if (import.meta.vitest) {
 				const { id: changeId, changeBranch } = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
 				await f.deps.git.createLocalBranch(changeBranch, 'main')
 				await f.deps.git.pushSetUpstream(changeBranch)
-				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec' })
 				await f.deps.git.createRemoteBranch(slice.sliceBranch!, changeBranch)
 				f.calls.git.length = 0
 
@@ -1044,7 +1047,7 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'Add ORM', body: 'change-spec' })
 
-			const slice = await storage.createSlice(changeId, { title: 'Implement Tab Parser', body: '# spec\nbody', blockedBy: [] })
+			const slice = await storage.createSlice(changeId, { title: 'Implement Tab Parser', body: '# spec\nbody' })
 			expect(slice.title).toBe('Implement Tab Parser')
 
 			const dir = path.join(f.changesDir, `${changeId}-add-orm`, 'slices', `${slice.id}-implement-tab-parser`)
@@ -1081,8 +1084,8 @@ if (import.meta.vitest) {
 		test('returns one Slice per slice directory with body from README.md and state from closedAt', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await createMaterialisedChange(storage)
-			const a = await createMaterialisedSlice(storage, changeId, { title: 'Alpha', body: 'aa', blockedBy: [] })
-			const b = await createMaterialisedSlice(storage, changeId, { title: 'Beta', body: 'bb', blockedBy: [] })
+			const a = await createMaterialisedSlice(storage, changeId, { title: 'Alpha', body: 'aa' })
+			const b = await createMaterialisedSlice(storage, changeId, { title: 'Beta', body: 'bb' })
 			// Mark b as closed; needs-revision is PR-derived and not stored by file storage.
 			await storage.finalizeSlice(changeId, b.id)
 
@@ -1226,11 +1229,11 @@ if (import.meta.vitest) {
 			const storage = createFileStorage(f.deps)
 			const first = await storage.createChange({ title: 'First', body: 'a' })
 			expect(first.id).toBe('1')
-			const slice = await storage.createSlice(first.id, { title: 'Foo', body: 'spec', blockedBy: [] })
+			const slice = await storage.createSlice(first.id, { title: 'Foo', body: 'spec' })
 			expect(slice.id).toBe('2')
 			const second = await storage.createChange({ title: 'Second', body: 'b' })
 			expect(second.id).toBe('3')
-			const slice2 = await storage.createSlice(second.id, { title: 'Bar', body: 'spec', blockedBy: [] })
+			const slice2 = await storage.createSlice(second.id, { title: 'Bar', body: 'spec' })
 			expect(slice2.id).toBe('4')
 		})
 
@@ -1264,7 +1267,7 @@ if (import.meta.vitest) {
 		test('updateSliceMetadata persists the stored Slice branch', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'P', body: 'b' })
-			const slice = await storage.createSlice(changeId, { title: 'Slice', body: 's', blockedBy: [] })
+			const slice = await storage.createSlice(changeId, { title: 'Slice', body: 's' })
 
 			await storage.updateSliceMetadata(changeId, slice.id, { sliceBranch: 'change-custom/slice' })
 
@@ -1315,7 +1318,7 @@ if (import.meta.vitest) {
 		})
 
 		test('flips readyForAgent without writing needsRevision', async () => {
-			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
+			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b' })
 
 			await storage.setSliceReadyForAgent(changeId, slice.id, true)
 			let store = JSON.parse(
@@ -1331,7 +1334,7 @@ if (import.meta.vitest) {
 		})
 
 		test('finalizeSlice stamps closedAt', async () => {
-			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
+			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b' })
 
 			await storage.finalizeSlice(changeId, slice.id)
 			const store = JSON.parse(

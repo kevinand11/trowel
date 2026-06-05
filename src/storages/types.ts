@@ -12,7 +12,6 @@ export type ChangeSpec = {
 export type SliceSpec = {
 	title: string
 	body: string
-	blockedBy: string[]
 }
 
 export type ChangeSummary = {
