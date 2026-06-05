@@ -21,7 +21,7 @@ type LoopWiring = {
 	projectRoot: string
 	storage: Storage
 	gh: ReturnType<typeof createGh>
-	integrationBranch: (changeId: string) => Promise<string>
+	changeBranch: (changeId: string) => Promise<string>
 	runOnePhase: (changeId: string, slice: Slice, role: Role) => Promise<void>
 	runEntityLoopFor: (entity: LoopEntity) => Promise<void>
 }
@@ -76,15 +76,15 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			log,
 		})
 
-	const integrationBranch = async (changeId: string): Promise<string> => {
+	const changeBranch = async (changeId: string): Promise<string> => {
 		const change = await storage.findChange(changeId)
 		if (!change) throw new Error(`Change '${changeId}' not found`)
-		return change.branch
+		return change.changeBranch
 	}
 
 	const runOnePhase = async (changeId: string, slice: Slice, role: Role): Promise<void> => {
-		const branch = await integrationBranch(changeId)
-		const ctx = { changeId, integrationBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
+		const branch = await changeBranch(changeId)
+		const ctx = { changeId, changeBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
 		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
 		const prep = await prepareOnePhase(role, phaseDeps, slice, ctx)
 		const verdict: TurnOut = await makeSpawnTurnFor(changeId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
@@ -109,7 +109,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		})
 	}
 
-	return { config, projectRoot, storage, gh, integrationBranch, runOnePhase, runEntityLoopFor }
+	return { config, projectRoot, storage, gh, changeBranch, runOnePhase, runEntityLoopFor }
 }
 
 async function gitStdoutOr(cwd: string, args: string[], fallback: string): Promise<string> {

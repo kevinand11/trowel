@@ -20,8 +20,8 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
 export type CloseOutEntity = {
 	kind: 'change'
 	id: string
-	branch: string
-	targetBranch?: string
+	changeBranch: string
+	targetBranch: string
 	title: string
 }
 
@@ -42,7 +42,7 @@ export type CloseOutDeps = {
 
 export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
 	const tag = `[close-out ${entity.kind}-${entity.id}]`
-	const targetBranch = entity.targetBranch ?? await deps.git.baseBranch()
+	const targetBranch = entity.targetBranch
 	return deps.config.usePrs ? closeOutViaPr(entity, deps, targetBranch, tag) : closeOutViaMerge(entity, deps, targetBranch, tag)
 }
 
@@ -58,7 +58,7 @@ async function closeOutViaPrLocked(entity: CloseOutEntity, deps: CloseOutDeps, t
 }
 
 async function ensureCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number | null> {
-	const existing = await deps.gh.findAnyPrByHead(entity.branch).catch(() => null)
+	const existing = await deps.gh.findAnyPrByHead(entity.changeBranch).catch(() => null)
 	if (!existing) return createCloseOutPr(entity, deps, targetBranch, tag)
 	if (existing.state !== 'OPEN') {
 		deps.log(`${tag} PR #${existing.number} state ${existing.state}; nothing to mark ready`)
@@ -68,9 +68,9 @@ async function ensureCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targ
 }
 
 async function createCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number> {
-	await deps.gh.createDraftPr({ title: entity.title, head: entity.branch, base: targetBranch, body: bodyFor(entity) })
-	const prNumber = await deps.gh.findPrNumberByHead(entity.branch)
-	deps.log(`${tag} opened PR #${prNumber} ${entity.branch} → ${targetBranch}`)
+	await deps.gh.createDraftPr({ title: entity.title, head: entity.changeBranch, base: targetBranch, body: bodyFor(entity) })
+	const prNumber = await deps.gh.findPrNumberByHead(entity.changeBranch)
+	deps.log(`${tag} opened PR #${prNumber} ${entity.changeBranch} → ${targetBranch}`)
 	return prNumber
 }
 
@@ -86,7 +86,7 @@ function closeOutViaMerge(entity: CloseOutEntity, deps: CloseOutDeps, targetBran
 
 async function closeOutViaMergeLocked(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
 	await mergeCloseOutBranch(entity, deps, targetBranch)
-	deps.log(`${tag} host-merged ${entity.branch} into ${targetBranch}`)
+	deps.log(`${tag} host-merged ${entity.changeBranch} into ${targetBranch}`)
 	await finalizeEntity(entity, deps)
 	deps.log(`${tag} finalized Change`)
 	await deleteAutoBranchIfAllowed(entity, deps, tag)
@@ -99,7 +99,7 @@ async function mergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, t
 			changeId: entity.id,
 			reservation: MERGE_CHANGE_WORKTREE,
 			destinationBranch: targetBranch,
-			sourceBranch: entity.branch,
+			sourceBranch: entity.changeBranch,
 			git: deps.git,
 			mergeNoVerify: deps.config.mergeNoVerify,
 			log: deps.log,
@@ -113,7 +113,7 @@ async function legacyMergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutD
 	const current = await deps.git.currentBranch()
 	await deps.git.checkout(targetBranch)
 	try {
-		await deps.git.mergeNoFf(entity.branch, { noVerify: deps.config.mergeNoVerify })
+		await deps.git.mergeNoFf(entity.changeBranch, { noVerify: deps.config.mergeNoVerify })
 	} catch (e) {
 		await deps.git.mergeAbort()
 		await restoreAfterFailedCloseOutMerge(current, targetBranch, deps)
@@ -132,8 +132,8 @@ async function finalizeEntity(entity: CloseOutEntity, deps: CloseOutDeps): Promi
 
 async function deleteAutoBranchIfAllowed(entity: CloseOutEntity, deps: CloseOutDeps, tag: string): Promise<void> {
 	if (autoDeletePolicy(deps.config.deleteBranch) !== 'always') return
-	await deps.git.deleteBranch(entity.branch)
-	deps.log(`${tag} deleted ${entity.branch}`)
+	await deps.git.deleteBranch(entity.changeBranch)
+	deps.log(`${tag} deleted ${entity.changeBranch}`)
 }
 
 function bodyFor(entity: CloseOutEntity): string {
@@ -161,14 +161,16 @@ if (import.meta.vitest) {
 	function fakeStorage(overrides: Partial<Storage> = {}): { storage: Storage; closed: { change: string[] } } {
 		const closed = { change: [] as string[] }
 		const storage: Storage = {
-			createChange: async () => ({ id: 'x', branch: 'x' }),
+			createChange: async () => ({ id: 'x', title: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
 			closeChange: async (id) => { closed.change.push(id) },
+			updateChangeMetadata: async () => {},
 			createSlice: async () => { throw new Error('nyi') },
 			findSlices: async () => [],
 			findSlice: async () => null,
 			updateSlice: async () => {},
+			updateSliceMetadata: async () => {},
 			...overrides,
 		}
 		return { storage, closed }
@@ -189,12 +191,12 @@ if (import.meta.vitest) {
 	}
 
 	describe('runCloseOut', () => {
-		test('Change + usePrs:false: host-merges integration to targetBranch, finalizes the Change, retains branch on never', async () => {
+		test('Change + usePrs:false: host-merges Change branch to targetBranch, finalizes the Change, retains branch on never', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
-				{ kind: 'change', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: false } },
 			)
 			expect(calls).toContain('checkout(release/1.2)')
@@ -208,7 +210,7 @@ if (import.meta.vitest) {
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
-				{ kind: 'change', id: '5', branch: 'change/5-x', title: 'X' },
+				{ kind: 'change', id: '5', changeBranch: 'change/5-x', targetBranch: 'main', title: 'X' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'prompt', mergeNoVerify: false } },
 			)
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
@@ -222,7 +224,7 @@ if (import.meta.vitest) {
 				findPrNumberByHead: async () => 22,
 			})
 			await runCloseOut(
-				{ kind: 'change', id: '3', branch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'never', mergeNoVerify: false } },
 			)
 			expect(calls.find((c) => c[0] === 'createDraftPr')).toEqual(['createDraftPr', {

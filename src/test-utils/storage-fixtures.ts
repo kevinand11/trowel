@@ -10,13 +10,14 @@ export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): C
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
+		sliceBranch: `change-p1/slice-${overrides.id ?? 's1'}-implement-a`,
 		prState: null,
 		...overrides,
 	}
 }
 
 const noop = async (): Promise<void> => {}
-const defaultCreatedEntity = async (): Promise<{ id: string; branch: string }> => ({ id: 'x', branch: 'x' })
+const defaultCreatedEntity = async (): Promise<{ id: string; title: string }> => ({ id: 'x', title: 'x' })
 const emptyChangeSummaries = async (): Promise<Awaited<ReturnType<Storage['listChanges']>>> => []
 
 export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1', overrides: Partial<Storage> = {}): Storage {
@@ -29,13 +30,15 @@ export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1'
 		createSlice: unusedCreateSlice,
 		findSlices: async () => slices,
 		findSlice: async (sliceId) => findFakeSlice(changeId, sliceById, sliceId),
+		updateChangeMetadata: noop,
 		updateSlice: noop,
+		updateSliceMetadata: noop,
 		...overrides,
 	}
 }
 
 async function defaultFindChange(id: string): Promise<ChangeRecord> {
-	return { id, branch: 'b', title: 't', state: 'OPEN', closedAt: null }
+	return { id, changeBranch: 'b', targetBranch: 'main', title: 't', state: 'OPEN', closedAt: null }
 }
 
 async function unusedCreateSlice(): Promise<Slice> {

@@ -3,7 +3,6 @@ import path from 'node:path'
 
 import type { ChangeRecord, DeleteBranchPolicy, Slice } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import { slug as slugify } from '../utils/slug.ts'
 
 export type CleanupRuntime = {
 	projectRoot: string
@@ -15,8 +14,8 @@ export type CleanupRuntime = {
 }
 
 export type CleanupChangeArgs = {
-	change: Pick<ChangeRecord, 'id' | 'branch'>
-	slices: Pick<Slice, 'id' | 'title'>[]
+	change: Pick<ChangeRecord, 'id' | 'changeBranch'>
+	slices: Pick<Slice, 'id' | 'sliceBranch'>[]
 	targetBranch: string
 	rt: CleanupRuntime
 }
@@ -74,20 +73,11 @@ async function cleanupLocalBranches(args: CleanupChangeArgs): Promise<void> {
 	for (const branch of deletable) await args.rt.git.deleteBranch(branch)
 }
 
-export async function cleanupLocalBranchCandidates(change: Pick<ChangeRecord, 'id' | 'branch'>, slices: Pick<Slice, 'id' | 'title'>[], git: GitOps): Promise<string[]> {
+export async function cleanupLocalBranchCandidates(change: Pick<ChangeRecord, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], git: GitOps): Promise<string[]> {
 	const local = new Set(await git.listLocalBranches())
-	const candidates = new Set<string>([change.branch])
-	for (const slice of slices) candidates.add(sliceBranchName(change.id, slice))
-	for (const branch of local) if (branch.startsWith(sliceBranchPrefix(change.id))) candidates.add(branch)
+	const candidates = new Set<string>([change.changeBranch])
+	for (const slice of slices) candidates.add(slice.sliceBranch)
 	return [...candidates].filter((branch) => local.has(branch))
-}
-
-function sliceBranchName(changeId: string, slice: Pick<Slice, 'id' | 'title'>): string {
-	return `${sliceBranchPrefix(changeId)}${slice.id}-${slugify(slice.title)}`
-}
-
-function sliceBranchPrefix(changeId: string): string {
-	return `change-${changeId}/slice-`
 }
 
 async function branchDeletionAllowedByPolicy(changeId: string, branches: string[], rt: CleanupRuntime): Promise<boolean> {
@@ -134,8 +124,8 @@ if (import.meta.vitest) {
 	const { tmpdir } = await import('node:os')
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
-	function fakeSlice(id: string, title: string): Pick<Slice, 'id' | 'title'> {
-		return { id, title }
+	function fakeSlice(id: string, title: string): Pick<Slice, 'id' | 'sliceBranch'> {
+		return { id, sliceBranch: `42/${id}-${title.toLowerCase()}` }
 	}
 
 	type CleanupGitState = {
@@ -228,7 +218,7 @@ if (import.meta.vitest) {
 				],
 			})
 
-			await cleanupChange({ change: { id: '42', branch: 'change-42-x' }, slices: [], targetBranch: 'main', rt: cleanupRt(projectRoot, git) })
+			await cleanupChange({ change: { id: '42', changeBranch: 'change-42-x' }, slices: [], targetBranch: 'main', rt: cleanupRt(projectRoot, git) })
 
 			await expect(stat(path.join(projectRoot, '.trowel', 'worktrees', '42'))).rejects.toThrow()
 			expect((await stat(otherWt)).isDirectory()).toBe(true)
@@ -237,12 +227,12 @@ if (import.meta.vitest) {
 			expect(calls).toContain(`worktreeRemove(${wtB})`)
 		})
 
-		test('computes the local Cleanup branch candidates for a Change', async () => {
-			const localBranches = new Set(['change-42/slice-stale-old-title', 'change-42-x', 'change-42/slice-s1-a', 'unrelated'])
+		test('computes local Cleanup branch candidates from stored branch metadata only', async () => {
+			const localBranches = new Set(['change-42-x', '42/s1-a', '42/s2-b', '42/stale-old-title', 'change-42/slice-stale-old-title', 'unrelated'])
 			const { git } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
 
-			await expect(cleanupLocalBranchCandidates({ id: '42', branch: 'change-42-x' }, [fakeSlice('s1', 'A'), fakeSlice('s2', 'B')], git))
-				.resolves.toEqual(['change-42-x', 'change-42/slice-s1-a', 'change-42/slice-stale-old-title'])
+			await expect(cleanupLocalBranchCandidates({ id: '42', changeBranch: 'change-42-x' }, [fakeSlice('s1', 'A'), fakeSlice('s2', 'B')], git))
+				.resolves.toEqual(['change-42-x', '42/s1-a', '42/s2-b'])
 		})
 
 		test('refuses before prompting when the current branch is a Cleanup candidate', async () => {
@@ -254,7 +244,7 @@ if (import.meta.vitest) {
 			const prompts: string[] = []
 
 			await expect(cleanupChange({
-				change: { id: '42', branch: 'change-42-x' },
+				change: { id: '42', changeBranch: 'change-42-x' },
 				slices: [],
 				targetBranch: 'main',
 				rt: cleanupRt(projectRoot, git, {
@@ -276,19 +266,19 @@ if (import.meta.vitest) {
 			const localBranches = new Set(['main', 'change-42-x'])
 			const { git, calls } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
 
-			await cleanupChange({ change: { id: '42', branch: 'change-42-x' }, slices: [], targetBranch: 'main', rt: cleanupRt(projectRoot, git, { deleteBranchPolicy: 'always' }) })
+			await cleanupChange({ change: { id: '42', changeBranch: 'change-42-x' }, slices: [], targetBranch: 'main', rt: cleanupRt(projectRoot, git, { deleteBranchPolicy: 'always' }) })
 
 			expect(calls).toContain('deleteBranch(change-42-x)')
 			expect(calls.find((call) => call.startsWith('checkout'))).toBeUndefined()
 		})
 
-		test('prompt policy asks once for the full local branch set', async () => {
-			const localBranches = new Set(['change-42-x', 'change-42/slice-s1-a', 'change-42/slice-stale-old-title', 'unrelated'])
+		test('prompt policy asks once for the stored local branch set', async () => {
+			const localBranches = new Set(['change-42-x', '42/s1-a', '42/s2-b', '42/stale-old-title', 'change-42/slice-stale-old-title', 'unrelated'])
 			const { git, calls } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
 			const prompts: string[] = []
 
 			await cleanupChange({
-				change: { id: '42', branch: 'change-42-x' },
+				change: { id: '42', changeBranch: 'change-42-x' },
 				slices: [fakeSlice('s1', 'A'), fakeSlice('s2', 'B')],
 				targetBranch: 'main',
 				rt: cleanupRt(projectRoot, git, {
@@ -302,8 +292,10 @@ if (import.meta.vitest) {
 
 			expect(prompts).toHaveLength(1)
 			expect(prompts[0]).toContain('change-42-x')
-			expect(prompts[0]).toContain('change-42/slice-s1-a')
-			expect(prompts[0]).toContain('change-42/slice-stale-old-title')
+			expect(prompts[0]).toContain('42/s1-a')
+			expect(prompts[0]).toContain('42/s2-b')
+			expect(prompts[0]).not.toContain('42/stale-old-title')
+			expect(prompts[0]).not.toContain('change-42/slice-stale-old-title')
 			expect(prompts[0]).not.toContain('unrelated')
 			expect(calls.find((call) => call.startsWith('deleteBranch'))).toBeUndefined()
 		})
@@ -316,7 +308,7 @@ if (import.meta.vitest) {
 			let out = ''
 
 			await cleanupChange({
-				change: { id: '42', branch: 'change-42-x' },
+				change: { id: '42', changeBranch: 'change-42-x' },
 				slices: [],
 				targetBranch: 'main',
 				rt: cleanupRt(projectRoot, git, {
@@ -338,29 +330,29 @@ if (import.meta.vitest) {
 		})
 
 		test('skips and reports local branches with commits not present on their remote counterpart', async () => {
-			const integration = 'change-42-x'
-			const sliceBranch = 'change-42/slice-s1-a'
-			const localBranches = new Set([integration, sliceBranch])
+			const changeBranch = 'change-42-x'
+			const sliceBranch = '42/s1-a'
+			const localBranches = new Set([changeBranch, sliceBranch])
 			const { git, calls } = fakeCleanupGit({
 				current: 'main',
 				localBranches,
-				remoteBranches: new Set([integration, sliceBranch]),
-				ahead: new Map([[integration, 2], [sliceBranch, 0]]),
+				remoteBranches: new Set([changeBranch, sliceBranch]),
+				ahead: new Map([[changeBranch, 2], [sliceBranch, 0]]),
 				worktrees: [],
 			})
 			let out = ''
 
 			await cleanupChange({
-				change: { id: '42', branch: integration },
+				change: { id: '42', changeBranch },
 				slices: [fakeSlice('s1', 'A')],
 				targetBranch: 'main',
 				rt: cleanupRt(projectRoot, git, { deleteBranchPolicy: 'always', stdout: (s) => { out += s } }),
 			})
 
-			expect(localBranches.has(integration)).toBe(true)
+			expect(localBranches.has(changeBranch)).toBe(true)
 			expect(localBranches.has(sliceBranch)).toBe(false)
-			expect(out).toContain(`Skipped local branch '${integration}'`)
-			expect(out).toContain(`not present on origin/${integration}`)
+			expect(out).toContain(`Skipped local branch '${changeBranch}'`)
+			expect(out).toContain(`not present on origin/${changeBranch}`)
 			expect(calls).toContain(`deleteBranch(${sliceBranch})`)
 			expect(calls.find((call) => call.startsWith('deleteRemoteBranch'))).toBeUndefined()
 		})

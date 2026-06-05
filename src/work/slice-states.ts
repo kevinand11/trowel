@@ -19,7 +19,7 @@ if (import.meta.vitest) {
 
 	describe('classifySlicesForChange', () => {
 		function storageWithSlice(prState: null = null): Storage {
-			return fakeSliceStorage([fakeClassifiedSlice({ id: '124', title: 'Read Query Shape', prState })])
+			return fakeSliceStorage([fakeClassifiedSlice({ id: '124', title: 'Read Query Shape', sliceBranch: 'change-123/slice-124-read-query-shape', prState })])
 		}
 
 		test('usePrs:false classifies raw storage slices without gh enrichment', async () => {

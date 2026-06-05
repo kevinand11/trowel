@@ -8,8 +8,8 @@ export function renderStatus(change: StatusChange, slices: ClassifiedSlice[]): s
 	const lines = [
 		`Change ${change.id}  ${change.title}`,
 		`State:               ${change.state}`,
-		`Target branch:       ${change.targetBranch ?? '(unknown)'}`,
-		`Integration branch:  ${change.branch}`,
+		`Target branch:       ${change.targetBranch}`,
+		`Change branch:       ${change.changeBranch}`,
 		`Guidance:            ${stateGuidance(change)}`,
 	]
 	lines.push('', `Slices:  ${formatSliceStateCounts(counts) || '(no slices)'}`)

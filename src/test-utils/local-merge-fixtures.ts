@@ -19,22 +19,23 @@ export type LocalSliceMergeFixture = {
 
 export async function setupLocalSliceMergeFixture(opts: {
 	changeId?: string
-	integrationBranch?: string
+	changeBranch?: string
 	currentBranch?: string
 	slice?: Partial<Slice>
 } = {}): Promise<LocalSliceMergeFixture> {
 	const fixture = await setupTestRepoWithBare({ prefix: 'trowel-local-slice-merge-' })
 	const git = createRepoGit(fixture.work)
 	const changeId = opts.changeId ?? 'p1'
-	const integrationBranch = opts.integrationBranch ?? 'change-p1-integration'
+	const changeBranch = opts.changeBranch ?? `${changeId}-feature`
 	const currentBranch = opts.currentBranch ?? 'main'
-	await createRemoteIntegrationBranch(fixture.work, integrationBranch)
+	await createRemoteChangeBranch(fixture.work, changeBranch)
 	if (currentBranch !== 'main') await exec('git', ['-C', fixture.work, 'checkout', '-q', '-b', currentBranch, 'origin/main'])
 
 	const state = {
-		change: { id: changeId, branch: integrationBranch, targetBranch: 'main', title: 'Feature', state: 'OPEN' as const, closedAt: null },
-		slice: testSlice(opts.slice),
+		change: { id: changeId, changeBranch, targetBranch: 'main', title: 'Feature', state: 'OPEN' as const, closedAt: null },
+		slice: testSlice(changeId, opts.slice),
 	}
+	if (state.slice.sliceBranch !== changeBranch) await createRemoteSliceBranch(fixture.work, state.slice.sliceBranch, changeBranch)
 
 	return {
 		projectRoot: fixture.work,
@@ -47,14 +48,20 @@ export async function setupLocalSliceMergeFixture(opts: {
 	}
 }
 
-async function createRemoteIntegrationBranch(repo: string, branch: string): Promise<void> {
+async function createRemoteChangeBranch(repo: string, branch: string): Promise<void> {
 	await exec('git', ['-C', repo, 'branch', branch, 'origin/main'])
 	await exec('git', ['-C', repo, 'push', '-q', 'origin', `${branch}:${branch}`])
 }
 
-function testSlice(overrides: Partial<Slice> = {}): Slice {
+async function createRemoteSliceBranch(repo: string, branch: string, changeBranch: string): Promise<void> {
+	await exec('git', ['-C', repo, 'branch', branch, changeBranch])
+	await exec('git', ['-C', repo, 'push', '-q', 'origin', `${branch}:${branch}`])
+}
+
+function testSlice(changeId: string, overrides: Partial<Slice> = {}): Slice {
+	const id = overrides.id ?? 's1'
 	return {
-		id: 's1',
+		id,
 		title: 'Implement A',
 		body: 'spec',
 		state: 'open',
@@ -62,6 +69,7 @@ function testSlice(overrides: Partial<Slice> = {}): Slice {
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
+		sliceBranch: `${changeId}/${id}-implement-a`,
 		prState: null,
 		...overrides,
 	}
@@ -69,7 +77,7 @@ function testSlice(overrides: Partial<Slice> = {}): Slice {
 
 function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): Storage {
 	return {
-		createChange: async () => ({ id: state.change.id, branch: state.change.branch }),
+		createChange: async () => ({ id: state.change.id, title: state.change.title }),
 		findChange: async (id) => id === state.change.id ? { ...state.change } : null,
 		listChanges: async () => [],
 		closeChange: async (id) => {
@@ -77,12 +85,20 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 			state.change.state = 'CLOSED'
 			state.change.closedAt = new Date().toISOString()
 		},
+		updateChangeMetadata: async (_changeId, patch) => {
+			if (patch.changeBranch !== undefined) state.change.changeBranch = patch.changeBranch
+			if (patch.targetBranch !== undefined) state.change.targetBranch = patch.targetBranch
+		},
 		createSlice: async () => { throw new Error('not used') },
 		findSlices: async (changeId) => changeId === state.change.id ? [{ ...state.slice }] : [],
 		findSlice: async (sliceId) => sliceId === state.slice.id ? { changeId: state.change.id, slice: { ...state.slice } } : null,
 		updateSlice: async (changeId, sliceId, patch) => {
 			if (changeId !== state.change.id || sliceId !== state.slice.id) return
 			applySlicePatch(state.slice, patch)
+		},
+		updateSliceMetadata: async (_changeId, sliceId, patch) => {
+			if (sliceId !== state.slice.id) return
+			if (patch.sliceBranch !== undefined) state.slice.sliceBranch = patch.sliceBranch
 		},
 	}
 }

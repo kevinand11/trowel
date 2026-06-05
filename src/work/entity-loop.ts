@@ -10,7 +10,7 @@ import type { GitOps } from '../utils/git-ops.ts'
 /**
  * The unit of work `trowel change work` operates on.
  */
-export type LoopEntity = { kind: 'change'; id: string; integrationBranch: string; targetBranch?: string; title: string }
+export type LoopEntity = { kind: 'change'; id: string; changeBranch: string; targetBranch: string; title: string }
 
 export type EntityLoopDeps = {
 	storage: Storage
@@ -80,7 +80,7 @@ function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps
 		storage: deps.storage,
 		git: deps.git,
 		gh: deps.gh,
-		integrationBranch: entity.integrationBranch,
+		changeBranch: entity.changeBranch,
 		spawnTurn: deps.spawnTurn,
 		log: deps.log,
 		config: deps.config,
@@ -108,7 +108,7 @@ if (import.meta.vitest) {
 	}
 
 	const doneSlice: ClassifiedSlice = {
-		id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false, needsRevision: false, blockedBy: [], prState: null,
+		id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false, needsRevision: false, blockedBy: [], sliceBranch: 'change-3/slice-s1-a', prState: null,
 	}
 
 	type LoopFixtureOpts = {
@@ -125,7 +125,7 @@ if (import.meta.vitest) {
 		let changeClosed = false
 		let spawned = 0
 		const logs: string[] = []
-		const change = opts.change ?? { id: '3', branch: '3-feat', title: 'Feat', state: 'OPEN' as const, closedAt: null }
+		const change = opts.change ?? { id: '3', changeBranch: '3-feat', targetBranch: 'main', title: 'Feat', state: 'OPEN' as const, closedAt: null }
 		const slices = opts.slices ?? []
 		const storage = makeStorage({
 			findChange: async (id) => (id === change.id ? change : null),
@@ -135,7 +135,7 @@ if (import.meta.vitest) {
 		})
 		const { gh: defaultGh } = recordingGhOps()
 		await runEntityLoop(
-			{ kind: 'change', id: change.id, integrationBranch: change.branch, targetBranch: change.targetBranch, title: change.title },
+			{ kind: 'change', id: change.id, changeBranch: change.changeBranch, targetBranch: change.targetBranch, title: change.title },
 			{
 				storage,
 				git: opts.git ?? unmergedGit(),
@@ -179,8 +179,8 @@ if (import.meta.vitest) {
 
 		test('done and aborted Changes → report non-work states and run no Slice work', async () => {
 			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'MERGED' } : null })
-			const done = await runLoopFixture({ change: { id: '3', branch: '3-feat', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice], gh })
-			const aborted = await runLoopFixture({ change: { id: '3', branch: '3-feat', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice] })
+			const done = await runLoopFixture({ change: { id: '3', changeBranch: '3-feat', targetBranch: 'main', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice], gh })
+			const aborted = await runLoopFixture({ change: { id: '3', changeBranch: '3-feat', targetBranch: 'main', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice] })
 			expect(done.spawned).toBe(0)
 			expect(done.logs.join('\n')).toContain('non-work state=done')
 			expect(aborted.spawned).toBe(0)
@@ -216,7 +216,7 @@ if (import.meta.vitest) {
 				const logs: string[] = []
 
 				await runEntityLoop(
-					{ kind: 'change', id: fixture.state.change.id, integrationBranch: fixture.state.change.branch, targetBranch: fixture.state.change.targetBranch, title: fixture.state.change.title },
+					{ kind: 'change', id: fixture.state.change.id, changeBranch: fixture.state.change.changeBranch, targetBranch: fixture.state.change.targetBranch, title: fixture.state.change.title },
 					{
 						storage: fixture.storage,
 						git: fixture.git,
@@ -233,7 +233,7 @@ if (import.meta.vitest) {
 
 				expect(await fixture.currentBranch()).toBe('main')
 				expect(fixture.state.slice.state).toBe('done')
-				expect(logs.join('\n')).toContain('merged change-p1/slice-s1-implement-a into change-p1-integration')
+				expect(logs.join('\n')).toContain(`merged ${fixture.state.slice.sliceBranch} into ${fixture.state.change.changeBranch}`)
 			} finally {
 				await fixture.cleanup()
 			}

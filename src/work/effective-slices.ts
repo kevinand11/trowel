@@ -39,7 +39,7 @@ if (import.meta.vitest) {
 		})
 
 		test('enriches open PR state and needs-revision PR labels when usePrs is true', async () => {
-			const slice = fakeClassifiedSlice({ id: '125', title: 'Filter-only count terminal', prState: null, needsRevision: false })
+			const slice = fakeClassifiedSlice({ id: '125', title: 'Filter-only count terminal', sliceBranch: 'change-123/slice-125-filter-only-count-terminal', prState: null, needsRevision: false })
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 1, headRefName: 'change-123/slice-125-filter-only-count-terminal', isDraft: false, labels: [{ name: 'needs-revision' }] }],
 			})

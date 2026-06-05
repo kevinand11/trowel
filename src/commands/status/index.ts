@@ -28,16 +28,7 @@ async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
 	if (!change) throw new Error(`Change '${changeId}' not found`)
 	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })
 	const state = await classifyChange(change, slices, { gh: rt.gh, git: rt.git })
-	const targetBranch = change.targetBranch ?? await fallbackTargetBranch(rt.git)
-	writeStatusText(rt.stdout, renderStatus({ ...change, targetBranch, state }, slices))
-}
-
-async function fallbackTargetBranch(git: ReadOnlyGitFacts): Promise<string | undefined> {
-	try {
-		return await git.baseBranch()
-	} catch {
-		return undefined
-	}
+	writeStatusText(rt.stdout, renderStatus({ ...change, state }, slices))
 }
 
 async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean }> {
@@ -152,16 +143,18 @@ if (import.meta.vitest) {
 			},
 			listChanges: async () => [],
 			closeChange: async () => {},
+			updateChangeMetadata: async () => {},
 			createSlice: async () => {
 				throw new Error('nyi')
 			},
 			findSlices: async () => state.rawSlices,
 			findSlice: async () => null,
 			updateSlice: async () => {},
+			updateSliceMetadata: async () => {},
 		}
 	}
 
-	const change: ChangeRecord = { id: 'ab12cd', branch: 'change/ab12cd-feature', targetBranch: 'main', title: 'Add SSO', state: 'OPEN', closedAt: null }
+	const change: ChangeRecord = { id: 'ab12cd', changeBranch: 'change/ab12cd-feature', targetBranch: 'main', title: 'Add SSO', state: 'OPEN', closedAt: null }
 	const renderedChange = { ...change, state: 'open' as const }
 	const unmergedGit = () => branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false }))
 	const rawStatusSlice = (overrides: Partial<Slice> = {}): Slice => ({
@@ -173,6 +166,7 @@ if (import.meta.vitest) {
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
+		sliceBranch: `change-ab12cd/slice-${overrides.id ?? '42'}-implement-tab-parser`,
 		prState: null,
 		...overrides,
 	})
@@ -268,10 +262,12 @@ if (import.meta.vitest) {
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
 				closeChange: async () => {},
+				updateChangeMetadata: async () => {},
 				createSlice: async () => { throw new Error('nyi') },
 				findSlices: async () => [rawSlice],
 				findSlice: async (sliceId) => (sliceId === rawSlice.id ? { changeId: change.id, slice: rawSlice } : null),
 				updateSlice: async () => {},
+				updateSliceMetadata: async () => {},
 			}
 			const { gh } = recordingGhOps()
 			let buf = ''
@@ -297,10 +293,10 @@ if (import.meta.vitest) {
 			})
 
 			expect(buf).toContain('State:               landed')
-			expect(gitCalls).toContain(`remoteBranchExists(${change.branch})`)
-			expect(gitCalls).toContain(`fetch(${change.branch})`)
+			expect(gitCalls).toContain(`remoteBranchExists(${change.changeBranch})`)
+			expect(gitCalls).toContain(`fetch(${change.changeBranch})`)
 			expect(gitCalls).toContain('fetch(main)')
-			expect(gitCalls).toContain(`commitsAhead(origin/${change.branch},origin/main)`)
+			expect(gitCalls).toContain(`commitsAhead(origin/${change.changeBranch},origin/main)`)
 			expectNoBranchMutations(gitCalls)
 		})
 
@@ -311,10 +307,12 @@ if (import.meta.vitest) {
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
 				closeChange: async () => {},
+				updateChangeMetadata: async () => {},
 				createSlice: async () => { throw new Error('nyi') },
 				findSlices: async () => [rawSlice],
 				findSlice: async (sliceId) => (sliceId === rawSlice.id ? { changeId: change.id, slice: rawSlice } : null),
 				updateSlice: async () => {},
+				updateSliceMetadata: async () => {},
 			}
 			const { gh } = recordingGhOps()
 			const gitCalls: string[] = []
@@ -356,7 +354,7 @@ if (import.meta.vitest) {
 			expect(buf).toContain('Change ab12cd  Add SSO')
 			expect(buf).toContain('State:               open')
 			expect(buf).toContain('Target branch:       main')
-			expect(buf).toContain('Integration branch:  change/ab12cd-feature')
+			expect(buf).toContain('Change branch:       change/ab12cd-feature')
 			expect(buf).toContain('Guidance:            work remains')
 			expect(buf).toContain('(no slices)')
 		})
@@ -370,7 +368,7 @@ if (import.meta.vitest) {
 		test('usePrs:true renders a ready storage slice with an open PR as in-flight', async () => {
 			const storage = fakeStorage({
 				change,
-				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], prState: null }],
+				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: `change-${change.id}/slice-124-read-query-shape-validation`, prState: null }],
 			})
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 130, headRefName: `change-${change.id}/slice-124-read-query-shape-validation`, isDraft: false }],
@@ -393,6 +391,7 @@ if (import.meta.vitest) {
 			readyForAgent: false,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: `change-ab12cd/slice-${overrides.id ?? 's1'}-a-slice`,
 			prState: null,
 			...overrides,
 		})
@@ -455,10 +454,11 @@ if (import.meta.vitest) {
 		function sliceStorage(change: ChangeRecord, rawSlices: Slice[]): Storage {
 			const byId = new Map(rawSlices.map((s) => [s.id, s]))
 			return {
-				createChange: async () => ({ id: 'x', branch: 'x' }),
+				createChange: async () => ({ id: 'x', title: 'x' }),
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
 				closeChange: async () => {},
+				updateChangeMetadata: async () => {},
 				createSlice: async () => { throw new Error('nyi') },
 				findSlices: async () => rawSlices,
 				findSlice: async (sliceId) => {
@@ -466,6 +466,7 @@ if (import.meta.vitest) {
 					return s ? { changeId: change.id, slice: s } : null
 				},
 				updateSlice: async () => {},
+				updateSliceMetadata: async () => {},
 			}
 		}
 
@@ -478,6 +479,7 @@ if (import.meta.vitest) {
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
+			sliceBranch: `change-ab12cd/slice-${overrides.id ?? 's1'}-a-slice`,
 			prState: null,
 			...overrides,
 		})

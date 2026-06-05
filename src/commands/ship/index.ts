@@ -78,7 +78,7 @@ async function loadShipContext(changeId: string, rt: ShipRuntime): Promise<ShipC
 		change,
 		slices,
 		state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }),
-		targetBranch: change.targetBranch ?? await rt.git.baseBranch(),
+		targetBranch: change.targetBranch,
 	}
 }
 
@@ -120,19 +120,19 @@ function abortedChangeError(changeId: string): Error {
 
 async function shipViaMerge(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await runCloseOut(
-		{ kind: 'change', id: change.id, branch: change.branch, targetBranch, title: change.title },
+		{ kind: 'change', id: change.id, changeBranch: change.changeBranch, targetBranch, title: change.title },
 		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, projectRoot: rt.projectRoot, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
 	)
 	return true
 }
 
 async function shipViaPr(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
-	await ensureRemoteIntegrationBranch(change.branch, rt)
+	await ensureRemoteChangeBranch(change.changeBranch, rt)
 	await runCloseOut(
-		{ kind: 'change', id: change.id, branch: change.branch, targetBranch, title: change.title },
+		{ kind: 'change', id: change.id, changeBranch: change.changeBranch, targetBranch, title: change.title },
 		{ storage: rt.storage, git: rt.git, gh: rt.gh, log: rt.stdout, config: { usePrs: true, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify } },
 	)
-	const prNumber = await rt.gh.findPrNumberByHead(change.branch)
+	const prNumber = await rt.gh.findPrNumberByHead(change.changeBranch)
 	if (!(await optionalConfirm(rt, `Merge Close-out PR #${prNumber} now? [y/N]`))) return false
 	await rt.gh.mergePr(prNumber, rt.mergeMethod)
 	return await branchCleanupAllowedAfterCloseOut(change.id, rt)
@@ -164,16 +164,16 @@ async function cleanupAfterShip(change: ChangeRecord, targetBranch: string, rt: 
 	})
 }
 
-async function ensureRemoteIntegrationBranch(branch: string, rt: ShipRuntime): Promise<void> {
+async function ensureRemoteChangeBranch(branch: string, rt: ShipRuntime): Promise<void> {
 	await rt.git.fetch(branch).catch(() => undefined)
 	if (!(await rt.git.remoteBranchExists(branch))) {
-		await requiredConfirm(rt, `Remote branch origin/${branch} does not exist. Publish Integration branch before shipping? [Y/n]`)
+		await requiredConfirm(rt, `Remote Change branch origin/${branch} does not exist. Publish Change branch before shipping? [Y/n]`)
 		await rt.git.pushSetUpstream(branch)
 		return
 	}
 	const ahead = await rt.git.commitsAhead(branch, `origin/${branch}`)
 	if (ahead <= 0) return
-	await requiredConfirm(rt, `Integration branch has ${ahead} local commit(s) not on origin/${branch}. Push before shipping? [Y/n]`)
+	await requiredConfirm(rt, `Change branch has ${ahead} local commit(s) not on origin/${branch}. Push before shipping? [Y/n]`)
 	await rt.git.push(branch)
 }
 
@@ -235,7 +235,7 @@ if (import.meta.vitest) {
 		const closed: string[] = []
 		let changeClosed = false
 		const storage = args.storage ?? fakeSliceStorage([fakeClassifiedSlice({ id: 's1', title: 'Done', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: true })], '3', {
-			findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: changeClosed ? 'CLOSED' : 'OPEN', closedAt: changeClosed ? '2026-06-04T00:00:00.000Z' : null }),
+			findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: changeClosed ? 'CLOSED' : 'OPEN', closedAt: changeClosed ? '2026-06-04T00:00:00.000Z' : null }),
 			closeChange: async (id) => {
 				closed.push(id)
 				changeClosed = true
@@ -291,14 +291,14 @@ if (import.meta.vitest) {
 		})
 
 		test('done Change exits successfully through cleanup', async () => {
-			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'CLOSED' }) })
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED' }) })
 			const { rt, out } = makeRt({ storage, gh: recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'MERGED' }) }).gh })
 			await runShip('3', rt)
 			expect(out.join('')).toContain('already done')
 		})
 
 		test('open Changes fail with non-done slice details and no cleanup', async () => {
-			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's2', title: 'Needs work', state: 'open', readyForAgent: true })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'OPEN', closedAt: null }) })
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's2', title: 'Needs work', state: 'open', readyForAgent: true })], '3', { findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'OPEN', closedAt: null }) })
 			const { rt, gitCalls, closed } = makeRt({ storage, deleteBranchPolicy: 'always' })
 			await expect(runShip('3', rt)).rejects.toThrow(/s2 {2}open {2}Needs work/)
 			expect(closed).toEqual([])
@@ -306,7 +306,7 @@ if (import.meta.vitest) {
 		})
 
 		test('aborted Changes refuse ship and point to abort cleanup', async () => {
-			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, branch: 'change-3-x', title: 'X', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }) })
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }) })
 			const { rt, gitCalls } = makeRt({ storage, deleteBranchPolicy: 'always' })
 			await expect(runShip('3', rt)).rejects.toThrow(/trowel change abort 3/)
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()

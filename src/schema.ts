@@ -136,10 +136,10 @@ export const defaultConfig: Config = {
 		review: false,
 		// Default true: every workflow runs each slice on its own branch, then host-merges (no PRs)
 		// or opens a draft PR (with `usePrs: true`). Set false to keep the old file-style
-		// integration-direct behavior (one branch per Change, implementers serialize).
+		// Change branch direct behavior (one branch per Change, implementers serialize).
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
-		// Host merges slice branches into the integration branch via `git merge --no-ff`.
+		// Host merges slice branches into the Change branch via `git merge --no-ff`.
 		// If the project's commit-msg hook enforces a strict format (e.g. Conventional
 		// Commits) it'll reject git's default "Merge branch 'X' into 'Y'" message and
 		// leave the tree half-merged. Set this to true to pass --no-verify on those
