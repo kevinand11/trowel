@@ -454,7 +454,7 @@ if (import.meta.vitest) {
 		function sliceStorage(change: ChangeRecord, rawSlices: Slice[]): Storage {
 			const byId = new Map(rawSlices.map((s) => [s.id, s]))
 			return {
-				createChange: async () => ({ id: 'x', changeBranch: 'x' }),
+				createChange: async () => ({ id: 'x', title: 'x' }),
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
 				closeChange: async () => {},

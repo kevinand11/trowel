@@ -76,6 +76,8 @@ export type Slice = {
 export type ClassifiedSlice = Slice
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'closedAt' | 'blockedBy'>>
+export type CreatedChange = Pick<ChangeRecord, 'id' | 'title'>
+export type CreatedSlice = Pick<Slice, 'id' | 'title'>
 export type ChangeMetadataPatch = Partial<Pick<ChangeRecord, 'targetBranch' | 'changeBranch'>>
 export type SliceMetadataPatch = Partial<Pick<Slice, 'sliceBranch'>>
 
@@ -146,14 +148,14 @@ export type StorageFactory = (deps: StorageDeps) => Storage
 
 export interface Storage {
 	// Change lifecycle
-	createChange(spec: ChangeSpec): Promise<{ id: string; changeBranch: string }>
+	createChange(spec: ChangeSpec): Promise<CreatedChange>
 	findChange(id: string): Promise<ChangeRecord | null>
 	listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]>
 	closeChange(id: string): Promise<void>
 	updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void>
 
 	// Slice lifecycle
-	createSlice(changeId: string, spec: SliceSpec): Promise<Slice>
+	createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice>
 	findSlices(changeId: string): Promise<Slice[]>
 	/**
 	 * Look up a slice by its global id without knowing the parent Change. Returns the slice plus its

@@ -44,6 +44,7 @@ export function buildStorage(base: CommandBase, storageKind: StorageKind, overri
 }
 
 export type GrillCommandRuntime = {
+	config: Config
 	projectRoot: string
 	storage: Storage
 	git: GitOps
@@ -63,6 +64,7 @@ export async function buildGrillCommandRuntime(commandName: 'start', opts: { sto
 	const harness = getHarness(harnessKind)
 	const outPath = path.resolve(projectRoot, '.trowel', outFileName)
 	return {
+		config,
 		projectRoot,
 		storage: buildStorage(base, storageKind),
 		git,

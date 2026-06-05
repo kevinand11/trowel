@@ -17,7 +17,7 @@ export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): C
 }
 
 const noop = async (): Promise<void> => {}
-const defaultCreatedEntity = async (): Promise<{ id: string; changeBranch: string }> => ({ id: 'x', changeBranch: 'x' })
+const defaultCreatedEntity = async (): Promise<{ id: string; title: string }> => ({ id: 'x', title: 'x' })
 const emptyChangeSummaries = async (): Promise<Awaited<ReturnType<Storage['listChanges']>>> => []
 
 export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1', overrides: Partial<Storage> = {}): Storage {
