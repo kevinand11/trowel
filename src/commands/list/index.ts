@@ -37,7 +37,7 @@ function stateCounts(slices: ClassifiedSlice[]): Record<SliceState, number> {
 }
 
 async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
-	const summaries = await rt.storage.listChanges({ state: 'all' })
+	const summaries = await rt.storage.listChanges()
 	const rows = await Promise.all(summaries.map((summary) => listChangeRow(rt, summary)))
 	return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
@@ -106,10 +106,10 @@ if (import.meta.vitest) {
 	})
 
 	describe('listChangeRows', () => {
-		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[], listStates: string[]): Storage {
+		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[], listCalls: string[]): Storage {
 			return fakeSliceStorage(slices, null, {
-				listChanges: async (opts) => {
-					listStates.push(opts.state)
+				listChanges: async () => {
+					listCalls.push('listChanges')
 					return summaries
 				},
 				findChange: async (id) => ({
@@ -157,9 +157,9 @@ if (import.meta.vitest) {
 			)
 		}
 
-		test('sorts newest first by createdAt and requests all Changes', async () => {
+		test('sorts newest first by createdAt and lists Changes once', async () => {
 			const { gh } = recordingGhOps()
-			const listStates: string[] = []
+			const listCalls: string[] = []
 			const rows = await listChangeRows({
 				storage: storageWith(
 					[
@@ -167,19 +167,19 @@ if (import.meta.vitest) {
 						{ id: 'new', title: 'New', changeBranch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
 					],
 					[],
-					listStates,
+					listCalls,
 				),
 				pr: false,
 				gh,
 				git: branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })),
 			})
 			expect(rows.map((r) => r.id)).toEqual(['new', 'old'])
-			expect(listStates).toEqual(['all'])
+			expect(listCalls).toEqual(['listChanges'])
 		})
 
 		test('computes landed state through branch-stable git facts without mutating checkout', async () => {
 			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
-			const listStates: string[] = []
+			const listCalls: string[] = []
 			const gitCalls: string[] = []
 			const slices = [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })]
 
@@ -187,7 +187,7 @@ if (import.meta.vitest) {
 				storage: storageWith(
 					[{ id: '1', title: 'Done', changeBranch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }],
 					slices,
-					listStates,
+					listCalls,
 				),
 				pr: false,
 				gh,

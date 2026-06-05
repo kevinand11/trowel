@@ -95,7 +95,7 @@ export interface Storage {
 	// Change lifecycle
 	createChange(spec: ChangeSpec): Promise<CreatedChange>
 	findChange(id: string): Promise<ChangeRecord | null>
-	listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]>
+	listChanges(): Promise<ChangeSummary[]>
 	finalizeChange(changeId: string): Promise<void>
 	abortChange(changeId: string): Promise<void>
 	updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void>

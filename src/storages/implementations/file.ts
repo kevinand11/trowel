@@ -49,8 +49,6 @@ type MutableStore = {
 	implementedAt: string | null
 	auditedAt: string | null
 }
-type StateFilter = { state: 'open' | 'closed' | 'all' }
-
 function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
 	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
 	applyBlockedByPatch(store, patch.blockedBy)
@@ -79,16 +77,6 @@ function applyValuePatch<T, K extends keyof T>(store: T, key: K, value: T[K] | u
 	if (value !== undefined) store[key] = value
 }
 
-const STATE_FILTERS: Record<StateFilter['state'], (store: { closedAt: string | null }) => boolean> = {
-	all: () => true,
-	open: (store) => store.closedAt === null,
-	closed: (store) => store.closedAt !== null,
-}
-
-function acceptsState(store: { closedAt: string | null }, opts: StateFilter): boolean {
-	return STATE_FILTERS[opts.state](store)
-}
-
 function jsonWithNewline(value: unknown): string {
 	return `${JSON.stringify(value, null, 2)}\n`
 }
@@ -97,18 +85,14 @@ function baseStore(id: string, slug: string, title: string): Omit<ChangeStore, '
 	return { id, slug, title, createdAt: new Date().toISOString(), closedAt: null }
 }
 
-async function listStoreSummaries(root: string, opts: StateFilter): Promise<ChangeSummary[]> {
+async function listStoreSummaries(root: string): Promise<ChangeSummary[]> {
 	const summaries: ChangeSummary[] = []
-	for (const entry of await readdirOrEmpty(root)) {
-		const summary = await readStoreSummary(path.join(root, entry, 'store.json'), opts)
-		if (summary) summaries.push(summary)
-	}
+	for (const entry of await readdirOrEmpty(root)) summaries.push(await readStoreSummary(path.join(root, entry, 'store.json')))
 	return summaries
 }
 
-async function readStoreSummary(storePath: string, opts: StateFilter): Promise<ChangeSummary | null> {
+async function readStoreSummary(storePath: string): Promise<ChangeSummary> {
 	const store = validateChangeStore(JSON.parse(await readFile(storePath, 'utf8')), storePath)
-	if (!acceptsState(store, opts)) return null
 	return { id: store.id, title: store.title, changeBranch: store.changeBranch, createdAt: store.createdAt }
 }
 
@@ -200,8 +184,8 @@ export const createFileStorage: StorageFactory = (deps) => {
 		})
 	}
 
-	async function listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]> {
-		return listStoreSummaries(deps.changesDir, opts)
+	async function listChanges(): Promise<ChangeSummary[]> {
+		return listStoreSummaries(deps.changesDir)
 	}
 
 	async function closeStore(dir: string): Promise<void> {
@@ -970,28 +954,14 @@ if (import.meta.vitest) {
 
 		test('returns empty array when changesDir does not exist', async () => {
 			const storage = createFileStorage(f.deps)
-			expect(await storage.listChanges({ state: 'open' })).toEqual([])
+			expect(await storage.listChanges()).toEqual([])
 		})
 
-		test('returns one summary per Change with closedAt === null, skipping closed ones', async () => {
+		test('returns both open and closed Changes', async () => {
 			await writeAlphaBetaChangeFixtures(f)
 
 			const storage = createFileStorage(f.deps)
-			const open = await storage.listChanges({ state: 'open' })
-			expect(open).toHaveLength(1)
-			expect(open[0]).toEqual({
-				id: 'bbbbbb',
-				title: 'Beta',
-				changeBranch: 'change-bbbbbb-beta',
-				createdAt: '2026-05-11T00:00:00.000Z',
-			})
-		})
-
-		test('returns both open and closed Changes when called with { state: "all" }', async () => {
-			await writeAlphaBetaChangeFixtures(f)
-
-			const storage = createFileStorage(f.deps)
-			const all = await storage.listChanges({ state: 'all' })
+			const all = await storage.listChanges()
 			expect(all).toHaveLength(2)
 			expect(all.map((p) => p.id).sort()).toEqual(['aaaaaa', 'bbbbbb'])
 		})
@@ -1019,24 +989,11 @@ if (import.meta.vitest) {
 			}
 
 			const storage = createFileStorage(f.deps)
-			const out = await storage.listChanges({ state: 'open' })
+			const out = await storage.listChanges()
 			expect(out.find((p) => p.id === 'aaaaaa')!.createdAt).toBe('2026-05-01T00:00:00.000Z')
 			expect(out.find((p) => p.id === 'bbbbbb')!.createdAt).toBe('2026-05-12T00:00:00.000Z')
 		})
 
-		test('returns only closed Changes when called with { state: "closed" }', async () => {
-			await writeAlphaBetaChangeFixtures(f)
-
-			const storage = createFileStorage(f.deps)
-			const closed = await storage.listChanges({ state: 'closed' })
-			expect(closed).toHaveLength(1)
-			expect(closed[0]).toEqual({
-				id: 'aaaaaa',
-				title: 'Alpha',
-				changeBranch: 'change-aaaaaa-alpha',
-				createdAt: '2026-05-11T00:00:00.000Z',
-			})
-		})
 	})
 
 	describe('file storage: close', () => {

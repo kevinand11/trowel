@@ -173,8 +173,8 @@ export const createIssueStorage: StorageFactory = (deps) => {
 				closedAt,
 			}
 		},
-		listChanges: async (opts) => {
-			const issues = await deps.gh.listIssues({ label: deps.labels.change, state: opts.state })
+		listChanges: async () => {
+			const issues = await deps.gh.listIssues({ label: deps.labels.change, state: 'all' })
 			return issues.map((issue) => ({
 				id: String(issue.number),
 				title: issue.title,
@@ -527,21 +527,14 @@ if (import.meta.vitest) {
 		test('returns empty array when no issues match the change label', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			expect(await storage.listChanges({ state: 'open' })).toEqual([])
-			expect(calls).toEqual([['listIssues', { label: 'change', state: 'open' }]])
+			expect(await storage.listChanges()).toEqual([])
+			expect(calls).toEqual([['listIssues', { label: 'change', state: 'all' }]])
 		})
 
-		test('passes state: "closed" through to GhOps', async () => {
+		test('queries all Change issues through GhOps', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.listChanges({ state: 'closed' })
-			expect(calls).toEqual([['listIssues', { label: 'change', state: 'closed' }]])
-		})
-
-		test('passes state: "all" through to GhOps', async () => {
-			const { deps, calls } = makeDeps()
-			const storage = createIssueStorage(deps)
-			await storage.listChanges({ state: 'all' })
+			await storage.listChanges()
 			expect(calls).toEqual([['listIssues', { label: 'change', state: 'all' }]])
 		})
 
@@ -563,7 +556,7 @@ if (import.meta.vitest) {
 				],
 			})
 			const storage = createIssueStorage(deps)
-			const result = await storage.listChanges({ state: 'open' })
+			const result = await storage.listChanges()
 			expect(result).toEqual([
 				{ id: '42', title: 'Fix Tabs', changeBranch: 'change-42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
 				{ id: '7', title: 'Add ORM', changeBranch: 'change-7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
