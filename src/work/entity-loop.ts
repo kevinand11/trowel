@@ -165,7 +165,7 @@ if (import.meta.vitest) {
 			findChange: async (id) => (id === change.id ? change : null),
 			findSlices: async () => slices,
 			finalizeSlice: opts.finalizeSlice ?? (async () => {}),
-			closeChange: async () => {
+			abortChange: async () => {
 				changeClosed = true
 			},
 		})

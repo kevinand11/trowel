@@ -212,7 +212,11 @@ export const createFileStorage: StorageFactory = (deps) => {
 		await writeFile(storePath, jsonWithNewline(store))
 	}
 
-	async function closeChange(id: string): Promise<void> {
+	async function finalizeChange(id: string): Promise<void> {
+		return withMutationLock(deps.projectRoot, async () => closeStore(await findChangeDir(id)))
+	}
+
+	async function abortChange(id: string): Promise<void> {
 		return withMutationLock(deps.projectRoot, async () => closeStore(await findChangeDir(id)))
 	}
 
@@ -357,7 +361,8 @@ export const createFileStorage: StorageFactory = (deps) => {
 		createChange,
 		findChange,
 		listChanges,
-		closeChange,
+		finalizeChange,
+		abortChange,
 		updateChangeMetadata,
 		createSlice,
 		findSlices,
@@ -1046,7 +1051,7 @@ if (import.meta.vitest) {
 		test('sets closedAt in store.json without auto-committing the change', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
-			await storage.closeChange(id)
+			await storage.finalizeChange(id)
 			const storePath = path.join(f.changesDir, `${id}-alpha`, 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8'))
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
@@ -1057,11 +1062,11 @@ if (import.meta.vitest) {
 		test('idempotent: re-running close on a closed Change is a no-op', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
-			await storage.closeChange(id)
+			await storage.finalizeChange(id)
 			const storePath = path.join(f.changesDir, `${id}-alpha`, 'store.json')
 			const firstClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
 			const commitCountBefore = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
-			await storage.closeChange(id)
+			await storage.finalizeChange(id)
 			const secondClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
 			expect(secondClosedAt).toBe(firstClosedAt)
 			const commitCountAfter = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
@@ -1238,7 +1243,7 @@ if (import.meta.vitest) {
 			const deps: StorageDeps = { ...f.deps, abortOptions: { comment: null, deleteBranch: 'never' } }
 			const storage = createFileStorage(deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Beta', body: 'b' })
-			await storage.closeChange(id)
+			await storage.finalizeChange(id)
 			expect(await storage.findChange(id)).toMatchObject({ id, changeBranch, targetBranch: 'main', title: 'Beta' })
 			expect((await storage.findChange(id))!.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
@@ -1275,7 +1280,7 @@ if (import.meta.vitest) {
 		test('closed Changes reserve their id (counter does not roll back)', async () => {
 			const storage = createFileStorage(f.deps)
 			const first = await createMaterialisedChange(storage, { title: 'First', body: 'a' })
-			await storage.closeChange(first.id)
+			await storage.finalizeChange(first.id)
 			const second = await storage.createChange({ title: 'Second', body: 'b' })
 			expect(second.id).toBe('2')
 		})
@@ -1372,7 +1377,7 @@ if (import.meta.vitest) {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
 			await storage.finalizeSlice(changeId, slice.id)
-			let store = JSON.parse(
+			const store = JSON.parse(
 				await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'),
 			)
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)

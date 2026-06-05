@@ -96,7 +96,8 @@ export interface Storage {
 	createChange(spec: ChangeSpec): Promise<CreatedChange>
 	findChange(id: string): Promise<ChangeRecord | null>
 	listChanges(opts: { state: 'open' | 'closed' | 'all' }): Promise<ChangeSummary[]>
-	closeChange(id: string): Promise<void>
+	finalizeChange(changeId: string): Promise<void>
+	abortChange(changeId: string): Promise<void>
 	updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void>
 
 	// Slice lifecycle

@@ -89,7 +89,7 @@ async function abortOpenOrReadyChange(
 ): Promise<void> {
 	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
-	await rt.storage.closeChange(change.id)
+	await rt.storage.abortChange(change.id)
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
@@ -98,7 +98,7 @@ async function abortInFlightChange(change: ChangeRecord, slices: ClassifiedSlice
 	await closeOpenCloseOutPr(change, rt)
 	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
-	await rt.storage.closeChange(change.id)
+	await rt.storage.abortChange(change.id)
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
@@ -252,8 +252,9 @@ if (import.meta.vitest) {
 			},
 			listChanges: async () => [],
 			updateChangeMetadata: async () => {},
-			closeChange: async (id) => {
-				calls.push(`closeChange(${id})`)
+			finalizeChange: async () => {},
+			abortChange: async (id) => {
+				calls.push(`abortChange(${id})`)
 				if (state.change && state.change.id === id) state.change.closedAt = new Date().toISOString()
 			},
 			createSlice: async () => {
@@ -412,7 +413,7 @@ if (import.meta.vitest) {
 				runtime: { deleteBranchPolicy: 'never' },
 			})
 
-			expect(storageCalls).toContain('closeChange(42)')
+			expect(storageCalls).toContain('abortChange(42)')
 			expect(gitCalls.find((call) => call.startsWith('deleteBranch'))).toBeUndefined()
 			expect(gitState.current).toBe('change-42-feature')
 		})
@@ -430,7 +431,7 @@ if (import.meta.vitest) {
 			expect(ghCalls).toContainEqual(['closePr', 10, { comment: 'Closed via trowel' }])
 			expect(ghCalls.map((call) => call[0])).not.toContain('mergePr')
 			expect(storageCalls).toContain('abortSlice(s1)')
-			expect(storageCalls).toContain('closeChange(42)')
+			expect(storageCalls).toContain('abortChange(42)')
 			expect(storageState.change!.closedAt).not.toBeNull()
 			expect(gitCalls).toContain('deleteBranch(change-42-feature)')
 			expect(gitCalls).toContain(`deleteBranch(${sliceBranch})`)
@@ -466,7 +467,7 @@ if (import.meta.vitest) {
 			})
 
 			expect(ghCalls).toContainEqual(['closePr', 11, { comment: 'Closed via trowel' }])
-			expect(storageCalls).toContain('closeChange(42)')
+			expect(storageCalls).toContain('abortChange(42)')
 			expect(storageCalls.find((call) => call.startsWith('updateSlice'))).toBeUndefined()
 		})
 
@@ -481,7 +482,7 @@ if (import.meta.vitest) {
 			})
 
 			expect(stdout).toMatch(/Aborted; nothing changed/)
-			expect(storageCalls).not.toContain('closeChange(42)')
+			expect(storageCalls).not.toContain('abortChange(42)')
 			expect(ghCalls.find((call) => call[0] === 'closePr')).toBeUndefined()
 		})
 
@@ -500,7 +501,7 @@ if (import.meta.vitest) {
 			expect(ghCalls).toContainEqual(['closePr', 20, { comment: 'Closed via trowel' }])
 			expect(ghCalls).toContainEqual(['closePr', 21, { comment: 'Closed via trowel' }])
 			expect(ghCalls.map((call) => call[0])).not.toContain('mergePr')
-			expect(storageCalls).toContain('closeChange(42)')
+			expect(storageCalls).toContain('abortChange(42)')
 		})
 
 		test('already aborted Change: runs cleanup only', async () => {
@@ -510,7 +511,7 @@ if (import.meta.vitest) {
 			})
 
 			expect(stdout).toMatch(/already aborted; running cleanup/)
-			expect(storageCalls).not.toContain('closeChange(42)')
+			expect(storageCalls).not.toContain('abortChange(42)')
 			expect(gitCalls).toContain('deleteBranch(change-42-feature)')
 		})
 

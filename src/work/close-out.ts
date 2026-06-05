@@ -126,7 +126,7 @@ async function restoreAfterFailedCloseOutMerge(current: string, targetBranch: st
 }
 
 async function finalizeEntity(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
-	await deps.storage.closeChange(entity.id)
+	await deps.storage.finalizeChange(entity.id)
 }
 
 async function deleteAutoBranchIfAllowed(entity: CloseOutEntity, deps: CloseOutDeps, tag: string): Promise<void> {
@@ -163,9 +163,10 @@ if (import.meta.vitest) {
 			createChange: async () => ({ id: 'x', title: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
-			closeChange: async (id) => {
+			finalizeChange: async (id) => {
 				closed.change.push(id)
 			},
+			abortChange: async () => {},
 			updateChangeMetadata: async () => {},
 			createSlice: async () => {
 				throw new Error('nyi')

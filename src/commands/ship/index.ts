@@ -119,7 +119,7 @@ async function shipInFlightChange(change: ChangeRecord, targetBranch: string, rt
 }
 
 async function finalizeLandedChange(change: ChangeRecord, rt: ShipRuntime): Promise<void> {
-	await rt.storage.closeChange(change.id)
+	await rt.storage.finalizeChange(change.id)
 	rt.stdout(`Change ${change.id} has landed; finalized before cleanup.\n`)
 }
 
@@ -310,10 +310,9 @@ if (import.meta.vitest) {
 						changeBranch: 'change-3-x',
 						targetBranch: 'main',
 						title: 'X',
-						state: changeClosed ? 'CLOSED' : 'OPEN',
 						closedAt: changeClosed ? '2026-06-04T00:00:00.000Z' : null,
 					}),
-					closeChange: async (id) => {
+					finalizeChange: async (id) => {
 						closed.push(id)
 						changeClosed = true
 					},

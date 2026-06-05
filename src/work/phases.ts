@@ -397,7 +397,8 @@ if (import.meta.vitest) {
 			createChange: async () => ({ id: 'p', title: 'p' }),
 			findChange: async () => null,
 			listChanges: async () => [],
-			closeChange: async () => {},
+			finalizeChange: async () => {},
+			abortChange: async () => {},
 			updateChangeMetadata: async () => {},
 			createSlice: async () => ({
 				id: 's',

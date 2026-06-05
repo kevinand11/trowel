@@ -200,7 +200,8 @@ if (import.meta.vitest) {
 			createChange: async () => ({ id: 'x', title: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
-			closeChange: async () => {},
+			finalizeChange: async () => {},
+			abortChange: async () => {},
 			createSlice: async () => {
 				throw new Error('unused')
 			},

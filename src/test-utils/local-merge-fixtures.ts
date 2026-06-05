@@ -79,7 +79,11 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 		createChange: async () => ({ id: state.change.id, title: state.change.title }),
 		findChange: async (id) => id === state.change.id ? { ...state.change } : null,
 		listChanges: async () => [],
-		closeChange: async (id) => {
+		finalizeChange: async (id) => {
+			if (id !== state.change.id) return
+			state.change.closedAt = new Date().toISOString()
+		},
+		abortChange: async (id) => {
 			if (id !== state.change.id) return
 			state.change.closedAt = new Date().toISOString()
 		},

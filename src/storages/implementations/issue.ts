@@ -182,7 +182,13 @@ export const createIssueStorage: StorageFactory = (deps) => {
 				createdAt: issue.createdAt,
 			}))
 		},
-		closeChange: async (id) => {
+		finalizeChange: async (id) => {
+			const no = entityIdToGhNumber(id)
+			const issue = await deps.gh.viewIssue(no)
+			if (issue.state === 'closed') return
+			await deps.gh.closeIssue(no)
+		},
+		abortChange: async (id) => {
 			const no = entityIdToGhNumber(id)
 			const issue = await deps.gh.viewIssue(no)
 			if (issue.state === 'closed') return
@@ -953,11 +959,11 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('issue storage: close', () => {
+	describe('issue storage: abortChange', () => {
 		test('runs closeIssue (no PR check, no branch ops — those are orchestrator-owned)', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.closeChange('42')
+			await storage.abortChange('42')
 			expect(calls).toContainEqual(['closeIssue', 42, undefined])
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeUndefined()
 		})
@@ -965,7 +971,7 @@ if (import.meta.vitest) {
 		test('idempotent: closeIssue not invoked if issue already CLOSED', async () => {
 			const { deps, calls } = makeDeps()
 			const storage = createIssueStorage(deps)
-			await storage.closeChange('42')
+			await storage.abortChange('42')
 			expect(calls.find((c) => c[1] === 'closeIssue')).toBeUndefined()
 		})
 
@@ -973,7 +979,7 @@ if (import.meta.vitest) {
 			const { deps, calls } = makeDeps()
 			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
-			await storage.closeChange('42')
+			await storage.abortChange('42')
 			expect(calls).toContainEqual(['closeIssue', 42, { comment: 'Closed via trowel' }])
 		})
 	})

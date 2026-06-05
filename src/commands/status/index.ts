@@ -173,7 +173,8 @@ if (import.meta.vitest) {
 				return state.change
 			},
 			listChanges: async () => [],
-			closeChange: async () => {},
+			finalizeChange: async () => {},
+			abortChange: async () => {},
 			updateChangeMetadata: async () => {},
 			createSlice: async () => {
 				throw new Error('nyi')
@@ -320,7 +321,8 @@ if (import.meta.vitest) {
 				},
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
-				closeChange: async () => {},
+				finalizeChange: async () => {},
+			abortChange: async () => {},
 				updateChangeMetadata: async () => {},
 				createSlice: async () => {
 					throw new Error('nyi')
@@ -388,7 +390,8 @@ if (import.meta.vitest) {
 				},
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
-				closeChange: async () => {},
+				finalizeChange: async () => {},
+			abortChange: async () => {},
 				updateChangeMetadata: async () => {},
 				createSlice: async () => {
 					throw new Error('nyi')
@@ -429,7 +432,7 @@ if (import.meta.vitest) {
 		test('change status shows landed for a merged Close-out PR without finalizing the Change', async () => {
 			const storage = fakeStorage({ change, rawSlices: [] })
 			const closed: string[] = []
-			storage.closeChange = async (id) => {
+			storage.finalizeChange = async (id) => {
 				closed.push(id)
 			}
 			const { gh } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 7, state: 'MERGED' }) })
@@ -594,7 +597,8 @@ if (import.meta.vitest) {
 				createChange: async () => ({ id: 'x', title: 'x' }),
 				findChange: async (id) => (id === change.id ? change : null),
 				listChanges: async () => [],
-				closeChange: async () => {},
+				finalizeChange: async () => {},
+			abortChange: async () => {},
 				updateChangeMetadata: async () => {},
 				createSlice: async () => {
 					throw new Error('nyi')
