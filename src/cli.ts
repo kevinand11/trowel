@@ -7,6 +7,7 @@ import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
 import { list } from './commands/list/index.ts'
+import { repairBranchMetadata } from './commands/repair-branch-metadata.ts'
 import { review } from './commands/review.ts'
 import { shipChange } from './commands/ship/index.ts'
 import { start } from './commands/start.ts'
@@ -142,6 +143,20 @@ export function run(): void {
 		.argument('[layer]', "Which layer to write: global | private | project", 'project')
 		.action(async (layer: string) => {
 			await init(layer)
+		})
+
+	const repairCmd = program.command('repair').description('Repair legacy trowel storage records')
+
+	repairCmd
+		.command('branch-metadata')
+		.description('Patch legacy issue-storage records with required Target, Change, and Slice branch metadata')
+		.option('--dry-run', 'Show intended metadata patches without changing GitHub issues (default)')
+		.option('--apply', 'Apply metadata patches to GitHub issues and verify strict reads')
+		.option('--target-branch <branch>', 'Target branch to write when legacy Changes are missing one (defaults to git default branch)')
+		.option('--per-slice-branches', 'Repair missing Slice branches as per-Slice branch names')
+		.option('--shared-slice-branches', 'Repair missing Slice branches as the parent Change branch')
+		.action(async (opts: { dryRun?: boolean; apply?: boolean; targetBranch?: string; perSliceBranches?: boolean; sharedSliceBranches?: boolean }) => {
+			await repairBranchMetadata(opts)
 		})
 
 	program
