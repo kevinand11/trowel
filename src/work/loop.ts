@@ -28,38 +28,41 @@ export type LoopDeps = {
 }
 
 /**
- * Concurrency derives from `config.work.perSliceBranches`:
- *
- * - `perSliceBranches: true` — slices land on their own branches, so parallel implementers
- *   are safe; the user's `config.turn.maxConcurrent` is the only cap.
- * - `perSliceBranches: false` — implementers commit directly on the Change branch, so
- *   any concurrency would race; force a cap of 1 regardless of user config.
+ * The numeric worker cap comes from config.turn.maxConcurrent. Branch safety is enforced
+ * separately by the scheduler: no two running Slices may share the same stored Slice branch.
  */
-function effectiveConcurrency(perSliceBranches: boolean, configCap: number | null): number {
+function effectiveConcurrency(configCap: number | null): number {
 	const cap = configCap ?? Number.POSITIVE_INFINITY
-	const storageCap = perSliceBranches ? Number.POSITIVE_INFINITY : 1
-	return Math.max(1, Math.floor(Math.min(cap, storageCap)))
+	return Math.max(1, Math.floor(cap))
 }
 
 async function findNextActionableSlice(
 	fetchEnriched: () => Promise<Slice[]>,
 	failed: Set<string>,
 	running: Map<string, Promise<void>>,
+	runningBranches: Set<string>,
 	claimedThisFill: Set<string>,
+	claimedBranchesThisFill: Set<string>,
 	config: ClassifySliceConfig,
 ): Promise<ClassifiedSlice | null> {
 	const slices = classifySlices(await fetchEnriched())
 	return slices.find((slice) => {
 		if (failed.has(slice.id)) return false
 		if (running.has(slice.id)) return false
+		if (runningBranches.has(slice.sliceBranch)) return false
 		if (claimedThisFill.has(slice.id)) return false
+		if (claimedBranchesThisFill.has(slice.sliceBranch)) return false
 		const resume = classify(slice, config)
 		return resume !== 'done' && resume !== 'blocked'
 	}) ?? null
 }
 
-function launchClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>): void {
-	const task = processClaim(changeId, slice, deps, failed).finally(() => running.delete(slice.id))
+function launchClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>, runningBranches: Set<string>): void {
+	runningBranches.add(slice.sliceBranch)
+	const task = processClaim(changeId, slice, deps, failed).finally(() => {
+		running.delete(slice.id)
+		runningBranches.delete(slice.sliceBranch)
+	})
 	running.set(slice.id, task)
 }
 
@@ -93,6 +96,7 @@ type WorkerLoopState = {
 	deps: LoopDeps
 	failed: Set<string>
 	running: Map<string, Promise<void>>
+	runningBranches: Set<string>
 	fetchEnriched: () => Promise<Slice[]>
 	config: ClassifySliceConfig
 	limit: number
@@ -108,28 +112,31 @@ function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 		deps,
 		failed: new Set<string>(),
 		running: new Map<string, Promise<void>>(),
+		runningBranches: new Set<string>(),
 		fetchEnriched: () => effectiveSlices.findSlices(changeId),
 		config: { usePrs: config.usePrs, review: config.review, perSliceBranches: config.perSliceBranches },
-		limit: effectiveConcurrency(config.perSliceBranches, config.maxConcurrent),
+		limit: effectiveConcurrency(config.maxConcurrent),
 		claims: 0,
 	}
 }
 
 async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 	const claimedThisFill = new Set<string>()
+	const claimedBranchesThisFill = new Set<string>()
 	while (state.running.size < state.limit) {
-		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, claimedThisFill, state.config)
+		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, claimedThisFill, claimedBranchesThisFill, state.config)
 		if (!slice) return
 		claimedThisFill.add(slice.id)
+		claimedBranchesThisFill.add(slice.sliceBranch)
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
-		launchClaim(state.changeId, slice, state.deps, state.failed, state.running)
+		launchClaim(state.changeId, slice, state.deps, state.failed, state.running, state.runningBranches)
 	}
 }
 
 async function stopIfIdle(state: WorkerLoopState): Promise<boolean> {
 	if (state.running.size > 0) return false
-	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, new Set(), state.config)
+	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, new Set(), new Set(), state.config)
 	if (remaining) return false
 	state.deps.log(`${state.tag} no actionable slices; exiting after ${state.claims} claim(s)`)
 	return true
@@ -251,8 +258,7 @@ if (import.meta.vitest) {
 		}
 	}
 
-	async function peakConcurrentImplementers(perSliceBranches: boolean, maxConcurrent: number): Promise<number> {
-		const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
+	async function peakConcurrentImplementers(slices: ClassifiedSlice[], maxConcurrent: number, perSliceBranches = true): Promise<number> {
 		const storage = makeStorage({ slices })
 		let live = 0
 		let peak = 0
@@ -366,17 +372,14 @@ if (import.meta.vitest) {
 			expect(after.find((s) => s.id === 'fine')!.state).toBe('done')
 		})
 
-		test('a rejected slice (storage throws) is logged, added to skip set, not retried', async () => {
+		test('a rejected slice (stored branch verify throws) is logged, added to skip set, not retried', async () => {
 			const a = makeSlice({ id: 'a' })
 			const b = makeSlice({ id: 'b' })
-			// usePrs:true + perSliceBranches:true → prepareImplement calls git.createRemoteBranch,
-			// an injection seam for per-slice failure.
 			const storage = makeStorage({ slices: [a, b] })
 			const git = noopGit()
-			// Branch does not exist yet → prepareImplement attempts createRemoteBranch.
-			git.branchExists = async () => false
-			git.createRemoteBranch = async (newBranch) => {
-				if (newBranch.includes('slice-a')) throw new Error('docker unreachable')
+			git.remoteBranchExists = async (branch) => {
+				if (branch.includes('slice-a')) throw new Error('docker unreachable')
+				return true
 			}
 			const calls: string[] = []
 			const logs: string[] = []
@@ -395,12 +398,14 @@ if (import.meta.vitest) {
 			expect(logs.some((m) => /slice-a\] error: docker unreachable/.test(m))).toBe(true)
 		})
 
-		test('perSliceBranches:false forces serial implementers even when config allows 3 (parallel implementers on Change branch would race)', async () => {
-			expect(await peakConcurrentImplementers(false, 3)).toBe(1)
+		test('scheduler serializes Slices that share the same stored Slice branch even when config allows 3', async () => {
+			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id, sliceBranch: 'change-p1-shared' }))
+			expect(await peakConcurrentImplementers(slices, 3, false)).toBe(1)
 		})
 
-		test('perSliceBranches:true honors config.maxConcurrent (slice-branches are parallel-safe)', async () => {
-			const peak = await peakConcurrentImplementers(true, 2)
+		test('scheduler honors config.maxConcurrent for distinct stored Slice branches', async () => {
+			const slices = ['1', '2', '3', '4'].map((id) => makeSlice({ id }))
+			const peak = await peakConcurrentImplementers(slices, 2)
 			expect(peak).toBeLessThanOrEqual(2)
 			expect(peak).toBeGreaterThan(1)
 		})

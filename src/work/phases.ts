@@ -27,7 +27,7 @@ function withPhaseLock<T>(deps: PhaseDeps, fn: () => Promise<T>): Promise<T> {
 	return withMutationLock(deps.projectRoot, fn)
 }
 
-function sliceBranchFor(_changeId: string, slice: Slice): string {
+function sliceBranchFor(slice: Slice): string {
 	return slice.sliceBranch
 }
 
@@ -38,31 +38,29 @@ async function pushSliceBranchIfNeeded(deps: PhaseDeps, branch: string, commits:
 }
 
 /**
- * Prepare the implementer sandbox.
- *
- * - `perSliceBranches: false`: implementer runs on the Change branch directly — no per-slice
- *   branch (commits land in-place via push at land time). Used by the legacy file-storage workflow.
- * - `perSliceBranches: true`: create a per-slice remote branch from the Change branch and
- *   fetch it so the worktree can check it out.
+ * Prepare the implementer Turn on the Slice's stored Slice branch. Branch creation is a
+ * start-time concern: work only verifies that the stored branch still exists remotely, fetches it,
+ * and fails loudly if metadata points at a missing branch.
  */
 export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	if (!ctx.config.perSliceBranches) {
-		return {
-			branch: ctx.changeBranch,
-			turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
-		}
-	}
-	const branch = sliceBranchFor(ctx.changeId, slice)
-	if (await deps.git.branchExists(branch)) {
-		deps.log(`[work change-${ctx.changeId} slice-${slice.id}] reusing existing slice branch '${branch}' (contains prior implementer commits from an aborted run)`)
-	} else {
-		await deps.git.createRemoteBranch(branch, ctx.changeBranch)
-	}
+	const branch = sliceBranchFor(slice)
+	assertPrHeadCanTargetChangeBranch(slice, ctx, branch)
+	await verifyStoredSliceBranch(deps, slice, ctx, branch)
 	await deps.git.fetch(branch)
 	return {
 		branch,
 		turnIn: { slice: { id: slice.id, title: slice.title, body: slice.body } },
 	}
+}
+
+async function verifyStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<void> {
+	if (await deps.git.remoteBranchExists(branch)) return
+	throw new Error(`stored Slice branch '${branch}' for Slice '${slice.id}' is missing on origin; create or restore the branch before running work for Change '${ctx.changeId}'`)
+}
+
+function assertPrHeadCanTargetChangeBranch(slice: Slice, ctx: PhaseCtx, branch: string): void {
+	if (!ctx.config.usePrs || branch !== ctx.changeBranch) return
+	throw new Error(`Slice '${slice.id}' stores Slice branch '${branch}', which equals Change branch '${ctx.changeBranch}'; config.work.usePrs cannot open a Slice PR with the same head and base`)
 }
 
 /**
@@ -72,14 +70,13 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
  * - `partial` → return `'partial'`, no side effects.
  * - `no-work-needed` → clear `readyForAgent` via storage, return `'no-work'`.
  *
- * `ready` handling dispatches on (perSliceBranches × usePrs):
- * - `perSliceBranches: false`, `usePrs: false`: push Change branch, finalize the slice via
- *   `updateSlice({closedAt})`, return `'done'`. (`usePrs: true` is impossible without
- *   slice branches — rejected at config load.)
- * - `perSliceBranches: true`, `usePrs: false`: push slice branch, host-side merge `--no-ff` into
- *   the Change branch, push the Change branch, close the slice via storage,
+ * `ready` handling dispatches on stored branch metadata and runtime `usePrs`:
+ * - `slice.sliceBranch === change.changeBranch`, `usePrs: false`: push the stored branch,
+ *   finalize the Slice, return `'done'`.
+ * - distinct stored Slice branch, `usePrs: false`: push the Slice branch, host-side merge
+ *   `--no-ff` into the Change branch, push the Change branch, close the Slice via storage,
  *   return `'done'`. Slice branch cleanup belongs to explicit Change-level Cleanup.
- * - `perSliceBranches: true`, `usePrs: true`: push slice branch, open a draft PR, return
+ * - distinct stored Slice branch, `usePrs: true`: push the Slice branch, open a draft PR, return
  *   `'progress'`. The next loop iteration's `findSlices` sees the PR and dispatches the reviewer.
  *   Works on every storage; at runtime requires a GitHub remote + `gh` auth (surfaced via
  *   `trowel doctor`, not preflight-gated).
@@ -123,8 +120,8 @@ async function landImplementNoWork(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx)
 }
 
 async function recoverNoWorkNeededSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome | null> {
-	if (!canRecoverNoWorkNeededSliceBranch(ctx)) return null
-	const branch = sliceBranchFor(ctx.changeId, slice)
+	if (!canRecoverNoWorkNeededSliceBranch(ctx, slice)) return null
+	const branch = sliceBranchFor(slice)
 	const ahead = await deps.git.commitsAhead(branch, ctx.changeBranch)
 	if (ahead <= 0) return null
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
@@ -133,23 +130,28 @@ async function recoverNoWorkNeededSliceBranch(deps: PhaseDeps, slice: Slice, ctx
 	return 'done'
 }
 
-function canRecoverNoWorkNeededSliceBranch(ctx: PhaseCtx): boolean {
-	return ctx.config.perSliceBranches && !ctx.config.usePrs
+function canRecoverNoWorkNeededSliceBranch(ctx: PhaseCtx, slice: Slice): boolean {
+	return !ctx.config.usePrs && sliceBranchFor(slice) !== ctx.changeBranch
 }
 
 async function landImplementReady(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, commits: number): Promise<PhaseOutcome> {
-	if (!ctx.config.perSliceBranches) return closeDirectChangeBranchSlice(deps, slice, ctx)
-	const branch = sliceBranchFor(ctx.changeId, slice)
-	await pushSliceBranchIfNeeded(deps, branch, commits, `[work change-${ctx.changeId} slice-${slice.id}]`)
-	if (ctx.config.usePrs) return openSliceDraftPr(deps, slice, ctx, branch)
+	const branch = sliceBranchFor(slice)
+	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
+	if (ctx.config.usePrs) {
+		assertPrHeadCanTargetChangeBranch(slice, ctx, branch)
+		await pushSliceBranchIfNeeded(deps, branch, commits, tag)
+		return openSliceDraftPr(deps, slice, ctx, branch)
+	}
+	if (branch === ctx.changeBranch) return closeDirectStoredSliceBranch(deps, slice, ctx, branch)
+	await pushSliceBranchIfNeeded(deps, branch, commits, tag)
 	await mergeSliceIntoChangeBranch(deps, slice, ctx, branch)
 	return 'done'
 }
 
-async function closeDirectChangeBranchSlice(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
+async function closeDirectStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
-	await deps.git.push(ctx.changeBranch)
-	deps.log(`${tag} pushed ${ctx.changeBranch}`)
+	await deps.git.push(branch)
+	deps.log(`${tag} pushed ${branch}`)
 	await finalizeSlice(deps, ctx.changeId, slice.id)
 	deps.log(`${tag} finalized slice`)
 	return 'done'
@@ -160,6 +162,7 @@ async function finalizeSlice(deps: PhaseDeps, changeId: string, sliceId: string)
 }
 
 async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
+	assertPrHeadCanTargetChangeBranch(slice, ctx, branch)
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.changeBranch, body: `Closes #${slice.id}` })
 	deps.log(`${tag} opened draft PR for ${branch}`)
@@ -174,8 +177,8 @@ async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, br
  * Looks up the slice branch's PR number so the reviewer prompt has `{pr.number, pr.branch}` to
  * fetch the diff and post comments against.
  */
-export async function prepareReview(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = sliceBranchFor(ctx.changeId, slice)
+export async function prepareReview(deps: PhaseDeps, slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
+	const branch = sliceBranchFor(slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },
@@ -206,8 +209,8 @@ export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut
  * Same PR-discovery as the reviewer plus a `fetchPrFeedback` call so the addresser prompt has the
  * reviewer's comments in `turnIn.feedback`.
  */
-export async function prepareAddress(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = sliceBranchFor(ctx.changeId, slice)
+export async function prepareAddress(deps: PhaseDeps, slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
+	const branch = sliceBranchFor(slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
 	const turnIn: TurnIn = {
@@ -246,7 +249,7 @@ const REVIEW_ADDRESS_LAND_RULES: ReviewAddressLandRule[] = [
 
 async function landReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
-	const branch = sliceBranchFor(ctx.changeId, slice)
+	const branch = sliceBranchFor(slice)
 	const rule = REVIEW_ADDRESS_LAND_RULES.find((r) => r.matches(kind, verdict))
 	return rule?.land(kind, deps, slice, verdict, ctx, branch, tag) ?? 'partial'
 }
@@ -297,6 +300,7 @@ if (import.meta.vitest) {
 	function makePhaseDeps(overrides: {
 		mergeNoFfThrows?: Error
 		mergeNoVerify?: boolean
+		remoteBranchExists?: (b: string) => boolean
 		branchExists?: (b: string) => boolean
 		commitsAhead?: number
 	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; needsRevision: boolean }; logs: string[] } {
@@ -314,7 +318,10 @@ if (import.meta.vitest) {
 			},
 			mergeAbort: recorded('mergeAbort'),
 			deleteRemoteBranch: recorded('deleteRemoteBranch'),
-			remoteBranchExists: async () => true,
+			remoteBranchExists: async (b) => {
+				calls.push({ method: 'remoteBranchExists', args: [b] })
+				return overrides.remoteBranchExists ? overrides.remoteBranchExists(b) : true
+			},
 			createRemoteBranch: recorded('createRemoteBranch'),
 			createLocalBranch: recorded('createLocalBranch'),
 			pushSetUpstream: recorded('pushSetUpstream'),
@@ -376,34 +383,40 @@ if (import.meta.vitest) {
 		config: { usePrs: false, review: false, perSliceBranches: true },
 	}
 
-	describe('prepareImplement: slice branch reuse on re-runs', () => {
-		test('slice branch does NOT exist → createRemoteBranch then fetch', async () => {
-			const { deps, calls } = makePhaseDeps({ branchExists: () => false })
+	describe('prepareImplement: stored Slice branch', () => {
+		test('stored Slice branch exists remotely → verifies, fetches, and returns it without creation', async () => {
+			const { deps, calls } = makePhaseDeps()
 			const prep = await prepareImplement(deps, slice, ctx)
 			const methods = calls.map((c) => c.method)
-			expect(methods).toContain('createRemoteBranch')
+			expect(methods).toContain('remoteBranchExists')
 			expect(methods).toContain('fetch')
+			expect(methods).not.toContain('createRemoteBranch')
 			expect(prep.branch).toBe('change-pid/slice-42-a-slice')
 		})
 
-		test('slice branch ALREADY exists → skip createRemoteBranch, still fetch, log a "reusing" warning', async () => {
-			const sliceBranch = 'change-pid/slice-42-a-slice'
-			const { deps, calls, logs } = makePhaseDeps({ branchExists: (b) => b === sliceBranch })
-			const prep = await prepareImplement(deps, slice, ctx)
+		test('stored Slice branch missing remotely → fails instead of creating it', async () => {
+			const { deps, calls } = makePhaseDeps({ remoteBranchExists: () => false })
+			await expect(prepareImplement(deps, slice, ctx)).rejects.toThrow(/stored Slice branch 'change-pid\/slice-42-a-slice'.*missing on origin/)
+			const methods = calls.map((c) => c.method)
+			expect(methods).toContain('remoteBranchExists')
+			expect(methods).not.toContain('createRemoteBranch')
+			expect(methods).not.toContain('fetch')
+		})
+
+		test('direct shared-branch Slice execution uses the stored Slice branch even when it equals the Change branch', async () => {
+			const { deps, calls } = makePhaseDeps()
+			const shared = { ...slice, sliceBranch: 'change-branch' }
+			const prep = await prepareImplement(deps, shared, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
 			const methods = calls.map((c) => c.method)
 			expect(methods).not.toContain('createRemoteBranch')
 			expect(methods).toContain('fetch')
-			expect(prep.branch).toBe(sliceBranch)
-			expect(logs.some((l) => /reusing existing slice branch/i.test(l))).toBe(true)
+			expect(prep.branch).toBe('change-branch')
 		})
 
-		test('perSliceBranches: false → no branch creation, no fetch, returns Change branch', async () => {
-			const { deps, calls } = makePhaseDeps()
-			const prep = await prepareImplement(deps, slice, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
-			const methods = calls.map((c) => c.method)
-			expect(methods).not.toContain('createRemoteBranch')
-			expect(methods).not.toContain('fetch')
-			expect(prep.branch).toBe('change-branch')
+		test('usePrs:true rejects a stored Slice branch equal to the Change branch', async () => {
+			const { deps } = makePhaseDeps()
+			const shared = { ...slice, sliceBranch: 'change-branch' }
+			await expect(prepareImplement(deps, shared, { ...ctx, config: { usePrs: true, review: false, perSliceBranches: true } })).rejects.toThrow(/same head and base/)
 		})
 	})
 
@@ -429,11 +442,30 @@ if (import.meta.vitest) {
 			expect(logs.some((l) => /no-work-needed but slice branch has 2 unmerged commit/.test(l))).toBe(true)
 		})
 
-		test('no-work-needed + perSliceBranches:false → just clear readyForAgent regardless of commitsAhead (Change branch direct mode has no slice branch to merge)', async () => {
+		test('no-work-needed + stored Slice branch equals Change branch → just clear readyForAgent regardless of commitsAhead', async () => {
 			const { deps, calls } = makePhaseDeps({ commitsAhead: 5 })
-			const outcome = await landImplement(deps, slice, { verdict: 'no-work-needed', notes: 'done', commits: 0 }, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
+			const shared = { ...slice, sliceBranch: 'change-branch' }
+			const outcome = await landImplement(deps, shared, { verdict: 'no-work-needed', notes: 'done', commits: 0 }, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
 			expect(outcome).toBe('no-work')
 			expect(calls.map((c) => c.method)).not.toContain('mergeNoFf')
+		})
+	})
+
+	describe('landImplement: stored branch landing', () => {
+		test('ready + stored Slice branch equals Change branch → pushes the stored branch directly and finalizes', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			const shared = { ...slice, sliceBranch: 'change-branch' }
+			const outcome = await landImplement(deps, shared, { verdict: 'ready', commits: 1 }, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
+			expect(outcome).toBe('done')
+			expect(calls).toContainEqual({ method: 'push', args: ['change-branch'] })
+			expect(calls.map((c) => c.method)).not.toContain('mergeNoFf')
+			expect(storageState.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+		})
+
+		test('usePrs:true rejects PR creation when the stored Slice branch equals the Change branch', async () => {
+			const { deps } = makePhaseDeps()
+			const shared = { ...slice, sliceBranch: 'change-branch' }
+			await expect(landImplement(deps, shared, { verdict: 'ready', commits: 1 }, { ...ctx, config: { usePrs: true, review: false, perSliceBranches: true } })).rejects.toThrow(/same head and base/)
 		})
 	})
 

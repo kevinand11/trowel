@@ -99,14 +99,14 @@ _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums
 - A Slice's terminal raw storage field is `closedAt: string | null`, not `state: OPEN | CLOSED`; Slice finalization sets it once the Slice has landed.
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
-- A **Turn** runs in one **Worktree** checked out to either a Slice branch or an Integration branch.
+- A **Turn** runs in one **Worktree** checked out to the Slice's stored **Slice branch**; under `work.perSliceBranches: false`, that stored Slice branch is the parent **Change branch**.
 - **Ship** invokes **Close-out** for a ready Change, finalizes a landed Change by setting `closedAt`, then runs **Cleanup**; if the Change is done, Ship only runs Cleanup; if the Change is open or aborted, Ship refuses without Cleanup.
 - **Abort** marks an `open` or `ready` Change abandoned, closes any open Slice PRs without merging, then runs **Cleanup**; if the Change is `in-flight`, Abort requires exact-id confirmation, closes the Close-out PR without merging, marks the Change closed, then runs Cleanup; if the Change is `aborted`, Abort runs Cleanup only; if the Change is `landed` or `done`, Abort refuses and tells the user to run Ship.
 - **Abort** uses `abort.comment` when closing GitHub issues, Slice PRs, and in-flight Close-out PRs; if the comment is `null`, it closes silently.
 - **Ship** and **Abort** are Change-level operations only; individual Slices are not shipped or aborted directly, and there is no Slice abort command.
 - Slice phase commands remain as execution overrides: implement, review, and address are not terminal lifecycle commands.
 - **Work** never runs Cleanup or Change-level Finalization; when a Change state is `ready`, `in-flight`, `landed`, `done`, or `aborted`, Work reports the state and exits.
-- **Cleanup** considers the Change's Integration branch and all Slice branches, removes all trowel-managed Worktrees, and never removes remote branches.
+- **Cleanup** considers the Change's **Change branch** and all stored **Slice branches**, removes all trowel-managed Worktrees, and never removes remote branches.
 - When a Change is `in-flight`, **Ship** may run worktree-only Cleanup while keeping local branches until the Close-out PR is merged.
 - Under a `prompt` branch deletion policy, **Cleanup** asks once for the full local branch set; without an interactive terminal, it skips local branch deletion but still removes Worktrees.
 - `abort.deleteBranch` and `ship.deleteBranch` remain separate policies, both governing local branch deletion only.
