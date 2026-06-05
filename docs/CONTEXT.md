@@ -138,6 +138,7 @@ _Avoid_: Checkout, sandbox directory.
 - A **Change state** is computed rather than stored directly; repository merge is proven by a merged Close-out PR, or by the remote Change branch not being ahead of the Target branch, or by local fallback when the remote is missing; a missing branch only proves merge when a merged Close-out PR exists.
 - `landed` is the shared transient state for merged-but-not-finalized Slices and Changes.
 - Slice finalization runs in the work loop when it encounters a landed Slice; after finalization the loop refetches and may report the parent Change as ready in the same invocation. Status/list may report `landed` but do not finalize Slices.
+- For a Slice with a non-null **Slice branch**, a missing remote Slice branch is not a lifecycle signal; a merged Slice PR proves `landed`, and without merged-PR proof the missing branch is stale infrastructure rather than evidence of `landed` or `done`.
 - Only **Ship** runs **Finalization** for a landed **Change** after a merged Close-out PR; **Entity read commands** may report `landed` but never finalize.
 - **Entity read commands** are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <slice-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
