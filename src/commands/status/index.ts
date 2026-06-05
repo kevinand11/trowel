@@ -14,10 +14,11 @@ type StatusRuntime = {
 	gh: GhOps
 	git: ReadOnlyGitFacts
 	usePrs: boolean
+	needsRevisionLabel?: string
 	stdout: (s: string) => void
 }
 
-type BuiltStatusStorage = { storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean }
+type BuiltStatusStorage = { storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean; needsRevisionLabel?: string }
 type StatusCommandDeps = {
 	buildStatusStorage?: (opts: { storage?: string }) => Promise<BuiltStatusStorage>
 	stdout?: (s: string) => void
@@ -26,12 +27,12 @@ type StatusCommandDeps = {
 async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`Change '${changeId}' not found`)
-	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs, needsRevisionLabel: rt.needsRevisionLabel })
 	const state = await classifyChange(change, slices, { gh: rt.gh, git: rt.git })
 	writeStatusText(rt.stdout, renderStatus({ ...change, state }, slices))
 }
 
-async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean }> {
+async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage: Storage; projectRoot: string; gh: GhOps; git: ReadOnlyGitFacts; usePrs: boolean; needsRevisionLabel?: string }> {
 	const { config, projectRoot } = await loadConfig()
 	if (!projectRoot) {
 		process.stderr.write('trowel status: no project root found\n')
@@ -49,11 +50,11 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 		labels: config.labels,
 		abortOptions: config.abort,
 	}
-	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git: branchStableGitFacts(git), usePrs: config.work.usePrs }
+	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git: branchStableGitFacts(git), usePrs: config.ship.pr, needsRevisionLabel: config.labels.needsRevision }
 }
 
-function statusRuntime(storage: Storage, gh: GhOps, git: ReadOnlyGitFacts, usePrs: boolean, stdout: (s: string) => void = (s) => process.stdout.write(s)): StatusRuntime {
-	return { storage, gh, git, usePrs, stdout }
+function statusRuntime(storage: Storage, gh: GhOps, git: ReadOnlyGitFacts, usePrs: boolean, stdout: (s: string) => void = (s) => process.stdout.write(s), needsRevisionLabel?: string): StatusRuntime {
+	return { storage, gh, git, usePrs, stdout, needsRevisionLabel }
 }
 
 async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
@@ -66,13 +67,13 @@ async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
 }
 
 export async function statusChange(changeId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
-	const { storage, gh, git, usePrs } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
-	await exitOnStatusError(() => runStatus(changeId, statusRuntime(storage, gh, git, usePrs, deps.stdout)))
+	const { storage, gh, git, usePrs, needsRevisionLabel } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
+	await exitOnStatusError(() => runStatus(changeId, statusRuntime(storage, gh, git, usePrs, deps.stdout, needsRevisionLabel)))
 }
 
 export async function statusSlice(sliceId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
-	const { storage, gh, git, usePrs } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
-	await exitOnStatusError(() => runStatusSlice(sliceId, statusRuntime(storage, gh, git, usePrs, deps.stdout)))
+	const { storage, gh, git, usePrs, needsRevisionLabel } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
+	await exitOnStatusError(() => runStatusSlice(sliceId, statusRuntime(storage, gh, git, usePrs, deps.stdout, needsRevisionLabel)))
 }
 
 type StatusSliceRuntime = {
@@ -80,6 +81,7 @@ type StatusSliceRuntime = {
 	gh: GhOps
 	git: ReadOnlyGitFacts
 	usePrs: boolean
+	needsRevisionLabel?: string
 	stdout: (s: string) => void
 }
 
@@ -93,7 +95,7 @@ async function runStatusSlice(sliceId: string, rt: StatusSliceRuntime): Promise<
 async function statusSliceContext(sliceId: string, rt: StatusSliceRuntime): Promise<StatusSliceContext> {
 	const hit = await findSliceForStatus(sliceId, rt)
 	const change = await findChangeForStatusSlice(sliceId, hit.changeId, rt)
-	const siblings = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: hit.changeId, usePrs: rt.usePrs })
+	const siblings = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: hit.changeId, usePrs: rt.usePrs, needsRevisionLabel: rt.needsRevisionLabel })
 	return { change, target: targetStatusSlice(sliceId, siblings), siblings }
 }
 
@@ -163,6 +165,8 @@ if (import.meta.vitest) {
 		body: '',
 		state: 'open',
 		closedAt: null,
+		implementedAt: null,
+		auditedAt: null,
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
@@ -365,18 +369,18 @@ if (import.meta.vitest) {
 			await expect(runStatus('zzzzzz', { storage, gh, git: unmergedGit(), usePrs: false, stdout: () => {} })).rejects.toThrow(/'zzzzzz' not found/)
 		})
 
-		test('usePrs:true renders a ready storage slice with an open PR as in-flight', async () => {
+		test('usePrs:true renders a ready storage slice with an open non-draft PR as awaiting-review', async () => {
 			const storage = fakeStorage({
 				change,
-				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: `change-${change.id}/slice-124-read-query-shape-validation`, prState: null }],
+				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, implementedAt: null, auditedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: `change-${change.id}/slice-124-read-query-shape-validation`, prState: null }],
 			})
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 130, headRefName: `change-${change.id}/slice-124-read-query-shape-validation`, isDraft: false }],
 			})
 			let buf = ''
 			await runStatus(change.id, { storage, gh, git: unmergedGit(), usePrs: true, stdout: (s) => (buf += s) })
-			expect(buf).toContain('1 in-flight')
-			expect(buf).toMatch(/^ {2}in-flight$/m)
+			expect(buf).toContain('1 awaiting-review')
+			expect(buf).toMatch(/^ {2}awaiting-review$/m)
 			expect(buf).not.toMatch(/^ {2}open$/m)
 		})
 	})
@@ -388,6 +392,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'draft',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: false,
 			needsRevision: false,
 			blockedBy: [],
@@ -421,6 +427,15 @@ if (import.meta.vitest) {
 		test('"in-flight" section appears for in-flight slices', () => {
 			const out = renderStatus(renderedChange, [slice({ id: '145', title: 'Session middleware', state: 'in-flight', prState: 'draft' })])
 			expect(out).toMatch(/^ {2}in-flight$/m)
+		})
+
+		test('"implemented" and "audited" sections appear for process milestones', () => {
+			const out = renderStatus(renderedChange, [
+				slice({ id: '151', title: 'Implemented', state: 'implemented', implementedAt: 'x' }),
+				slice({ id: '152', title: 'Audited', state: 'audited', implementedAt: 'x', auditedAt: 'y' }),
+			])
+			expect(out).toMatch(/^ {2}audited$/m)
+			expect(out).toMatch(/^ {2}implemented$/m)
 		})
 
 		test('"blocked" section shows blockedBy ids in the right column', () => {
@@ -476,6 +491,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'open',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],

@@ -27,18 +27,18 @@ The strategy that decides how a **Change** is persisted, identified, listed, and
 _Avoid_: Backend, provider, adapter, driver.
 
 **Flag**:
-A user-configurable behavior toggle in `config.work.*`. Current flags:
-- **`usePrs`**: opens one PR per Slice branch after implementation; requires `perSliceBranches: true`.
-- **`review`**: runs Reviewer and Addresser phases; requires `usePrs: true`.
-- **`perSliceBranches`**: each Slice gets its own stored **Slice branch** (`<changeId>/<sliceId>-<slug>` for new Slices). When false, each Slice stores the parent **Change branch** as its **Slice branch** and concurrency is one.
-_Avoid_: Option, setting.
+A user-configurable behavior toggle. Current flags:
+- **`ship.pr`**: ships a Change through a Close-out PR from the Change branch to the Target branch when true, or through a host merge when false; default true.
+- **`work.audit`**: runs Auditing after implementation and before Slice integration or making a Slice PR ready.
+- **`work.perSliceBranches`**: each Slice gets its own stored **Slice branch** (`<changeId>/<sliceId>-<slug>` for new Slices). When false, each Slice stores the parent **Change branch** as its **Slice branch** and concurrency is one.
+_Avoid_: Option, setting, usePrs, review.
 
 **Slice**:
-One vertical cut of a **Change** — a discrete piece of work that can be implemented and reviewed independently. Slice ids are globally unique within a project: file storage draws them from the same integer pool as **Change ids**, and issue storage uses GitHub issue numbers. A Slice lifecycle state is computed from raw `closedAt`, readiness, revision, blocker, and PR signals.
+One vertical cut of a **Change** — a discrete piece of work that can be implemented and reviewed independently. Slice ids are globally unique within a project: file storage draws them from the same integer pool as **Change ids**, and issue storage uses GitHub issue numbers. A Slice lifecycle state is computed from raw `closedAt`, readiness, blocker, and review-surface signals.
 _Avoid_: Sub-issue, task, ticket.
 
 **Slice state**:
-The canonical lifecycle classification of a **Slice**, computed from storage fields plus PR-state queries when `usePrs: true`. One of `done`, `landed`, `needs-revision`, `in-flight`, `blocked`, `open`, `draft`. Commands that display or gate behavior on Slice state use the same PR-enriched effective Slice state as the AFK loop. With `usePrs: true`, enrichment failures surface instead of falling back to raw storage state. `landed` means merged into the Change branch but not finalized; `done` means Finalization has set `closedAt`.
+The canonical lifecycle classification of a **Slice**, computed from storage fields plus PR-state queries when Slice PRs exist. One of `done`, `landed`, `needs-revision`, `awaiting-review`, `audited`, `implemented`, `in-flight`, `blocked`, `open`, `draft`. Commands that display or gate behavior on Slice state use the same effective Slice state as the AFK loop. PR enrichment failures surface instead of falling back to raw storage state. `implemented` means the Implementer declared ready and the loop can still process the Slice; `audited` means Auditing passed and the loop can integrate or ready the Slice; `awaiting-review` means a non-draft Slice PR is waiting for human review or merge and is not agent-processable; `needs-revision` is computed from a PR review surface rather than stored on the Slice. `landed` means merged into the Change branch but not finalized; `done` means Finalization has set `closedAt`.
 _Avoid_: Bucket, status, phase, stage.
 
 **Blocker**:
@@ -54,11 +54,11 @@ The branch that holds in-flight Change work. Slice commits are merged into it (o
 _Avoid_: Integration branch, feature branch.
 
 **Close-out**:
-The success-path operation that ships a closeable **Change**, invoked only by **Ship**. The **AFK loop** never runs Close-out. A Change becomes closeable when every **Slice** is in the `done` **Slice state** after effective state is applied. If `config.work.usePrs` is true, Close-out opens/marks-ready a PR from the Change branch to the Target branch; the Change may later appear `landed` until Ship runs Finalization. If false, Close-out host-merges the Change branch into the Target branch and runs Finalization immediately.
+The success-path operation that ships a closeable **Change**, invoked only by **Ship**. The **AFK loop** never runs Close-out. A Change becomes closeable when every **Slice** is in the `done` **Slice state** after effective state is applied. If `ship.pr` is true, Close-out opens/marks-ready a PR from the Change branch to the Target branch; the Change may later appear `landed` until Ship runs Finalization. If false, Close-out host-merges the Change branch into the Target branch and runs Finalization immediately. Under `ship.pr: true`, Ship fails loudly when the Change branch equals the Target branch instead of trying an impossible same-head/base PR.
 _Avoid_: Abort, Cleanup.
 
 **Ship**:
-The user command that invokes **Close-out** for an already-finished **Change**. `trowel change ship <id>` first requires a clean working tree, then holds the **Mutation lock** for the state-mutating operation. If the Change is `landed`, Ship runs Finalization by setting `closedAt`, then runs Cleanup. If the Change is already `done`, it exits successfully after Cleanup. Otherwise it fails if any **Slice** is not in the `done` **Slice state**, listing each non-terminal Slice id, Slice state, and title. Ship does not run the **AFK loop** or agent **Turns**. Shipping is the only path that invokes Change-level Close-out and Finalization. Ship behavior is storage-agnostic and works the same for `file` and `issue` Storage; flags/config decide git/PR behavior, not Storage kind. Merge-mode Ship host-merges through the reserved `__merge-change` Worktree rather than checking out the Target branch in the user's main checkout. Ship restores the **BACK_TO branch** after completion/failure when possible. If ship cleanup deletes the BACK_TO branch, deletion wins; ship leaves the user on the safe current branch and reports that BACK_TO was deleted. Ship cleanup may delete local branches according to ship config (`ship.deleteBranch: 'always' | 'prompt' | 'never'`, default `prompt`), but never deletes remote branches; under `always` or `prompt`, Ship refuses before Close-out/Cleanup if the current branch is a Cleanup deletion candidate, and under `never` it does not refuse. PR-mode merge uses `ship.mergeMethod: 'merge' | 'squash' | 'rebase'`, default `merge`; the first implementation has no ship-specific CLI override flags. Before PR-mode Close-out, ship fetches and checks whether the local **Change branch** is ahead of its remote counterpart; if ahead, interactive ship prompts to push with default yes, while non-interactive ship fails. If the remote counterpart is missing, interactive ship prompts to publish it with default yes; declining or running non-interactively fails because a Close-out PR requires a remote head branch. Non-interactive ship is not a primary workflow, but promptless contexts use deterministic safe defaults: required prompts fail, optional merge/delete prompts default to no. In PR mode, ship cleanup deletes the local **Change branch** only after `ship` successfully merges the Close-out PR; if the PR is only opened/readied, the local **Change branch** is kept. Shipping is Change-level; there is no Slice ship command until Slice-level shipping has a distinct domain meaning.
+The user command that invokes **Close-out** for an already-finished **Change**. `trowel change ship <id>` first requires a clean working tree, then holds the **Mutation lock** for the state-mutating operation. If the Change is `landed`, Ship runs Finalization by setting `closedAt`, then runs Cleanup. If the Change is already `done`, it exits successfully after Cleanup. Otherwise it fails if any **Slice** is not in the `done` **Slice state**, listing each non-terminal Slice id, Slice state, and title. Ship does not run the **AFK loop** or agent **Turns**. Shipping is the only path that invokes Change-level Close-out and Finalization. Ship behavior is storage-agnostic and works the same for `file` and `issue` Storage; `ship.pr` decides PR vs host-merge shipping, and flags/config decide git/PR behavior, not Storage kind. Merge-mode Ship host-merges through the reserved `__merge-change` Worktree rather than checking out the Target branch in the user's main checkout. Ship restores the **BACK_TO branch** after completion/failure when possible. If ship cleanup deletes the BACK_TO branch, deletion wins; ship leaves the user on the safe current branch and reports that BACK_TO was deleted. Ship cleanup may delete local branches according to ship config (`ship.deleteBranch: 'always' | 'prompt' | 'never'`, default `prompt`), but never deletes remote branches; under `always` or `prompt`, Ship refuses before Close-out/Cleanup if the current branch is a Cleanup deletion candidate, and under `never` it does not refuse. PR-mode merge uses `ship.mergeMethod: 'merge' | 'squash' | 'rebase'`, default `merge`; the first implementation has no ship-specific CLI override flags. Before PR-mode Close-out, ship fetches and checks whether the local **Change branch** is ahead of its remote counterpart; if ahead, interactive ship prompts to push with default yes, while non-interactive ship fails. If the remote counterpart is missing, interactive ship prompts to publish it with default yes; declining or running non-interactively fails because a Close-out PR requires a remote head branch. Non-interactive ship is not a primary workflow, but promptless contexts use deterministic safe defaults: required prompts fail, optional merge/delete prompts default to no. In PR mode, ship cleanup deletes the local **Change branch** only after `ship` successfully merges the Close-out PR; if the PR is only opened/readied, the local **Change branch** is kept. Shipping is Change-level; there is no Slice ship command until Slice-level shipping has a distinct domain meaning. After every successful Ship path, including already-done Cleanup, if the user's restored main checkout is on the Target branch, Ship best-effort syncs that local Target branch by fetching and fast-forwarding only; sync failures warn but do not fail Ship.
 _Avoid_: Work, abort, slice ship.
 
 **Abort**:
@@ -66,7 +66,7 @@ The manual abandon path. `trowel change abort <id>` operates only at the top-lev
 _Avoid_: Close (old command name), ship.
 
 **Cleanup**:
-The housekeeping step run by Abort and Ship that removes all trowel-managed Worktrees and, when safe, removes a Change's local Change branch and local Slice branches without deleting remote branches or logs. Non-interactive prompt policy skips branch deletion but still removes Worktrees.
+The housekeeping step run by Abort and Ship that removes all trowel-managed Worktrees and, when safe, removes a Change's local Change branch and local Slice branches without deleting remote branches, logs, or the Target branch. Non-interactive prompt policy skips branch deletion but still removes Worktrees.
 _Avoid_: Close-out, reconciliation, garbage collection.
 
 **Entity read command**:
@@ -97,27 +97,31 @@ _Avoid_: Read lock, status lock, Git lock.
 ### AFK loop
 
 **AFK loop**:
-The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `review`, or `address`), releases the slot, then refetches effective state before the next claim. The loop exits successfully when no actionable Slices remain; if every Slice is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
+The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `audit`, or `review`), releases the slot, then refetches effective state before the next claim. The loop exits successfully when no actionable Slices remain; if every Slice is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
 _Avoid_: Sandcastle, agent runner.
 
 **Agent harness**:
 The CLI binary that runs an agent role inside a **Turn**. One of `claude`, `codex`, `pi`. Harness is selected via `config.agent.harness` and surfaced by `trowel doctor`.
 _Avoid_: Agent, driver, adapter, backend.
 
-**Implementer / Reviewer / Addresser**:
-The three agent roles inside the **AFK loop**. Implementer writes the first cut, Reviewer reviews the Slice PR, Addresser responds to reviewer feedback. Reviewer/Addresser require `usePrs && review`.
-_Avoid_: Worker.
+**Auditing**:
+The optional branch-diff quality gate that inspects and may fix a Slice branch after implementation and before Slice integration or PR readiness.
+_Avoid_: Agent review, PR review, reviewing.
+
+**Implementer / Auditor / Reviewer**:
+The three agent roles inside the **AFK loop**. Implementer writes the first cut, Auditor performs **Auditing**, and Reviewer revises a Slice in response to PR review feedback when the Slice is in `needs-revision`.
+_Avoid_: Worker, Reviser, old PR-feedback role names.
 
 **Turn**:
 The bounded execution of one agent role against one Slice. A Turn runs in a trowel-managed git worktree, receives `.trowel/turn-in.json`, and must write `.trowel/turn-out.json`.
 _Avoid_: Sandbox, session, run, container.
 
 **Verdict**:
-The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.json`. One of `ready`, `needs-revision`, `no-work-needed`, `partial`. The host translates verdicts into git/gh/storage operations.
+The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.json`. One of `ready`, `no-work-needed`, `partial`. The host translates verdicts into git/gh/storage operations; `needs-revision` is a Slice state derived from PR review surfaces, not an agent Verdict.
 _Avoid_: Result, status, outcome.
 
 **Slice branch**:
-The stored branch a **Slice**'s Turns run on. With `perSliceBranches: true`, new Slice branches use `<changeId>/<sliceId>-<slug>`. With `perSliceBranches: false`, the stored Slice branch is the parent Change branch.
+The stored branch a **Slice**'s Turns run on, nullable until `prepareImplement` first needs it. With `perSliceBranches: true` at prepare time, the Slice branch is created from the latest remote Change branch and named `<changeId>/<sliceId>-<slug>`; with `perSliceBranches: false`, it is set to the parent Change branch.
 _Avoid_: Feature branch, task branch, computed branch.
 
 **Worktree**:
@@ -129,23 +133,24 @@ _Avoid_: Checkout, sandbox directory.
 - A **Change** has one stored **Change branch** and one or more **Slices** across all storages; because the Change id is allocated by storage creation, orchestration creates and pushes the Change branch before writing branch metadata through an explicit metadata update; new Change branch names use `${changeId}-${changeSlug}`.
 - A **Change** has exactly one stored **Target branch** and one stored **Change branch**.
 - For issue storage, branch metadata is stored in one existing hidden issue-body comment per issue as a JSON object with entity-specific keys (`targetBranch`, `changeBranch`, `sliceBranch`); after the branch-metadata change lands, storage reads require this metadata and do not fall back to Development-linked PR history or naming conventions.
-- All storages require `targetBranch` and `changeBranch` on Change records and `sliceBranch` on Slice records after the branch-metadata schema change lands.
+- All storages require `targetBranch` and `changeBranch` on Change records; Slice records may store `sliceBranch: null` until `prepareImplement` creates or assigns the Slice branch and updates metadata.
 - Storage exposes generic metadata update methods such as `updateChangeMetadata(changeId, { targetBranch, changeBranch })` and `updateSliceMetadata(changeId, sliceId, { sliceBranch })`; branch metadata is written only after the named branch exists remotely, except when a Slice records the parent Change branch under `work.perSliceBranches: false`.
 - A **Change state** is computed rather than stored directly; repository merge is proven by a merged Close-out PR, or by the remote Change branch not being ahead of the Target branch, or by local fallback when the remote is missing; a missing branch only proves merge when a merged Close-out PR exists.
 - `landed` is the shared transient state for merged-but-not-finalized Slices and Changes.
 - Slice finalization runs in the work loop when it encounters a landed Slice; after finalization the loop refetches and may report the parent Change as ready in the same invocation. Status/list may report `landed` but do not finalize Slices.
+- For a Slice with a non-null **Slice branch**, a missing remote Slice branch is not a lifecycle signal; a merged Slice PR proves `landed`, and without merged-PR proof the missing branch is stale infrastructure rather than evidence of `landed` or `done`.
 - Only **Ship** runs **Finalization** for a landed **Change** after a merged Close-out PR; **Entity read commands** may report `landed` but never finalize.
 - **Entity read commands** are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <slice-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
-- A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages; because the Slice id is allocated by storage creation, orchestration creates and pushes the Slice branch before writing branch metadata when per-slice branches are enabled, or writes the parent Change branch as metadata when per-slice branches are disabled.
+- A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages, but that value may be `null` until first implementation preparation. `prepareImplement` fills null Slice branch metadata using current config: when per-slice branches are enabled it fetches the latest remote Change branch, creates and pushes a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, then stores it; when per-slice branches are disabled it stores the parent Change's Change branch.
 - When per-slice branches are enabled the Slice branch value is a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, and when per-slice branches are disabled the value is the parent Change's Change branch.
 - The work scheduler treats Slice branch values as the concurrency boundary: no two Slices with the same stored Slice branch may run Turns in parallel.
-- A **Slice state** is computed from Slice metadata and external PR/blocker relationships rather than stored directly; Slice `open` is the old ready-for-agent bucket renamed, while `readyForAgent` remains the raw opt-in signal.
+- A **Slice state** is computed from Slice metadata and external PR/blocker relationships rather than stored directly; Slice `open` is the old ready-for-agent bucket renamed, `implemented` is derived from `implementedAt`, `audited` is derived from `auditedAt`, `awaiting-review` is the non-draft PR state waiting on a human, and `readyForAgent` remains the raw opt-in signal.
 - User-facing output and internal domain types use **state** for Change and Slice lifecycle classifications; the word "bucket" is retired from the codebase.
 - Internal Change types use `changeBranch`, not ambiguous `branch`, for the stored **Change branch** field.
 - Change list has no state filter; it lists all Changes newest-first by `createdAt`, with each Change's computed state.
 - Change status shows the computed Change state, Target branch, Change branch, state-based guidance, and every Slice with its computed Slice state.
-- A Slice's terminal raw storage field is `closedAt: string | null`, not `state: OPEN | CLOSED`; Slice finalization sets it once the Slice has landed.
+- A Slice's terminal raw storage field is `closedAt: string | null`, not `state: OPEN | CLOSED`; Slice finalization sets it once the Slice has landed. Slice process milestones are `implementedAt: string | null` and `auditedAt: string | null`; `needsRevision` is not stored on the Slice.
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
 - A **Turn** runs in one **Worktree** checked out to the Slice's stored **Slice branch**; under `work.perSliceBranches: false`, that stored Slice branch is the parent **Change branch**.
@@ -164,13 +169,13 @@ _Avoid_: Checkout, sandbox directory.
 - **Abort** marks an `open` or `ready` Change abandoned, closes any open Slice PRs without merging, then runs **Cleanup**; if the Change is `in-flight`, Abort requires exact-id confirmation, closes the Close-out PR without merging, marks the Change closed, then runs Cleanup; if the Change is `aborted`, Abort runs Cleanup only; if the Change is `landed` or `done`, Abort refuses and tells the user to run Ship.
 - **Abort** uses `abort.comment` when closing GitHub issues, Slice PRs, and in-flight Close-out PRs; if the comment is `null`, it closes silently.
 - **Ship** and **Abort** are Change-level operations only; individual Slices are not shipped or aborted directly, and there is no Slice abort command.
-- Slice phase commands remain as execution overrides: implement, review, and address are not terminal lifecycle commands.
+- Slice phase commands remain as execution overrides: implement, audit, and review are not terminal lifecycle commands.
 - **Work** never runs Cleanup or Change-level Finalization; when a Change state is `ready`, `in-flight`, `landed`, `done`, or `aborted`, Work reports the state and exits.
-- **Cleanup** considers the Change's **Change branch** and all stored **Slice branches**, removes all trowel-managed Worktrees, and never removes remote branches.
+- **Cleanup** considers the Change's **Change branch** and all stored **Slice branches**, silently filters out any local branch equal to the **Target branch** before current-branch refusal, prompts, or deletion, removes all trowel-managed Worktrees, and never removes remote branches.
 - When a Change is `in-flight`, **Ship** may run worktree-only Cleanup while keeping local branches until the Close-out PR is merged.
 - Under a `prompt` branch deletion policy, **Cleanup** asks once for the full local branch set; without an interactive terminal, it skips local branch deletion but still removes Worktrees.
 - `abort.deleteBranch` and `ship.deleteBranch` remain separate policies, both governing local branch deletion only.
-- `work.perSliceBranches` controls Slice branch metadata for new Slices only; runtime Turn placement and concurrency use stored Slice branch values, while `work.usePrs` remains a current runtime workflow choice rather than stored Slice metadata.
+- `work.perSliceBranches` controls how null Slice branch metadata is filled during `prepareImplement`; runtime Turn placement and concurrency use stored Slice branch values once present, while `ship.pr` is the current runtime choice for PR-based Change shipping and Slice integration when Slice branches differ from the Change branch.
 - **Cleanup** skips and reports any local branch with commits that are not present on its remote counterpart.
 - Each **Slice** has zero or more **Blockers**.
 - Each **Slice** is in exactly one **Slice state**.
@@ -179,6 +184,9 @@ _Avoid_: Checkout, sandbox directory.
 
 ## Example dialogue
 
+> **Dev:** "When a Slice PR is still draft after implementation, should `trowel change work` treat it as waiting on a human?"
+> **Domain expert:** "No. That Slice is **implemented**: the loop can still run **Auditing** or mark the draft PR ready. Once the PR is non-draft, the Slice becomes **awaiting-review** and waits for a human to review or merge it."
+>
 > **Dev:** "When `trowel change status` sees that the **Close-out** PR was merged, should it finalize the **Change** or switch branches to inspect it?"
 > **Domain expert:** "No. `status` is an **Entity read command**: it may report the **Change state** as `landed`, but only **Ship** runs **Finalization** for the **Change** and then runs **Cleanup**."
 

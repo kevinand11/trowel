@@ -5,5 +5,6 @@ export default defineConfig({
 		include: ['src/**/*.{test,spec}.ts'],
 		includeSource: ['src/**/*.ts'],
 		setupFiles: ['./test/setup-clean-git-env.ts'],
+		maxWorkers: 4,
 	},
 })

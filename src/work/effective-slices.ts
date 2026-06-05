@@ -8,11 +8,11 @@ export type EffectiveSliceReader = {
 	findSlice(changeId: string, sliceId: string): Promise<Slice | null>
 }
 
-export function createEffectiveSliceReader(deps: { storage: Storage; gh: GhOps; usePrs: boolean }): EffectiveSliceReader {
+export function createEffectiveSliceReader(deps: { storage: Storage; gh: GhOps; usePrs: boolean; needsRevisionLabel?: string }): EffectiveSliceReader {
 	return {
 		async findSlices(changeId) {
 			const raw = await deps.storage.findSlices(changeId)
-			const enriched = deps.usePrs ? await enrichSlicesFromOpenPrs(deps.gh, changeId, raw) : raw
+			const enriched = deps.usePrs ? await enrichSlicesFromOpenPrs(deps.gh, changeId, raw, { needsRevisionLabel: deps.needsRevisionLabel }) : raw
 			return classifySlices(enriched)
 		},
 		async findSlice(changeId, sliceId) {
@@ -44,7 +44,7 @@ if (import.meta.vitest) {
 				listOpenPrs: async () => [{ number: 1, headRefName: 'change-123/slice-125-filter-only-count-terminal', isDraft: false, labels: [{ name: 'needs-revision' }] }],
 			})
 			const reader = createEffectiveSliceReader({ storage: fakeSliceStorage([slice]), gh, usePrs: true })
-			expect(await reader.findSlice('123', '125')).toMatchObject({ id: '125', prState: 'ready', needsRevision: true })
+			expect(await reader.findSlice('123', '125')).toMatchObject({ id: '125', prState: 'ready', needsRevision: true, state: 'needs-revision' })
 		})
 
 		test('surfaces gh enrichment failures when usePrs is true', async () => {

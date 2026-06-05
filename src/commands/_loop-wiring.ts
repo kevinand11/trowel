@@ -11,7 +11,7 @@ import type { PhaseCtx, Storage, Slice } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
-import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
+import { landAudit, landImplement, landReview, prepareAudit, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
 import { spawnTurn } from '../work/turn.ts'
 import type { TurnIn, TurnOut } from '../work/verdict.ts'
 import { ensureTrowelDir, type TurnWorktree } from '../work/worktrees.ts'
@@ -84,8 +84,8 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 
 	const runOnePhase = async (changeId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await changeBranch(changeId)
-		const ctx = { changeId, changeBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
-		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
+		const ctx = { changeId, changeBranch: branch, config: { usePrs: config.ship.pr, audit: config.work.audit, perSliceBranches: config.work.perSliceBranches } }
+		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot, needsRevisionLabel: config.labels.needsRevision }
 		const prep = await prepareOnePhase(role, phaseDeps, slice, ctx)
 		const verdict: TurnOut = await makeSpawnTurnFor(changeId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
 		await landOnePhase(role, phaseDeps, slice, verdict, ctx)
@@ -99,11 +99,12 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			spawnTurn: makeSpawnTurnFor(entity.id),
 			log,
 			config: {
-				usePrs: config.work.usePrs,
-				review: config.work.review,
+				usePrs: config.ship.pr,
+				audit: config.work.audit,
 				perSliceBranches: config.work.perSliceBranches,
 				maxConcurrent: config.turn.maxConcurrent,
 				mergeNoVerify: config.work.mergeNoVerify,
+				needsRevisionLabel: config.labels.needsRevision,
 			},
 			projectRoot,
 		})
@@ -129,12 +130,12 @@ function logHarnessExitIfFailed(exitCode: number, worktree: TurnWorktree, harnes
 
 function prepareOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, ctx: PhaseCtx) {
 	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
-	if (role === 'review') return prepareReview(phaseDeps, slice, ctx)
-	return prepareAddress(phaseDeps, slice, ctx)
+	if (role === 'audit') return prepareAudit(phaseDeps, slice, ctx)
+	return prepareReview(phaseDeps, slice, ctx)
 }
 
 function landOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx) {
 	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
-	if (role === 'review') return landReview(phaseDeps, slice, verdict, ctx)
-	return landAddress(phaseDeps, slice, verdict, ctx)
+	if (role === 'audit') return landAudit(phaseDeps, slice, verdict, ctx)
+	return landReview(phaseDeps, slice, verdict, ctx)
 }

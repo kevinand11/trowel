@@ -45,15 +45,15 @@ export type ChangeRecord = {
 /**
  * The state of the slice's PR on the Change branch.
  *
- * - `'draft'`: an open draft PR exists (the reviewer phase fires).
- * - `'ready'`: an open non-draft PR exists, awaiting merge.
+ * - `'draft'`: an open draft PR exists; process milestones remain agent-processable.
+ * - `'ready'`: an open non-draft PR exists, awaiting human review/merge.
  * - `'merged'`: the PR is merged; the computed Slice state is `landed` until Finalization sets `closedAt`.
  * - `null`: no PR exists, or the storage has no PR concept (file storage always emits `null`).
  *
  * Populated by PR-state enrichment after storage reads raw Slice records.
  */
 export type SlicePrState = 'draft' | 'ready' | 'merged' | null
-export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'needs-revision' | 'landed' | 'done'
+export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'implemented' | 'audited' | 'awaiting-review' | 'needs-revision' | 'landed' | 'done'
 
 export type Slice = {
 	id: string
@@ -63,19 +63,24 @@ export type Slice = {
 	state: SliceState
 	/** Raw terminal timestamp. `null` means the Slice has not been finalized. */
 	closedAt: string | null
+	/** Implementer success milestone. `null` means the Implementer has not declared ready. */
+	implementedAt: string | null
+	/** Auditor success milestone. `null` means Auditing has not passed. */
+	auditedAt: string | null
 	readyForAgent: boolean
+	/** Derived from the PR review surface during enrichment; never stored on a Slice. */
 	needsRevision: boolean
 	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
 	blockedBy: string[]
-	/** Stored branch this Slice's Turns run on. */
-	sliceBranch: string
+	/** Stored branch this Slice's Turns run on. Null until first implementation preparation assigns it. */
+	sliceBranch: string | null
 	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. Always null on the file storage. */
 	prState: SlicePrState
 }
 
 export type ClassifiedSlice = Slice
 
-export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'needsRevision' | 'closedAt' | 'blockedBy'>>
+export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'closedAt' | 'implementedAt' | 'auditedAt' | 'blockedBy'>>
 export type CreatedChange = Pick<ChangeRecord, 'id' | 'title'>
 export type CreatedSlice = Pick<Slice, 'id' | 'title'>
 export type ChangeMetadataPatch = Partial<Pick<ChangeRecord, 'targetBranch' | 'changeBranch'>>
@@ -85,7 +90,7 @@ export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
 
 /**
- * Outcome of a single per-slice phase invocation (one `prepare<Role>` + sandbox + `land<Role>`).
+ * Outcome of a single per-slice phase invocation (one `prepare<Role>` + Turn + `land<Role>`).
  *
  * - `'done'` — slice has reached terminal state in this run; loop drops it.
  * - `'progress'` — phase moved forward; loop refetches and continues the inner step-cap loop.
@@ -95,7 +100,7 @@ export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
 export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work'
 
 /**
- * Returned by `prepare<Role>` — the branch the sandbox should run on, and the `TurnIn` payload.
+ * Returned by `prepare<Role>` — the branch the Turn should run on, and the `TurnIn` payload.
  */
 export type PreparedPhase = {
 	branch: string
@@ -105,17 +110,17 @@ export type PreparedPhase = {
 /**
  * Loop dispatch state for one slice. Computed by `classify` in `src/work/classify.ts`.
  *
- * - `'done'` — slice has nothing more for the loop to do (done, draft, PR ready,
- *   or PR draft with `config.review: false`). The loop skips it.
+ * - `'done'` — slice has nothing more for the loop to do (done, draft, in-flight, or awaiting-review). The loop skips it.
  * - `'blocked'` — at least one unfinished blocker exists. Loop skips; will reconsider once a blocker closes.
  * - `'finalize'` — record `closedAt` for a landed Slice.
- * - `'implement'` — run the implementer sandbox next.
- * - `'review'` — run the reviewer sandbox next (issue storage only; only reachable with `usePrs && review`).
- * - `'address'` — run the addresser sandbox next (issue storage only; only reachable with `usePrs && review`).
+ * - `'implement'` — run the Implementer Turn next.
+ * - `'audit'` — run the Auditor Turn next for an implemented distinct Slice branch.
+ * - `'integrate'` — host-integrate an implemented/audited Slice.
+ * - `'review'` — run the Reviewer Turn next for PR review feedback on a `needs-revision` Slice.
  */
-export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'review' | 'address'
+export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'audit' | 'integrate' | 'review'
 
-export type ClassifySliceConfig = { usePrs: boolean; review: boolean; perSliceBranches: boolean }
+export type ClassifySliceConfig = { usePrs: boolean; audit: boolean; perSliceBranches: boolean }
 
 /**
  * Per-loop-invocation context passed to storage methods that need to act against a specific Change's
@@ -160,7 +165,7 @@ export interface Storage {
 	/**
 	 * Look up a slice by its global id without knowing the parent Change. Returns the slice plus its
 	 * parent Change id, or null if no slice with that id exists. Powers `trowel status slice <id>`
-	 * and the slice phase commands (`slice implement`/`slice address`/`slice review`).
+	 * and the slice phase commands (`slice implement`/`slice audit`/`slice review`).
 	 */
 	findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null>
 	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>

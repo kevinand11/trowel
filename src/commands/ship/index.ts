@@ -36,16 +36,26 @@ async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 	await requireCleanTree(rt)
 	const backTo = await rt.git.currentBranch()
 	const context = await loadShipContext(changeId, rt)
-	if (shipMayRunCleanup(context.state)) await refuseCurrentCleanupBranch({ change: context.change, slices: context.slices, rt })
+	assertPrCloseOutBranchTopology(context, rt)
+	if (shipMayRunCleanup(context.state)) await refuseCurrentCleanupBranch({ change: context.change, slices: context.slices, targetBranch: context.targetBranch, rt })
+	let shipSucceeded = false
 	try {
 		await shipByState(context, rt)
+		shipSucceeded = true
 	} finally {
 		await restoreStartingBranch(backTo, context.targetBranch, rt)
+		if (shipSucceeded) await syncLocalTargetBranchWhenCurrent(context.targetBranch, rt)
 	}
 }
 
 function shipMayRunCleanup(state: ChangeState): boolean {
 	return state === 'ready' || state === 'in-flight' || state === 'landed' || state === 'done'
+}
+
+function assertPrCloseOutBranchTopology(context: ShipContext, rt: ShipRuntime): void {
+	if (!rt.usePrs || context.state === 'done' || context.state === 'aborted') return
+	if (context.change.changeBranch !== context.targetBranch) return
+	throw new Error(`Cannot ship Change ${context.change.id} with ship.pr: true: Change branch '${context.change.changeBranch}' equals Target branch '${context.targetBranch}', so a Close-out PR cannot be opened. Set ship.pr: false or repair branch metadata.`)
 }
 
 async function shipByState(context: ShipContext, rt: ShipRuntime): Promise<void> {
@@ -91,7 +101,7 @@ async function shipReadyChange(change: ChangeRecord, targetBranch: string, rt: S
 }
 
 async function shipInFlightChange(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
-	return shipViaPr(change, targetBranch, rt)
+	return rt.usePrs ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
 async function finalizeLandedChange(change: ChangeRecord, rt: ShipRuntime): Promise<void> {
@@ -164,6 +174,16 @@ async function cleanupAfterShip(change: ChangeRecord, targetBranch: string, rt: 
 	})
 }
 
+async function syncLocalTargetBranchWhenCurrent(targetBranch: string, rt: ShipRuntime): Promise<void> {
+	try {
+		if ((await rt.git.currentBranch()) !== targetBranch) return
+		await rt.git.fetch(targetBranch)
+		await rt.git.fastForward(`origin/${targetBranch}`)
+	} catch (error) {
+		rt.stdout(`Warning: could not fast-forward local Target branch '${targetBranch}': ${(error as Error).message}\n`)
+	}
+}
+
 async function ensureRemoteChangeBranch(branch: string, rt: ShipRuntime): Promise<void> {
 	await rt.git.fetch(branch).catch(() => undefined)
 	if (!(await rt.git.remoteBranchExists(branch))) {
@@ -202,7 +222,7 @@ async function buildShipRuntime(opts: { storage?: StorageKind }): Promise<{ base
 			storage,
 			git: base.git,
 			gh: base.gh,
-			usePrs: base.config.work.usePrs,
+			usePrs: base.config.ship.pr,
 			mergeNoVerify: base.config.work.mergeNoVerify,
 			mergeMethod: base.config.ship.mergeMethod,
 			deleteBranchPolicy: base.config.ship.deleteBranch,
@@ -295,6 +315,14 @@ if (import.meta.vitest) {
 			const { rt, out } = makeRt({ storage, gh: recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'MERGED' }) }).gh })
 			await runShip('3', rt)
 			expect(out.join('')).toContain('already done')
+		})
+
+		test('PR mode fails loudly when the Change branch equals the Target branch', async () => {
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, changeBranch: 'main', targetBranch: 'main', title: 'X', state: 'OPEN', closedAt: null }) })
+			const { rt, ghCalls } = makeRt({ storage, usePrs: true, git: noopGitOps({ currentBranch: async () => 'main', isWorkingTreeClean: async () => true, listLocalBranches: async () => ['main'], remoteBranchExists: async () => true, commitsAhead: async () => 0 }) })
+
+			await expect(runShip('3', rt)).rejects.toThrow(/ship\.pr: true.*Change branch 'main' equals Target branch 'main'/)
+			expect(ghCalls.map((call) => call[0])).not.toContain('createDraftPr')
 		})
 
 		test('open Changes fail with non-done slice details and no cleanup', async () => {
@@ -412,9 +440,9 @@ if (import.meta.vitest) {
 			expect(ghCalls).toContainEqual(['mergePr', 9, 'squash'])
 		})
 
-		test('in-flight Change uses the existing Close-out PR and keeps branches when not done', async () => {
+		test('PR mode in-flight Change uses the existing Close-out PR and keeps branches when not done', async () => {
 			const { gh, calls } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'OPEN' }), findPrNumberByHead: async () => 9 })
-			const { rt, gitCalls } = makeRt({ gh, usePrs: false, deleteBranchPolicy: 'always', confirm: async (msg) => !msg.startsWith('Merge Close-out PR') })
+			const { rt, gitCalls } = makeRt({ gh, usePrs: true, deleteBranchPolicy: 'always', confirm: async (msg) => !msg.startsWith('Merge Close-out PR') })
 
 			await runShip('3', rt)
 
@@ -424,6 +452,19 @@ if (import.meta.vitest) {
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
+		test('merge mode in-flight Change uses host-merge behavior instead of the existing Close-out PR', async () => {
+			const { gh, calls } = recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'OPEN' }), findPrNumberByHead: async () => 9 })
+			const { rt, gitCalls, closed } = makeRt({ gh, usePrs: false, deleteBranchPolicy: 'always' })
+
+			await runShip('3', rt)
+
+			expect(calls.map((c) => c[0])).not.toContain('markPrReady')
+			expect(calls.map((c) => c[0])).not.toContain('mergePr')
+			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
+			expect(closed).toEqual(['3'])
+			expect(gitCalls).toContain('deleteBranch(change-3-x)')
+		})
+
 		test('in-flight Change performs full cleanup only after the Close-out PR makes it done', async () => {
 			let merged = false
 			const { gh, calls } = recordingGhOps({
@@ -431,13 +472,78 @@ if (import.meta.vitest) {
 				findPrNumberByHead: async () => 9,
 				mergePr: async () => { merged = true },
 			})
-			const { rt, gitCalls, closed } = makeRt({ gh, usePrs: false, deleteBranchPolicy: 'always' })
+			const { rt, gitCalls, closed } = makeRt({ gh, usePrs: true, deleteBranchPolicy: 'always' })
 
 			await runShip('3', rt)
 
 			expect(calls).toContainEqual(['mergePr', 9, 'merge'])
 			expect(closed).toEqual(['3'])
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
+		})
+
+		test('syncs the local Target branch after a successful Ship when restored onto the Target branch', async () => {
+			const gitCalls: string[] = []
+			const git = noopGitOps({
+				currentBranch: async () => 'main',
+				isWorkingTreeClean: async () => true,
+				listLocalBranches: async () => ['main', 'change-3-x'],
+				remoteBranchExists: async () => true,
+				localBranchExists: async () => false,
+				fetch: async (branch) => { gitCalls.push(`fetch(${branch})`) },
+				commitsAhead: async (branch) => branch.startsWith('origin/') ? 1 : 0,
+				resolveRef: async (ref, worktreePath) => { gitCalls.push(`resolveRef(${ref},${worktreePath ?? ''})`); return ref === 'HEAD' ? 'pushed-head' : ref },
+				worktreeAdd: async (path, branch) => { gitCalls.push(`worktreeAdd(${path},${branch})`) },
+				mergeNoFfIn: async (path, branch) => { gitCalls.push(`mergeNoFfIn(${path},${branch})`) },
+				pushHeadTo: async (path, branch) => { gitCalls.push(`pushHeadTo(${path},${branch})`) },
+				updateLocalBranchRef: async (branch, ref) => { gitCalls.push(`updateLocalBranchRef(${branch},${ref})`) },
+				deleteBranch: async (branch) => { gitCalls.push(`deleteBranch(${branch})`) },
+				fastForward: async (ref) => { gitCalls.push(`fastForward(${ref})`) },
+			})
+			const { rt, closed } = makeRt({ git, deleteBranchPolicy: 'always' })
+
+			await runShip('3', rt)
+
+			expect(closed).toEqual(['3'])
+			expect(gitCalls).toContain('fetch(main)')
+			expect(gitCalls).toContain('fastForward(origin/main)')
+		})
+
+		test('already done Change still best-effort syncs the local Target branch after cleanup', async () => {
+			const gitCalls: string[] = []
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED' }) })
+			const { rt } = makeRt({
+				storage,
+				gh: recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'MERGED' }) }).gh,
+				git: noopGitOps({
+					currentBranch: async () => 'main',
+					isWorkingTreeClean: async () => true,
+					listLocalBranches: async () => ['main'],
+					fetch: async (branch) => { gitCalls.push(`fetch(${branch})`) },
+					fastForward: async (ref) => { gitCalls.push(`fastForward(${ref})`) },
+				}),
+			})
+
+			await runShip('3', rt)
+
+			expect(gitCalls).toEqual(['fetch(main)', 'fastForward(origin/main)'])
+		})
+
+		test('Target sync failures warn and do not fail Ship', async () => {
+			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', { findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED' }) })
+			const { rt, out } = makeRt({
+				storage,
+				gh: recordingGhOps({ findAnyPrByHead: async () => ({ number: 9, state: 'MERGED' }) }).gh,
+				git: noopGitOps({
+					currentBranch: async () => 'main',
+					isWorkingTreeClean: async () => true,
+					listLocalBranches: async () => ['main'],
+					fetch: async () => { throw new Error('network down') },
+				}),
+			})
+
+			await runShip('3', rt)
+
+			expect(out.join('')).toContain("Warning: could not fast-forward local Target branch 'main': network down")
 		})
 
 		test('landed Change from merged Close-out PR is finalized before cleanup without running Close-out', async () => {

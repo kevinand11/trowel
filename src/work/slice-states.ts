@@ -7,8 +7,9 @@ export async function classifySlicesForChange(args: {
 	gh: GhOps
 	changeId: string
 	usePrs: boolean
+	needsRevisionLabel?: string
 }): Promise<Slice[]> {
-	const reader = createEffectiveSliceReader({ storage: args.storage, gh: args.gh, usePrs: args.usePrs })
+	const reader = createEffectiveSliceReader({ storage: args.storage, gh: args.gh, usePrs: args.usePrs, needsRevisionLabel: args.needsRevisionLabel })
 	return reader.findSlices(args.changeId)
 }
 
@@ -29,12 +30,12 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([])
 		})
 
-		test('usePrs:true classifies a slice with an open PR as in-flight', async () => {
+		test('usePrs:true classifies a slice with an open non-draft PR as awaiting-review', async () => {
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 130, headRefName: 'change-123/slice-124-read-query-shape', isDraft: false }],
 			})
 			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', usePrs: true })
-			expect(out[0]!.state).toBe('in-flight')
+			expect(out[0]!.state).toBe('awaiting-review')
 		})
 
 		test('usePrs:true surfaces gh enrichment errors', async () => {

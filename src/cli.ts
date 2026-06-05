@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { abortChange } from './commands/abort/index.ts'
-import { address } from './commands/address.ts'
+import { audit } from './commands/audit.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
@@ -118,18 +118,18 @@ export function run(): void {
 		})
 
 	sliceCmd
-		.command('address')
-		.description("Run addresser on a slice's PR (PR resolved internally)")
+		.command('audit')
+		.description('Run auditor on one implemented slice')
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.action(async (sliceId: string, opts) => {
-			await address(sliceId, opts)
+			await audit(sliceId, opts)
 		})
 
 	sliceCmd
 		.command('review')
-		.description("Run reviewer on a slice's PR")
+		.description("Run Reviewer on a slice with PR feedback marked needs-revision")
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')

@@ -3,7 +3,7 @@ import { v, type PipeOutput } from 'valleyed'
 import { validateJson } from './parse-json.ts'
 import type { Role } from '../prompts/load.ts'
 
-type VerdictKind = 'ready' | 'needs-revision' | 'no-work-needed' | 'partial'
+type VerdictKind = 'ready' | 'no-work-needed' | 'partial'
 
 export type TurnOut = {
 	verdict: VerdictKind
@@ -18,16 +18,17 @@ export type FeedbackEntry =
 
 export type TurnIn = {
 	slice: { id: string; title: string; body: string }
+	changeBranch?: string
 	pr?: { number: number; branch: string }
 	feedback?: FeedbackEntry[]
 }
 
-const ALL_VERDICTS = ['ready', 'needs-revision', 'no-work-needed', 'partial'] as const
+const ALL_VERDICTS = ['ready', 'no-work-needed', 'partial'] as const
 
 const ROLE_VERDICTS: Record<Role, VerdictKind[]> = {
 	implement: ['ready', 'no-work-needed', 'partial'],
-	review: ['ready', 'needs-revision', 'partial'],
-	address: ['ready', 'no-work-needed', 'partial'],
+	audit: ['ready', 'partial'],
+	review: ['ready', 'no-work-needed', 'partial'],
 }
 
 const turnOutPipe = () =>
@@ -114,9 +115,8 @@ if (import.meta.vitest) {
 		})
 
 		test('throws on a role-invalid verdict, naming both the kind and the role', () => {
-			expect(() => parseVerdict('{"verdict":"needs-revision"}', 'implement', 0)).toThrow(/needs-revision.*implement|implement.*needs-revision/i)
-			expect(() => parseVerdict('{"verdict":"no-work-needed"}', 'review', 0)).toThrow(/no-work-needed.*review|review.*no-work-needed/i)
-			expect(() => parseVerdict('{"verdict":"needs-revision"}', 'address', 0)).toThrow(/needs-revision.*address|address.*needs-revision/i)
+			expect(() => parseVerdict('{"verdict":"needs-revision"}', 'implement', 0)).toThrow(/needs-revision/)
+			expect(() => parseVerdict('{"verdict":"needs-revision"}', 'review', 0)).toThrow(/needs-revision/)
 		})
 
 		test('accepts the valid verdicts for each role', () => {
@@ -124,14 +124,10 @@ if (import.meta.vitest) {
 			expect(parseVerdict('{"verdict":"ready"}', 'implement', 1).verdict).toBe('ready')
 			expect(parseVerdict('{"verdict":"no-work-needed"}', 'implement', 0).verdict).toBe('no-work-needed')
 			expect(parseVerdict('{"verdict":"partial"}', 'implement', 0).verdict).toBe('partial')
-			// reviewer: ready, needs-revision, partial
+			// reviewer: ready, no-work-needed, partial
 			expect(parseVerdict('{"verdict":"ready"}', 'review', 0).verdict).toBe('ready')
-			expect(parseVerdict('{"verdict":"needs-revision"}', 'review', 0).verdict).toBe('needs-revision')
+			expect(parseVerdict('{"verdict":"no-work-needed"}', 'review', 0).verdict).toBe('no-work-needed')
 			expect(parseVerdict('{"verdict":"partial"}', 'review', 0).verdict).toBe('partial')
-			// addresser: ready, no-work-needed, partial
-			expect(parseVerdict('{"verdict":"ready"}', 'address', 0).verdict).toBe('ready')
-			expect(parseVerdict('{"verdict":"no-work-needed"}', 'address', 0).verdict).toBe('no-work-needed')
-			expect(parseVerdict('{"verdict":"partial"}', 'address', 0).verdict).toBe('partial')
 		})
 
 		test('preserves the notes field from the input when present', () => {
@@ -148,9 +144,8 @@ if (import.meta.vitest) {
 			expect(() => parseVerdict('{"verdict":"ready"}', 'implement', 0)).toThrow(/implementer.*no commits|no commits.*implementer/i)
 		})
 
-		test('reviewer and addresser ready + zero commits stay ready (coercion is implementer-only)', () => {
+		test('reviewer ready + zero commits stays ready (coercion is implementer-only)', () => {
 			expect(parseVerdict('{"verdict":"ready"}', 'review', 0).verdict).toBe('ready')
-			expect(parseVerdict('{"verdict":"ready"}', 'address', 0).verdict).toBe('ready')
 		})
 	})
 }

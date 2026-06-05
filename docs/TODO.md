@@ -28,42 +28,41 @@ Open questions to grill:
 
 ---
 
-## 2. Slice PR review opt-out stays draft (`usePrs: true`, `review: false`)
+## 2. Slice PR readiness when `ship.pr` is true and `work.audit` is false
 
-**Goal.** Confirm and lock the semantics for PR-mode Slice work when agent review is disabled: implementation opens a draft Slice PR from the **Slice branch** to the **Change branch**, the **AFK loop** treats that Slice as done/awaiting human, and Trowel does not mark the PR ready for review.
+**Goal.** Confirm and lock the semantics for PR-mode Slice work when Auditing is disabled: implementation opens a draft Slice PR from the **Slice branch** to the **Change branch**, then Trowel either marks it ready immediately or records a clear state/guidance that a human must make it ready.
 
 **Files likely touched.**
 
-- `src/work/phases.ts` — implementation landing behavior that opens the draft PR.
-- `src/work/classify.ts`, `src/work/loop.ts` — draft PR classification when `review: false`.
+- `src/work/phases.ts` — implementation landing behavior that opens the draft PR and optional readiness transition.
+- `src/work/classify.ts`, `src/work/loop.ts` — draft PR classification when `work.audit: false`.
 - `src/work/pr-flow.ts` — PR-state enrichment for draft vs ready PRs.
-- Tests for `usePrs: true`, `review: false` across implementation, classification, and loop behavior.
+- Tests for `ship.pr: true`, `work.audit: false` across implementation, classification, and loop behavior.
 
 Open questions to grill:
 
-- Should status display this as `done`, or expose a more explicit “waiting for human” Slice state/message?
+- Should status display this as `implemented`, `awaiting-review`, or another explicit Slice state/message?
 - Should `trowel change work` remind the user to manually review/merge the draft Slice PR?
-- If `review` is later toggled to `true`, should existing draft Slice PRs resume into the reviewer phase?
+- If `work.audit` is later toggled to `true`, should existing draft Slice PRs resume into the Auditor phase?
 
 ---
 
-## 3. Separate Slice PR behavior from Change Close-out PRs
+## 3. Separate Change Close-out revision handling from Slice work
 
-**Goal.** Revisit `config.work.usePrs`. Today it affects both Slice integration and Change-level **Close-out**. Desired direction: **Change branches** always open a Close-out PR against the **Target branch**; Slice branch behavior is controlled by `perSliceBranches` or a replacement Slice-specific flag. This may mean dropping or renaming `usePrs`.
+**Goal.** Change-level Close-out PRs are now controlled by `ship.pr`. Follow up by deciding whether requested changes on a Close-out PR should create a Change-level agent pass, stay manual, or block Ship with guidance only.
 
 **Files likely touched.**
 
-- `src/schema.ts` — config shape, defaults, compatibility/migration notes.
-- `src/work/close-out.ts`, `src/commands/ship/index.ts` — Change-level Close-out semantics.
-- `src/work/phases.ts`, `src/work/classify.ts`, `src/work/effective-slices.ts` — Slice PR semantics.
+- `src/utils/change-state.ts` — Change state vocabulary and computation for Close-out PR feedback.
+- `src/commands/ship/index.ts` — Ship guidance when a Close-out PR needs revision.
+- `src/work/pr-flow.ts`, `src/utils/gh-ops.ts` — Close-out PR feedback/label enrichment.
 - `README.md`, `docs/CONTEXT.md` — command/config language.
 
 Open questions to grill:
 
-- Is host-merge Close-out still supported for local-only projects, or is Change Close-out PR mandatory?
-- What replaces `usePrs` in config language: `slicePrs`, `perSliceBranches`, something else, or no flag?
-- How do existing configs migrate without surprising users?
-- How should file-storage projects without GitHub/`gh` auth behave if Change Close-out PRs are mandatory?
+- Is the state name `needs-revision`, `blocked`, `in-review`, or something else?
+- Does revision work run from `trowel change work`, `trowel change ship`, or only a future project-level loop?
+- What feedback payload should the Turn receive, and how does it avoid mutating Slice state?
 
 ---
 
@@ -76,13 +75,13 @@ Open questions to grill:
 - `src/storages/types.ts`, `src/utils/change-state.ts` — Change state vocabulary and computation.
 - `src/work/entity-loop.ts` and any future project-level loop — dispatch for Change-level PR work.
 - `src/work/pr-flow.ts`, `src/utils/gh-ops.ts` — Close-out PR feedback/label enrichment.
-- `src/prompts/` — possible Change-level address/review prompt.
+- `src/prompts/` — possible Change-level review-feedback prompt.
 - Tests for state computation and loop/Ship guidance.
 
 Open questions to grill:
 
 - What is the state name: `needs-revision`, `blocked`, `in-review`, or something else?
-- Is the agent role the same as Slice addresser, or a distinct Change-level role?
+- Is the agent role the same as Slice Reviewer, or a distinct Change-level role?
 - Does this run from `trowel change work`, `trowel change ship`, or only the future project-level loop?
 - What feedback payload should the Turn receive, and how does it avoid mutating Slice state?
 
@@ -125,7 +124,7 @@ Open questions to grill:
 - Does `valleyed` support descriptions/defaults directly, or does Trowel need a schema post-processing layer?
 - Should schema include only `description`, or also `default`, examples, and enum descriptions?
 - Where should the flow audit live: inline comments, generated schema, README, or a dedicated config doc?
-- Which descriptions need to change after the `usePrs` / `perSliceBranches` redesign?
+- Which descriptions need to change after the `ship.pr` / `work.perSliceBranches` runtime audit?
 
 ---
 
@@ -226,3 +225,48 @@ Open questions to grill:
 - Should Slice branches equal to the Target branch also be protected?
 - Should current-branch refusal ignore protected branches so Ship does not fail before a safe cleanup?
 - What should output say when a protected branch is skipped?
+
+---
+
+## 12. Multiple Changes from one Grill
+
+**Goal.** Allow `trowel start` to produce more than one Change from a single Grill session when the user request naturally splits into independent
+ Changes.
+
+**Files likely touched.**
+
+- `src/commands/start.ts`, `src/commands/grill-flow.ts` — materialise multiple Change outcomes.
+- Start output schema / host handling — support an array of Changes with Slices.
+- `src/prompts/start.md` — allow the agent to propose multiple Changes and ask the user to confirm boundaries.
+- Storage implementations — verify branch creation and metadata writes are safe across multiple Changes.
+- Tests for one-Change backward compatibility, multi-Change materialisation, partial failure handling, and output guidance.
+
+Open questions to grill:
+
+- Should `start-out.json` support both single and multiple Changes, or hard-migrate to an array shape?
+- Should multiple Changes be materialised atomically, or can earlier Changes remain if later materialisation fails?
+- How should `trowel start` present next-step guidance for multiple created Changes?
+- Should Slices be allowed to block Slices in other Changes, or are Change boundaries dependency-isolated?
+- Should the Grill decide multiple Changes autonomously, or only after explicit user confirmation?
+
+---
+
+## 13. Loosen Grill doc-edit permissions
+
+**Goal.** Allow `trowel start` Grill sessions to edit any appropriate files under `docs/`, not only `docs/CONTEXT.md` and `docs/adr/**`, so domain
+decisions, TODOs, and other planning docs can be updated inline when they crystallize during grilling.
+
+**Files likely touched.**
+
+- `src/prompts/start.md` — update allowed edit paths for the start agent.
+- `src/commands/start.ts`, `src/commands/grill-flow.ts` — ensure host/session permissions match prompt constraints.
+- Tests or fixtures that assert allowed/blocked Grill file edits.
+- `docs/CONTEXT.md` / README — document what Grill may edit.
+
+Open questions to grill:
+
+- Should all `docs/**` be editable, or only markdown files under `docs/`?
+- Should generated Change/Slice artifacts under docs be protected from Grill edits?
+- Should `docs/TODO.md` be explicitly called out as editable?
+- Should ADR numbering/format rules remain special even when all docs are editable?
+- How should dirty-tree warnings describe broader docs edits during Grill?

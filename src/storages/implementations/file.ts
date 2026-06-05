@@ -6,10 +6,8 @@ import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import {
-	landAddress,
 	landImplement,
 	landReview,
-	prepareAddress,
 	prepareImplement,
 	prepareReview,
 	type PhaseDeps,
@@ -33,20 +31,21 @@ import type {
 
 type ChangeStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null; targetBranch: string; changeBranch: string }
 type ChangeStoreDraft = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & Partial<Pick<ChangeStore, 'targetBranch' | 'changeBranch'>>
-type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & { sliceBranch: string; readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
-type SliceStoreDraft = Omit<SliceStore, 'sliceBranch'> & Partial<Pick<SliceStore, 'sliceBranch'>>
-type MutableStore = { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[]; closedAt: string | null }
+type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & { implementedAt: string | null; auditedAt: string | null; sliceBranch: string | null; readyForAgent: boolean; blockedBy: string[] }
+type SliceStoreDraft = SliceStore
+type MutableStore = { readyForAgent: boolean; blockedBy: string[]; closedAt: string | null; implementedAt: string | null; auditedAt: string | null }
 type StateFilter = { state: 'open' | 'closed' | 'all' }
 type SliceHit = { changeId: string; slice: Slice }
 
 function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
 	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
-	applyOptionalPatchValue(store, 'needsRevision', patch.needsRevision)
 	applyBlockedByPatch(store, patch.blockedBy)
-	applyClosedAtPatch(store, patch.closedAt)
+	applyTimestampPatch(store, 'closedAt', patch.closedAt)
+	applyTimestampPatch(store, 'implementedAt', patch.implementedAt)
+	applyTimestampPatch(store, 'auditedAt', patch.auditedAt)
 }
 
-function applyOptionalPatchValue<K extends 'readyForAgent' | 'needsRevision'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
+function applyOptionalPatchValue<K extends 'readyForAgent'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
 	if (value !== undefined) store[key] = value
 }
 
@@ -54,11 +53,11 @@ function applyBlockedByPatch(store: MutableStore, blockedBy: string[] | undefine
 	if (blockedBy !== undefined) store.blockedBy = [...blockedBy]
 }
 
-function applyClosedAtPatch(store: MutableStore, closedAt: SlicePatch['closedAt']): void {
-	if (closedAt !== undefined) store.closedAt = closedAt
+function applyTimestampPatch<K extends 'closedAt' | 'implementedAt' | 'auditedAt'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
+	if (value !== undefined) store[key] = value
 }
 
-function applyStringPatch<T, K extends keyof T>(store: T, key: K, value: T[K] | undefined): void {
+function applyValuePatch<T, K extends keyof T>(store: T, key: K, value: T[K] | undefined): void {
 	if (value !== undefined) store[key] = value
 }
 
@@ -112,9 +111,12 @@ function validateChangeStore(value: unknown, source: string): ChangeStore {
 
 function validateSliceStore(value: unknown, source: string): SliceStore {
 	const store = value as Partial<SliceStore>
-	const missing = requiredStringKeys(store, ['sliceBranch'])
-	if (missing.length > 0) throw new Error(`${source} is missing required Slice branch metadata: ${missing.join(', ')}`)
+	if (!validSliceBranchValue(store.sliceBranch)) throw new Error(`${source} is missing required Slice branch metadata: sliceBranch`)
 	return store as SliceStore
+}
+
+function validSliceBranchValue(value: unknown): value is string | null {
+	return value === null || (typeof value === 'string' && value.length > 0)
 }
 
 function requiredStringKeys(value: Record<string, unknown>, keys: string[]): string[] {
@@ -200,8 +202,8 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return withMutationLock(deps.projectRoot, async () => {
 			const storePath = path.join(await findChangeDir(changeId), 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8')) as ChangeStoreDraft
-			applyStringPatch(store, 'targetBranch', patch.targetBranch)
-			applyStringPatch(store, 'changeBranch', patch.changeBranch)
+			applyValuePatch(store, 'targetBranch', patch.targetBranch)
+			applyValuePatch(store, 'changeBranch', patch.changeBranch)
 			await writeFile(storePath, jsonWithNewline(store))
 		})
 	}
@@ -221,8 +223,10 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				title: spec.title,
 				createdAt: new Date().toISOString(),
 				closedAt: null,
+				implementedAt: null,
+				auditedAt: null,
+				sliceBranch: null,
 				readyForAgent: false,
-				needsRevision: false,
 				blockedBy: spec.blockedBy,
 			}
 			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(store))
@@ -268,7 +272,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 		return withMutationLock(deps.projectRoot, async () => {
 			const storePath = path.join(await findSliceDir(changeId, sliceId), 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8')) as SliceStoreDraft
-			applyStringPatch(store, 'sliceBranch', patch.sliceBranch)
+			applyValuePatch(store, 'sliceBranch', patch.sliceBranch)
 			await writeFile(storePath, jsonWithNewline(store))
 		})
 	}
@@ -284,8 +288,10 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			body,
 			state: store.closedAt === null ? 'draft' : 'done',
 			closedAt: store.closedAt,
+			implementedAt: store.implementedAt ?? null,
+			auditedAt: store.auditedAt ?? null,
 			readyForAgent: store.readyForAgent,
-			needsRevision: store.needsRevision,
+			needsRevision: false,
 			blockedBy: store.blockedBy ?? [],
 			sliceBranch: store.sliceBranch,
 			prState: null,
@@ -417,6 +423,10 @@ if (import.meta.vitest) {
 			pushSetUpstream: async (b: string) => {
 				calls.git.push(['pushSetUpstream', b])
 				await realGit.pushSetUpstream(b)
+			},
+			fastForward: async (ref: string) => {
+				calls.git.push(['fastForward', ref])
+				await realGit.fastForward(ref)
 			},
 			currentBranch: async () => {
 				const r = await realGit.currentBranch()
@@ -590,6 +600,8 @@ if (import.meta.vitest) {
 				body: 'spec',
 				state: 'open',
 				closedAt: null,
+				implementedAt: null,
+				auditedAt: null,
 				readyForAgent: true,
 				needsRevision: false,
 				blockedBy: [],
@@ -641,7 +653,7 @@ if (import.meta.vitest) {
 				{
 					changeId: result.id,
 					changeBranch: result.changeBranch,
-					config: { usePrs: false, review: false, perSliceBranches: false },
+					config: { usePrs: false, audit: false, perSliceBranches: false },
 				},
 			)
 			return { outcome, after: await storage.findSlices(result.id) }
@@ -669,7 +681,7 @@ if (import.meta.vitest) {
 				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
 					changeId,
 					changeBranch,
-					config: { usePrs: false, review: false, perSliceBranches: false },
+					config: { usePrs: false, audit: false, perSliceBranches: false },
 				})
 				expect(prep.branch).toBe(changeBranch)
 				expect(prep.turnIn.slice).toEqual({ id: slice.id, title: 'Implement A', body: 'spec' })
@@ -679,7 +691,7 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('landImplement + ready: pushes Change branch, closes slice, returns done', async () => {
+		test('landImplement + ready: pushes Change branch and records implementedAt', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
@@ -692,14 +704,15 @@ if (import.meta.vitest) {
 					{
 						changeId: result.id,
 						changeBranch: result.changeBranch,
-						config: { usePrs: false, review: false, perSliceBranches: false },
+						config: { usePrs: false, audit: false, perSliceBranches: false },
 					},
 				)
 
-				expect(outcome).toBe('done')
+				expect(outcome).toBe('progress')
 				expect(f.calls.git).toContainEqual(['push', result.changeBranch])
 				const after = await storage.findSlices(result.id)
-				expect(after[0]!.state).toBe('done')
+				expect(after[0]!.state).toBe('implemented')
+				expect(after[0]!.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 			} finally {
 				await teardown(f)
 			}
@@ -739,13 +752,13 @@ if (import.meta.vitest) {
 				await f.deps.git.createLocalBranch(changeBranch, 'main')
 				await f.deps.git.pushSetUpstream(changeBranch)
 				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec', blockedBy: [] })
-				await f.deps.git.createRemoteBranch(slice.sliceBranch, changeBranch)
+				await f.deps.git.createRemoteBranch(slice.sliceBranch!, changeBranch)
 				f.calls.git.length = 0
 
 				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
 					changeId,
 					changeBranch,
-					config: { usePrs: false, review: false, perSliceBranches: true },
+					config: { usePrs: false, audit: false, perSliceBranches: true },
 				})
 				expect(prep.branch).toBe(`${changeId}/${slice.id}-implement-a`)
 				expect(f.calls.git).toContainEqual(['fetch', prep.branch])
@@ -754,7 +767,7 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('landImplement + perSliceBranches:true + usePrs:false + ready: slice branch → host-merge → updateSlice CLOSED; returns done', async () => {
+		test('landImplement + perSliceBranches:true + usePrs:false + ready: records implementedAt without host-merge', async () => {
 			const f = await setup()
 			try {
 				// Replace the spy git with a recording no-op for this matrix cell — we want to assert the
@@ -765,23 +778,20 @@ if (import.meta.vitest) {
 					deps,
 					{ ...slice, readyForAgent: true } as Slice,
 					{ verdict: 'ready', commits: 1 },
-					{ changeId, changeBranch: changeBranch, config: { usePrs: false, review: false, perSliceBranches: true } },
+					{ changeId, changeBranch: changeBranch, config: { usePrs: false, audit: false, perSliceBranches: true } },
 				)
 
-				expect(outcome).toBe('done')
-				expect(calls.map((c) => c[0])).toEqual(['push', 'checkout', 'mergeNoFf', 'push'])
+				expect(outcome).toBe('progress')
+				expect(calls.map((c) => c[0])).toEqual(['push'])
 				expect(calls).toContainEqual(['push', sliceBranch])
-				expect(calls).toContainEqual(['checkout', changeBranch])
-				expect(calls).toContainEqual(['mergeNoFf', sliceBranch])
-				expect(calls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
 				const after = await storage.findSlices(changeId)
-				expect(after[0]!.state).toBe('done')
+				expect(after[0]!.state).toBe('implemented')
 			} finally {
 				await teardown(f)
 			}
 		})
 
-		test('landImplement + perSliceBranches:true + usePrs:true + ready: opens a draft PR, returns progress, slice stays OPEN (capability gate retired)', async () => {
+		test('landImplement + perSliceBranches:true + usePrs:true + ready: records implementedAt without opening a PR', async () => {
 			const f = await setup()
 			try {
 				const { storage, changeId, changeBranch, slice, sliceBranch, deps, calls: gitCalls } = await readySliceBranchFixture(f, 'develop')
@@ -792,30 +802,27 @@ if (import.meta.vitest) {
 					deps,
 					{ ...slice, readyForAgent: true } as Slice,
 					{ verdict: 'ready', commits: 1 },
-					{ changeId, changeBranch: changeBranch, config: { usePrs: true, review: false, perSliceBranches: true } },
+					{ changeId, changeBranch: changeBranch, config: { usePrs: true, audit: false, perSliceBranches: true } },
 				)
 
 				expect(outcome).toBe('progress')
 				expect(gitCalls).toContainEqual(['push', sliceBranch])
-				// No merge/delete on this code path — PR creation is the terminus.
 				expect(gitCalls.map((c) => c[0])).not.toContain('mergeNoFf')
 				expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
-				// createDraftPr was invoked.
-				expect(ghCalls.find((c) => c[0] === 'createDraftPr')).toBeDefined()
-				// Slice not closed (PR awaits merge).
+				expect(ghCalls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
 				const after = await storage.findSlices(changeId)
-				expect(after[0]!.state).toBe('open')
+				expect(after[0]!.state).toBe('implemented')
 			} finally {
 				await teardown(f)
 			}
 		})
 
-		test('review and address phases on file storage reach the PR-lookup layer (capability gate retired)', async () => {
+		test('review phase on file storage reaches the PR-lookup layer for feedback', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
-				const ctx = { changeId: 'p1', changeBranch: 'change/p1-x', config: { usePrs: true, review: true, perSliceBranches: true } }
+				const ctx = { changeId: 'p1', changeBranch: 'change/p1-x', config: { usePrs: true, audit: true, perSliceBranches: true } }
 				const { gh } = recordingGhOps({
 					findPrNumberByHead: async (head) => {
 						throw new Error(`no PR found for head '${head}'`)
@@ -825,10 +832,8 @@ if (import.meta.vitest) {
 				// No PR exists, so findPrNumberByHead throws "no PR found".
 				// The point: that's now the failure mode, not "requires capability 'prFlow'".
 				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/no PR found/)
-				await expect(prepareAddress(deps, slice, ctx)).rejects.toThrow(/no PR found/)
-				// landReview/landAddress with verdict 'partial' short-circuit before any gh call.
+				// landReview with verdict 'partial' short-circuits before any gh call.
 				expect(await landReview(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
-				expect(await landAddress(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
 			} finally {
 				await teardown(f)
 			}
@@ -999,7 +1004,9 @@ if (import.meta.vitest) {
 			expect(await exists(path.join(dir, 'README.md'))).toBe(true)
 			expect(await exists(path.join(dir, 'store.json'))).toBe(true)
 			const store = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
-			expect(store).not.toHaveProperty('sliceBranch')
+			expect(store.sliceBranch).toBeNull()
+			expect(store).not.toHaveProperty('needsRevision')
+			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: null, needsRevision: false })
 		})
 	})
 
@@ -1029,14 +1036,14 @@ if (import.meta.vitest) {
 			const { id: changeId } = await createMaterialisedChange(storage)
 			const a = await createMaterialisedSlice(storage, changeId, { title: 'Alpha', body: 'aa', blockedBy: [] })
 			const b = await createMaterialisedSlice(storage, changeId, { title: 'Beta', body: 'bb', blockedBy: [] })
-			// Mark b as closed and needsRevision via updateSlice
-			await storage.updateSlice(changeId, b.id, { closedAt: new Date().toISOString(), needsRevision: true })
+			// Mark b as closed; needs-revision is PR-derived and not stored by file storage.
+			await storage.updateSlice(changeId, b.id, { closedAt: new Date().toISOString() })
 
 			const slices = classifySlices(await storage.findSlices(changeId))
 			expect(slices).toHaveLength(2)
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
 			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'draft', closedAt: null, readyForAgent: false, needsRevision: false })
-			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'done', needsRevision: true })
+			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'done', needsRevision: false })
 		})
 	})
 
@@ -1086,12 +1093,6 @@ if (import.meta.vitest) {
 			expect(updated!.state).toBe('open')
 		})
 
-		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
-			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.updateSlice(changeId, slice.id, { needsRevision: true, readyForAgent: true })
-			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.state).toBe('needs-revision')
-		})
 
 		test('CLOSED → done', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
@@ -1315,18 +1316,18 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('flips readyForAgent and needsRevision', async () => {
+		test('flips readyForAgent without writing needsRevision', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
 			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
 			let store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(true)
-			expect(store.needsRevision).toBe(false)
+			expect(store).not.toHaveProperty('needsRevision')
 
-			await storage.updateSlice(changeId, slice.id, { needsRevision: true, readyForAgent: false })
+			await storage.updateSlice(changeId, slice.id, { readyForAgent: false })
 			store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(false)
-			expect(store.needsRevision).toBe(true)
+			expect(store).not.toHaveProperty('needsRevision')
 		})
 
 		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {

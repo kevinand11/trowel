@@ -36,7 +36,7 @@ async function runAbortChange(changeId: string, rt: AbortRuntime): Promise<void>
 	const back = await rt.git.currentBranch()
 	const { change, slices, state } = await classifiedChangeOrThrow(changeId, rt)
 	const targetBranch = await changeTargetBranch(change, rt)
-	if (abortMayRunCleanup(state)) await refuseCurrentCleanupBranch({ change, slices, rt })
+	if (abortMayRunCleanup(state)) await refuseCurrentCleanupBranch({ change, slices, targetBranch, rt })
 	try {
 		await abortChangeByState({ change, slices, state }, targetBranch, rt)
 	} finally {
@@ -104,7 +104,7 @@ async function confirmAbortInFlightChange(changeId: string, rt: AbortRuntime): P
 
 async function closeOpenSlicePrs(slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
 	if (!rt.usePrs) return
-	const storedSliceHeads = new Set(slices.map((slice) => slice.sliceBranch))
+	const storedSliceHeads = new Set(slices.map((slice) => slice.sliceBranch).filter((branch): branch is string => branch !== null))
 	for (const pr of await rt.gh.listOpenPrs()) {
 		if (storedSliceHeads.has(pr.headRefName)) await closePrWithoutMerging(pr.number, rt)
 	}
@@ -166,7 +166,7 @@ async function buildAbortRuntime(opts: { storage?: StorageKind }): Promise<{ bas
 			storage,
 			git: base.git,
 			gh: base.gh,
-			usePrs: base.config.work.usePrs,
+			usePrs: base.config.ship.pr,
 			deleteBranchPolicy: base.config.abort.deleteBranch,
 			abortComment: base.config.abort.comment,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
@@ -220,6 +220,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'open',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],
