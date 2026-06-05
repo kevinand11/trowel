@@ -5,7 +5,7 @@ import type { GitOps } from '../utils/git-ops.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 
 /**
- * Terminal step that ships a closeable Change. Branches on `config.work.usePrs`:
+ * Terminal step that ships a closeable Change. Branches on `config.ship.pr`:
  *
  * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
  *   doesn't already exist), then marks it ready. The Change remains unfinalized until Ship later

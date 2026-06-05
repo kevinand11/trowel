@@ -61,7 +61,7 @@ async function verifyStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: Phase
 
 function assertPrHeadCanTargetChangeBranch(slice: Slice, ctx: PhaseCtx, branch: string): void {
 	if (!ctx.config.usePrs || branch !== ctx.changeBranch) return
-	throw new Error(`Slice '${slice.id}' stores Slice branch '${branch}', which equals Change branch '${ctx.changeBranch}'; config.work.usePrs cannot open a Slice PR with the same head and base`)
+	throw new Error(`Slice '${slice.id}' stores Slice branch '${branch}', which equals Change branch '${ctx.changeBranch}'; config.ship.pr cannot open a Slice PR with the same head and base`)
 }
 
 /**
@@ -194,7 +194,7 @@ async function openSliceDraftPr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, br
 
 /**
  * Prepare the reviewer Turn. Requires an open PR (looked up via `findPrNumber`); the loop only
- * dispatches `'review'` when `prState` is `'draft'`, which presupposes `config.work.usePrs: true`.
+ * dispatches `'review'` when `prState` is `'draft'`, which presupposes `config.ship.pr: true`.
  * Per-phase commands (`trowel review`) bypass the classifier; if no PR exists `findPrNumber` throws.
  *
  * Looks up the slice branch's PR number so the reviewer prompt has `{pr.number, pr.branch}` to

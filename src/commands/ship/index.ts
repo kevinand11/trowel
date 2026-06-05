@@ -202,7 +202,7 @@ async function buildShipRuntime(opts: { storage?: StorageKind }): Promise<{ base
 			storage,
 			git: base.git,
 			gh: base.gh,
-			usePrs: base.config.work.usePrs,
+			usePrs: base.config.ship.pr,
 			mergeNoVerify: base.config.work.mergeNoVerify,
 			mergeMethod: base.config.ship.mergeMethod,
 			deleteBranchPolicy: base.config.ship.deleteBranch,

@@ -66,26 +66,11 @@ async function applyConfigLayer(state: ConfigLoadState, layer: InitableLayer, pr
 }
 
 /**
- * Cross-field flag validation. See ADRs `storage-behavior-separation` and
- * `decouple-pr-flow-from-storage`: flag combinations are validated storage-independently.
+ * Cross-field flag validation hook. The explicit config model currently has no invalid boolean
+ * combinations: ship.pr controls PR-vs-merge shipping and Slice PR integration, while work.audit
+ * independently controls Auditing.
  */
-type ConfigValidationRule = { invalid: (config: Config) => boolean; message: string }
-
-const CONFIG_VALIDATION_RULES: ConfigValidationRule[] = [
-	{
-		invalid: (config) => config.work.review && !config.work.usePrs,
-		message: 'config.work.review requires config.work.usePrs: true (there is no PR for the reviewer to operate on otherwise)',
-	},
-	{
-		invalid: (config) => config.work.usePrs && !config.work.perSliceBranches,
-		message: 'config.work.usePrs requires config.work.perSliceBranches: true (there is no slice branch to open a PR against otherwise)',
-	},
-]
-
-function validateCapabilities(config: Config): void {
-	const violation = CONFIG_VALIDATION_RULES.find((rule) => rule.invalid(config))
-	if (violation) throw new Error(violation.message)
-}
+function validateCapabilities(_config: Config): void {}
 
 const PATH_FOR_LAYER: Record<InitableLayer, (projectRoot: string | null, home: string) => string | null> = {
 	global: (_projectRoot, home) => path.join(home, '.trowel', 'config.json'),
@@ -188,37 +173,28 @@ if (import.meta.vitest) {
 			await expect(loadConfig(project, home)).rejects.toThrow(/Invalid config at/)
 		})
 
-		test('accepts usePrs: true against the file storage (capability gating retired)', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'file', work: { usePrs: true } })
+		test('accepts ship.pr against the file storage', async () => {
+			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'file', ship: { pr: true } })
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.work.usePrs).toBe(true)
+			expect(resolved.config.ship.pr).toBe(true)
 		})
 
-		test('accepts usePrs: true against the issue storage', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', work: { usePrs: true } })
+		test('accepts ship.pr against the issue storage', async () => {
+			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', ship: { pr: false } })
 			const resolved = await loadConfig(project, home)
-			expect(resolved.config.work.usePrs).toBe(true)
+			expect(resolved.config.ship.pr).toBe(false)
 		})
 
-		test('rejects review: true without usePrs: true (no PR for reviewer to operate on)', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', work: { usePrs: false, review: true } })
-			await expect(loadConfig(project, home)).rejects.toThrow(/config\.work\.review requires config\.work\.usePrs: true/)
+		test('accepts work.audit independently from ship.pr', async () => {
+			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', ship: { pr: false }, work: { audit: true } })
+			const resolved = await loadConfig(project, home)
+			expect(resolved.config.work.audit).toBe(true)
+			expect(resolved.config.ship.pr).toBe(false)
 		})
 
-		test('accepts review: true when usePrs: true is also set', async () => {
+		test('rejects removed work.usePrs and work.review fields', async () => {
 			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', work: { usePrs: true, review: true } })
-			const resolved = await loadConfig(project, home)
-			expect(resolved.config.work.review).toBe(true)
-		})
-
-		test('rejects usePrs: true with perSliceBranches: false (no slice branch to PR against)', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), {
-				storage: 'issue',
-				work: { usePrs: true, perSliceBranches: false },
-			})
-			await expect(loadConfig(project, home)).rejects.toThrow(
-				/config\.work\.usePrs requires config\.work\.perSliceBranches: true/,
-			)
+			await expect(loadConfig(project, home)).rejects.toThrow(/Invalid config at/)
 		})
 	})
 }

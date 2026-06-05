@@ -166,7 +166,7 @@ async function buildAbortRuntime(opts: { storage?: StorageKind }): Promise<{ bas
 			storage,
 			git: base.git,
 			gh: base.gh,
-			usePrs: base.config.work.usePrs,
+			usePrs: base.config.ship.pr,
 			deleteBranchPolicy: base.config.abort.deleteBranch,
 			abortComment: base.config.abort.comment,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
