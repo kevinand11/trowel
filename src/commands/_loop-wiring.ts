@@ -84,7 +84,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 
 	const runOnePhase = async (changeId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await changeBranch(changeId)
-		const ctx = { changeId, changeBranch: branch, config: { usePrs: config.work.usePrs, review: config.work.review, perSliceBranches: config.work.perSliceBranches } }
+		const ctx = { changeId, changeBranch: branch, config: { usePrs: config.ship.pr, review: config.work.audit, perSliceBranches: config.work.perSliceBranches } }
 		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
 		const prep = await prepareOnePhase(role, phaseDeps, slice, ctx)
 		const verdict: TurnOut = await makeSpawnTurnFor(changeId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
@@ -99,8 +99,8 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			spawnTurn: makeSpawnTurnFor(entity.id),
 			log,
 			config: {
-				usePrs: config.work.usePrs,
-				review: config.work.review,
+				usePrs: config.ship.pr,
+				review: config.work.audit,
 				perSliceBranches: config.work.perSliceBranches,
 				maxConcurrent: config.turn.maxConcurrent,
 				mergeNoVerify: config.work.mergeNoVerify,

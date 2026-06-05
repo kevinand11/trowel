@@ -15,8 +15,8 @@ type InitPrompts = {
 	changesDir: (current: string) => Promise<string>
 	agentHarness: (current: string) => Promise<string>
 	agentModel: (current: string) => Promise<string>
-	usePrs: (current: boolean) => Promise<boolean>
-	review: (current: boolean) => Promise<boolean>
+	shipPr: (current: boolean) => Promise<boolean>
+	audit: (current: boolean) => Promise<boolean>
 	confirm: (msg: string) => Promise<boolean>
 }
 
@@ -83,6 +83,7 @@ async function buildInitConfig(opts: RunInitOptions, existing: PartialConfig | n
 	const merged = baseInitConfig(existing, storageAnswer)
 	if (storageAnswer === 'file') await addFileStorageConfig(opts, existing, merged)
 	await addAgentConfig(opts, existing, merged)
+	await addShipConfig(opts, existing, merged)
 	await addWorkConfig(opts, existing, merged)
 	return merged
 }
@@ -130,23 +131,30 @@ function modelDefaultForHarness(existing: PartialConfig | null, harnessAnswer: s
 	return valueOrDefault(agentConfig(existing).model, defaultModel)
 }
 
+async function addShipConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
+	const prAnswer = await opts.prompts.shipPr(currentShipPr(existing))
+	merged.ship = { ...shipConfig(existing), pr: prAnswer }
+}
+
+function shipConfig(existing: PartialConfig | null): Partial<NonNullable<PartialConfig['ship']>> {
+	return existing?.ship ?? {}
+}
+
+function currentShipPr(existing: PartialConfig | null): boolean {
+	return valueOrDefault(shipConfig(existing).pr, defaultConfig.ship.pr)
+}
+
 async function addWorkConfig(opts: RunInitOptions, existing: PartialConfig | null, merged: Record<string, unknown>): Promise<void> {
-	const usePrsAnswer = await opts.prompts.usePrs(currentUsePrs(existing))
-	const workOut: Record<string, unknown> = { ...workConfig(existing), usePrs: usePrsAnswer }
-	if (usePrsAnswer) workOut.review = await opts.prompts.review(currentReview(existing))
-	merged.work = workOut
+	const auditAnswer = await opts.prompts.audit(currentAudit(existing))
+	merged.work = { ...workConfig(existing), audit: auditAnswer }
 }
 
 function workConfig(existing: PartialConfig | null): Partial<NonNullable<PartialConfig['work']>> {
 	return existing?.work ?? {}
 }
 
-function currentUsePrs(existing: PartialConfig | null): boolean {
-	return valueOrDefault(workConfig(existing).usePrs, defaultConfig.work.usePrs)
-}
-
-function currentReview(existing: PartialConfig | null): boolean {
-	return valueOrDefault(workConfig(existing).review, defaultConfig.work.review)
+function currentAudit(existing: PartialConfig | null): boolean {
+	return valueOrDefault(workConfig(existing).audit, defaultConfig.work.audit)
 }
 
 async function confirmAndWriteInitConfig(opts: RunInitOptions, filePath: string, json: string, stdout: (s: string) => void): Promise<RunInitResult> {
@@ -194,14 +202,14 @@ export async function init(layerArg: string): Promise<void> {
 				message: 'Agent model',
 				default: current,
 			}),
-		usePrs: (current) =>
+		shipPr: (current) =>
 			confirm({
-				message: 'Open a draft PR per slice branch (work.usePrs)?',
+				message: 'Use PRs for Change shipping and distinct Slice branches (ship.pr)?',
 				default: current,
 			}),
-		review: (current) =>
+		audit: (current) =>
 			confirm({
-				message: 'Run the agent reviewer/addresser against PRs (work.review)?',
+				message: 'Run Auditing after implementation (work.audit)?',
 				default: current,
 			}),
 		confirm: (message) => confirm({ message, default: true }),
@@ -260,8 +268,8 @@ if (import.meta.vitest) {
 			changesDir: async (current) => current,
 			agentHarness: async (current) => current,
 			agentModel: async (current) => current,
-			usePrs: async (current) => current,
-			review: async (current) => current,
+			shipPr: async (current) => current,
+			audit: async (current) => current,
 			confirm: async () => confirm,
 			...overrides,
 		}
@@ -272,11 +280,11 @@ if (import.meta.vitest) {
 	}
 
 	function promptsForFile(overrides: Partial<InitPrompts> = {}): InitPrompts {
-		return fixedPrompts('file', true, { usePrs: async () => false, review: async () => false, ...overrides })
+		return fixedPrompts('file', true, { shipPr: async () => true, audit: async () => false, ...overrides })
 	}
 
 	function promptsForIssue(overrides: Partial<InitPrompts> = {}): InitPrompts {
-		return fixedPrompts('issue', true, { usePrs: async () => false, review: async () => false, ...overrides })
+		return fixedPrompts('issue', true, { shipPr: async () => true, audit: async () => false, ...overrides })
 	}
 
 	async function modelDefaultForExistingAgent(f: Fixture, agent: Record<string, string>, harness = 'claude'): Promise<string | undefined> {
@@ -335,7 +343,8 @@ if (import.meta.vitest) {
 				storage: 'file',
 				docs: { changesDir: 'docs/changes' },
 				agent: { harness: 'claude', model: 'claude-opus-4-6' },
-				work: { usePrs: false },
+				ship: { pr: true },
+				work: { audit: false },
 			})
 		})
 
@@ -542,7 +551,7 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('init: work.usePrs and work.review prompts', () => {
+	describe('init: ship.pr and work.audit prompts', () => {
 		let f: Fixture
 		beforeEach(async () => {
 			f = await setup()
@@ -551,44 +560,37 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('prompts for work.usePrs unconditionally; writes the answer', async () => {
-			await runProjectInit(f, promptsForFile({ usePrs: async () => true }))
+		test('prompts for ship.pr unconditionally; writes the answer', async () => {
+			await runProjectInit(f, promptsForFile({ shipPr: async () => false }))
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written.work.usePrs).toBe(true)
+			expect(written.ship.pr).toBe(false)
 		})
 
-		test('work.review prompt is NOT called when usePrs is false; no review key in output', async () => {
-			let reviewCalls = 0
+		test('prompts for work.audit unconditionally; writes the answer', async () => {
+			let auditCalls = 0
 			await runProjectInit(
 				f,
 				promptsForFile({
-					usePrs: async () => false,
-					review: async () => {
-						reviewCalls++
+					audit: async () => {
+						auditCalls++
 						return true
 					},
 				}),
 			)
-			expect(reviewCalls).toBe(0)
+			expect(auditCalls).toBe(1)
 			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written.work).not.toHaveProperty('review')
+			expect(written.work.audit).toBe(true)
 		})
 
-		test('work.review prompt IS called when usePrs is true; value stored', async () => {
-			let reviewCalls = 0
-			await runProjectInit(
-				f,
-				promptsForFile({
-					usePrs: async () => true,
-					review: async () => {
-						reviewCalls++
-						return true
-					},
-				}),
-			)
-			expect(reviewCalls).toBe(1)
-			const written = JSON.parse(await read(path.join(f.project, '.trowel', 'config.json'), 'utf8'))
-			expect(written.work).toMatchObject({ usePrs: true, review: true })
+		test('preserves existing ship and work keys not covered by the wizard', async () => {
+			const configPath = path.join(f.project, '.trowel', 'config.json')
+			await mk(path.dirname(configPath), { recursive: true })
+			await write(configPath, JSON.stringify({ ship: { mergeMethod: 'squash' }, work: { perSliceBranches: false } }), 'utf8')
+
+			await runProjectInit(f, promptsForFile({ shipPr: async () => true, audit: async () => false }))
+			const written = JSON.parse(await read(configPath, 'utf8'))
+			expect(written.ship).toMatchObject({ pr: true, mergeMethod: 'squash' })
+			expect(written.work).toMatchObject({ audit: false, perSliceBranches: false })
 		})
 	})
 

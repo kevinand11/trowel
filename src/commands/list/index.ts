@@ -14,7 +14,7 @@ export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
 	const git = branchStableGitOps(base.git)
 	const storage = buildStorage({ ...base, git }, (opts.storage as StorageKind | undefined) ?? base.config.storage)
-	const rows = await listChangeRows({ storage, usePrs: base.config.work.usePrs, gh: base.gh, git: branchStableGitFacts(git) })
+	const rows = await listChangeRows({ storage, usePrs: base.config.ship.pr, gh: base.gh, git: branchStableGitFacts(git) })
 	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }
 

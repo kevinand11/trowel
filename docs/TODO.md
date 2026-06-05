@@ -28,42 +28,41 @@ Open questions to grill:
 
 ---
 
-## 2. Slice PR review opt-out stays draft (`usePrs: true`, `review: false`)
+## 2. Slice PR readiness when `ship.pr` is true and `work.audit` is false
 
-**Goal.** Confirm and lock the semantics for PR-mode Slice work when agent review is disabled: implementation opens a draft Slice PR from the **Slice branch** to the **Change branch**, the **AFK loop** treats that Slice as done/awaiting human, and Trowel does not mark the PR ready for review.
+**Goal.** Confirm and lock the semantics for PR-mode Slice work when Auditing is disabled: implementation opens a draft Slice PR from the **Slice branch** to the **Change branch**, then Trowel either marks it ready immediately or records a clear state/guidance that a human must make it ready.
 
 **Files likely touched.**
 
-- `src/work/phases.ts` — implementation landing behavior that opens the draft PR.
-- `src/work/classify.ts`, `src/work/loop.ts` — draft PR classification when `review: false`.
+- `src/work/phases.ts` — implementation landing behavior that opens the draft PR and optional readiness transition.
+- `src/work/classify.ts`, `src/work/loop.ts` — draft PR classification when `work.audit: false`.
 - `src/work/pr-flow.ts` — PR-state enrichment for draft vs ready PRs.
-- Tests for `usePrs: true`, `review: false` across implementation, classification, and loop behavior.
+- Tests for `ship.pr: true`, `work.audit: false` across implementation, classification, and loop behavior.
 
 Open questions to grill:
 
-- Should status display this as `done`, or expose a more explicit “waiting for human” Slice state/message?
+- Should status display this as `implemented`, `awaiting-review`, or another explicit Slice state/message?
 - Should `trowel change work` remind the user to manually review/merge the draft Slice PR?
-- If `review` is later toggled to `true`, should existing draft Slice PRs resume into the reviewer phase?
+- If `work.audit` is later toggled to `true`, should existing draft Slice PRs resume into the Auditor phase?
 
 ---
 
-## 3. Separate Slice PR behavior from Change Close-out PRs
+## 3. Separate Change Close-out revision handling from Slice work
 
-**Goal.** Revisit `config.work.usePrs`. Today it affects both Slice integration and Change-level **Close-out**. Desired direction: **Change branches** always open a Close-out PR against the **Target branch**; Slice branch behavior is controlled by `perSliceBranches` or a replacement Slice-specific flag. This may mean dropping or renaming `usePrs`.
+**Goal.** Change-level Close-out PRs are now controlled by `ship.pr`. Follow up by deciding whether requested changes on a Close-out PR should create a Change-level agent pass, stay manual, or block Ship with guidance only.
 
 **Files likely touched.**
 
-- `src/schema.ts` — config shape, defaults, compatibility/migration notes.
-- `src/work/close-out.ts`, `src/commands/ship/index.ts` — Change-level Close-out semantics.
-- `src/work/phases.ts`, `src/work/classify.ts`, `src/work/effective-slices.ts` — Slice PR semantics.
+- `src/utils/change-state.ts` — Change state vocabulary and computation for Close-out PR feedback.
+- `src/commands/ship/index.ts` — Ship guidance when a Close-out PR needs revision.
+- `src/work/pr-flow.ts`, `src/utils/gh-ops.ts` — Close-out PR feedback/label enrichment.
 - `README.md`, `docs/CONTEXT.md` — command/config language.
 
 Open questions to grill:
 
-- Is host-merge Close-out still supported for local-only projects, or is Change Close-out PR mandatory?
-- What replaces `usePrs` in config language: `slicePrs`, `perSliceBranches`, something else, or no flag?
-- How do existing configs migrate without surprising users?
-- How should file-storage projects without GitHub/`gh` auth behave if Change Close-out PRs are mandatory?
+- Is the state name `needs-revision`, `blocked`, `in-review`, or something else?
+- Does revision work run from `trowel change work`, `trowel change ship`, or only a future project-level loop?
+- What feedback payload should the Turn receive, and how does it avoid mutating Slice state?
 
 ---
 
@@ -125,7 +124,7 @@ Open questions to grill:
 - Does `valleyed` support descriptions/defaults directly, or does Trowel need a schema post-processing layer?
 - Should schema include only `description`, or also `default`, examples, and enum descriptions?
 - Where should the flow audit live: inline comments, generated schema, README, or a dedicated config doc?
-- Which descriptions need to change after the `usePrs` / `perSliceBranches` redesign?
+- Which descriptions need to change after the `ship.pr` / `work.perSliceBranches` runtime audit?
 
 ---
 

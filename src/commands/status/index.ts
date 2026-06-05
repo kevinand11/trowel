@@ -49,7 +49,7 @@ async function buildStatusStorage(opts: { storage?: string }): Promise<{ storage
 		labels: config.labels,
 		abortOptions: config.abort,
 	}
-	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git: branchStableGitFacts(git), usePrs: config.work.usePrs }
+	return { storage: getStorage(storageKind, storageDeps), projectRoot, gh, git: branchStableGitFacts(git), usePrs: config.ship.pr }
 }
 
 function statusRuntime(storage: Storage, gh: GhOps, git: ReadOnlyGitFacts, usePrs: boolean, stdout: (s: string) => void = (s) => process.stdout.write(s)): StatusRuntime {

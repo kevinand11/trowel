@@ -4,6 +4,12 @@ import { harnessFactories, type HarnessKind } from './harnesses/registry.ts'
 import { storageFactories, type StorageKind } from './storages/registry.ts'
 
 export const partialConfigPipe = () =>
+	v.merge(
+		v.custom<unknown>((input) => !hasRemovedPrConfigFields(input), 'work.usePrs and work.review were removed; use ship.pr and work.audit'),
+		partialConfigObjectPipe(),
+	)
+
+const partialConfigObjectPipe = () =>
 	v.object({
 		// File-only annotation. Editors use it to fetch a JSON Schema for
 		// autocomplete; runtime code never reads it. `trowel init` writes it
@@ -36,6 +42,7 @@ export const partialConfigPipe = () =>
 		),
 		ship: v.optional(
 			v.object({
+				pr: v.optional(v.boolean()),
 				mergeMethod: v.optional(v.in(['merge', 'squash', 'rebase'] as const)),
 				deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
 			}),
@@ -48,14 +55,23 @@ export const partialConfigPipe = () =>
 		),
 		work: v.optional(
 			v.object({
-				usePrs: v.optional(v.boolean()),
-				review: v.optional(v.boolean()),
+				audit: v.optional(v.boolean()),
 				perSliceBranches: v.optional(v.boolean()),
 				worktreeCleanupAge: v.optional(v.string()),
 				mergeNoVerify: v.optional(v.boolean()),
 			}),
 		),
 	})
+
+function hasRemovedPrConfigFields(input: unknown): boolean {
+	if (!isRecord(input)) return false
+	if (!isRecord(input.work)) return false
+	return Object.hasOwn(input.work, 'usePrs') || Object.hasOwn(input.work, 'review')
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+	return typeof input === 'object' && input !== null && !Array.isArray(input)
+}
 
 export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
@@ -79,6 +95,7 @@ export type Config = {
 		deleteBranch: 'always' | 'never' | 'prompt'
 	}
 	ship: {
+		pr: boolean
 		mergeMethod: 'merge' | 'squash' | 'rebase'
 		deleteBranch: 'always' | 'never' | 'prompt'
 	}
@@ -87,8 +104,7 @@ export type Config = {
 		maxConcurrent: number | null
 	}
 	work: {
-		usePrs: boolean
-		review: boolean
+		audit: boolean
 		perSliceBranches: boolean
 		worktreeCleanupAge: string
 		mergeNoVerify: boolean
@@ -122,6 +138,7 @@ export const defaultConfig: Config = {
 		deleteBranch: 'prompt',
 	},
 	ship: {
+		pr: true,
 		mergeMethod: 'merge',
 		deleteBranch: 'prompt',
 	},
@@ -130,12 +147,11 @@ export const defaultConfig: Config = {
 		maxConcurrent: 3,
 	},
 	work: {
-		// Default false: most projects start in host-merge mode regardless of storage.
-		// Set true to open a draft PR per slice branch (requires a GitHub remote + gh auth).
-		usePrs: false,
-		review: false,
-		// Default true: every workflow runs each slice on its own branch, then host-merges (no PRs)
-		// or opens a draft PR (with `usePrs: true`). Set false to keep the old file-style
+		// Default false: Auditing is opt-in. When enabled, the loop runs the auditor after
+		// implementation and before host-merging a Slice branch or making its PR ready.
+		audit: false,
+		// Default true: every workflow runs each slice on its own branch, then host-merges
+		// or opens a draft PR depending on ship.pr. Set false to keep the old file-style
 		// Change branch direct behavior (one branch per Change, implementers serialize).
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
@@ -153,7 +169,7 @@ export const defaultConfig: Config = {
 export function emitJsonSchema(): Record<string, unknown> {
 	// Valleyed's .schema(context) walks the pipe; we pass an empty context
 	// because there is no enclosing object — the partial-config pipe is the root.
-	const inner = (partialConfigPipe().schema as (ctx: Record<string, unknown>) => Record<string, unknown>)({})
+	const inner = (partialConfigObjectPipe().schema as (ctx: Record<string, unknown>) => Record<string, unknown>)({})
 	return {
 		$schema: 'http://json-schema.org/draft-07/schema#',
 		title: 'Trowel config',
@@ -205,7 +221,8 @@ if (import.meta.vitest) {
 			expect(defaultConfig.abort.comment).toBe('Closed via trowel')
 		})
 
-		test('ship defaults to merge method + prompt branch deletion', () => {
+		test('ship defaults to PR mode, merge method, and prompt branch deletion', () => {
+			expect(defaultConfig.ship.pr).toBe(true)
 			expect(defaultConfig.ship.mergeMethod).toBe('merge')
 			expect(defaultConfig.ship.deleteBranch).toBe('prompt')
 		})
@@ -219,19 +236,14 @@ if (import.meta.vitest) {
 			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
-		test('work loop defaults: PRs off, 24h worktree cleanup', () => {
-			expect(defaultConfig.work.usePrs).toBe(false)
+		test('work loop defaults: Auditing off, 24h worktree cleanup', () => {
+			expect(defaultConfig.work.audit).toBe(false)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
 		})
 
-		test('work.review defaults to false (agent reviewer is opt-in)', () => {
-			expect(defaultConfig.work.review).toBe(false)
-		})
-
-		test('work.perSliceBranches defaults to true (slice-branches by default; host-merges when usePrs is false)', () => {
+		test('work.perSliceBranches defaults to true (slice-branches by default)', () => {
 			expect(defaultConfig.work.perSliceBranches).toBe(true)
 		})
-
 	})
 
 	describe('mergePartial', () => {
@@ -295,7 +307,7 @@ if (import.meta.vitest) {
 		})
 
 		test('accepts ship config values', () => {
-			expect(v.validate(partialConfigPipe(), { ship: { mergeMethod: 'squash', deleteBranch: 'always' } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { ship: { pr: false, mergeMethod: 'squash', deleteBranch: 'always' } }).valid).toBe(true)
 		})
 
 		test('rejects invalid ship config values', () => {
@@ -313,14 +325,19 @@ if (import.meta.vitest) {
 			expect(result.valid).toBe(true)
 		})
 
-		test('accepts work.usePrs as a boolean', () => {
-			expect(v.validate(partialConfigPipe(), { work: { usePrs: false } }).valid).toBe(true)
-			expect(v.validate(partialConfigPipe(), { work: { usePrs: true } }).valid).toBe(true)
+		test('accepts ship.pr as a boolean', () => {
+			expect(v.validate(partialConfigPipe(), { ship: { pr: false } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { ship: { pr: true } }).valid).toBe(true)
 		})
 
-		test('accepts work.review as a boolean', () => {
-			expect(v.validate(partialConfigPipe(), { work: { review: false } }).valid).toBe(true)
-			expect(v.validate(partialConfigPipe(), { work: { review: true } }).valid).toBe(true)
+		test('accepts work.audit as a boolean', () => {
+			expect(v.validate(partialConfigPipe(), { work: { audit: false } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe(), { work: { audit: true } }).valid).toBe(true)
+		})
+
+		test('rejects removed PR config fields', () => {
+			expect(v.validate(partialConfigPipe(), { work: { usePrs: true } }).valid).toBe(false)
+			expect(v.validate(partialConfigPipe(), { work: { review: true } }).valid).toBe(false)
 		})
 
 		test('accepts work.perSliceBranches as a boolean', () => {
@@ -328,8 +345,8 @@ if (import.meta.vitest) {
 			expect(v.validate(partialConfigPipe(), { work: { perSliceBranches: false } }).valid).toBe(true)
 		})
 
-		test('rejects work.review when non-boolean', () => {
-			expect(v.validate(partialConfigPipe(), { work: { review: 'sometimes' } }).valid).toBe(false)
+		test('rejects work.audit when non-boolean', () => {
+			expect(v.validate(partialConfigPipe(), { work: { audit: 'sometimes' } }).valid).toBe(false)
 		})
 
 		test('rejects an unknown storage value', () => {
@@ -369,10 +386,11 @@ if (import.meta.vitest) {
 			expect(schema.properties.abort.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
 		})
 
-		test('ship properties emit enums', () => {
+		test('ship properties emit pr plus enums', () => {
 			const schema = emitJsonSchema() as {
-				properties: { ship: { properties: { mergeMethod: { enum: string[] }; deleteBranch: { enum: string[] } } } }
+				properties: { ship: { properties: { pr: { type: string }; mergeMethod: { enum: string[] }; deleteBranch: { enum: string[] } } } }
 			}
+			expect(schema.properties.ship.properties.pr.type).toBe('boolean')
 			expect(schema.properties.ship.properties.mergeMethod.enum).toEqual(['merge', 'squash', 'rebase'])
 			expect(schema.properties.ship.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
 		})
