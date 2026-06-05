@@ -1,5 +1,4 @@
 import type { HarnessKind } from '../../harnesses/registry.ts'
-import type { StorageKind } from '../../storages/registry.ts'
 import type { Storage } from '../../storages/types.ts'
 import type { LoopEntity } from '../../work/entity-loop.ts'
 import { buildLoopWiring } from '../_loop-wiring.ts'
@@ -16,7 +15,7 @@ async function runWork(id: string, rt: WorkRuntime): Promise<void> {
 	await rt.runEntity({ kind: 'change', id, changeBranch: change.changeBranch, targetBranch: change.targetBranch, title: change.title })
 }
 
-export async function work(id: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
+export async function work(id: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
 		await runWork(id, {

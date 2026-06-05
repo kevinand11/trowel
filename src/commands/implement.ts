@@ -1,10 +1,9 @@
 import { runManualSliceCommand } from './manual-slice-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
-import type { StorageKind } from '../storages/registry.ts'
 import type { PhaseCtx, Slice } from '../storages/types.ts'
 import type { PhaseDeps } from '../work/phases.ts'
 
-export async function implement(sliceId: string, opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<void> {
+export async function implement(sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
 	await runManualSliceCommand({
 		commandName: 'implement',
 		sliceId,

@@ -1,11 +1,10 @@
 import path from 'node:path'
 
+import { loadConfig, type Config } from '../config'
 import { readOptionalFile } from './grill-flow.ts'
-import { loadConfig } from '../config.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt } from '../prompts/load.ts'
-import type { Config } from '../schema.ts'
-import { getStorage, type StorageKind } from '../storages/registry.ts'
+import { getStorage } from '../storages/registry.ts'
 import type { Storage, StorageDeps } from '../storages/types.ts'
 import { createGh, type GhOps } from '../utils/gh-ops.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
@@ -39,8 +38,8 @@ function buildStorageDeps(base: CommandBase, overrides: Partial<StorageDeps> = {
 	}
 }
 
-export function buildStorage(base: CommandBase, storageKind: StorageKind, overrides: Partial<StorageDeps> = {}): Storage {
-	return getStorage(storageKind, buildStorageDeps(base, overrides))
+export function buildStorage(base: CommandBase, storage: string, overrides: Partial<StorageDeps> = {}): Storage {
+	return getStorage(storage, buildStorageDeps(base, overrides))
 }
 
 export type GrillCommandRuntime = {
@@ -56,17 +55,21 @@ export type GrillCommandRuntime = {
 	confirm: (msg: string) => Promise<boolean>
 }
 
-export async function buildGrillCommandRuntime(commandName: 'start', opts: { storage?: string; harness?: string }, outFileName: string): Promise<GrillCommandRuntime> {
+export async function buildGrillCommandRuntime(
+	commandName: 'start',
+	opts: { storage?: string; harness?: string },
+	outFileName: string,
+): Promise<GrillCommandRuntime> {
 	const base = await loadCommandBase(commandName)
 	const { config, projectRoot, git } = base
-	const storageKind = (opts.storage as StorageKind | undefined) ?? config.storage
+	const storage = opts.storage ?? config.storage
 	const harnessKind = (opts.harness as HarnessKind | undefined) ?? config.agent.harness
 	const harness = getHarness(harnessKind)
 	const outPath = path.resolve(projectRoot, '.trowel', outFileName)
 	return {
 		config,
 		projectRoot,
-		storage: buildStorage(base, storageKind),
+		storage: buildStorage(base, storage),
 		git,
 		promptText: await loadPrompt(commandName),
 		runInteractive: async ({ promptText, cwd }) => {
@@ -76,7 +79,7 @@ export async function buildGrillCommandRuntime(commandName: 'start', opts: { sto
 				cwd,
 			})
 			const code = await waitForExit
-			if (code !== 0) throw new Error(`${harness.kind} exited with code ${code}`)
+			if (code !== 0) throw new Error(`${harness.name} exited with code ${code}`)
 		},
 		readOut: () => readOptionalFile(outPath),
 		preflight: () => startPreflight({ git, harness, commandName }),
@@ -93,22 +96,26 @@ async function startPreflight(args: { git: GitOps; harness: ReturnType<typeof ge
 	if (failures.length > 0) throw new Error(`preflight failed:\n${failures.map((f) => `  · ${f}`).join('\n')}`)
 }
 
-async function startPreflightFailures(args: { git: GitOps; harness: ReturnType<typeof getHarness>; commandName: 'start' }): Promise<string[]> {
-	return [
-		await dirtyTreeFailure(args.git),
-		await harnessFailure(args.harness, args.commandName),
-		await ghAuthFailure(),
-	].filter((f): f is string => f !== null)
+async function startPreflightFailures(args: {
+	git: GitOps
+	harness: ReturnType<typeof getHarness>
+	commandName: 'start'
+}): Promise<string[]> {
+	return [await dirtyTreeFailure(args.git), await harnessFailure(args.harness, args.commandName), await ghAuthFailure()].filter(
+		(f): f is string => f !== null,
+	)
 }
 
 async function dirtyTreeFailure(git: GitOps): Promise<string | null> {
 	if (await git.isWorkingTreeClean()) return null
-	return await confirmDirtyStart(await git.statusShort()) ? null : 'working tree is dirty'
+	return (await confirmDirtyStart(await git.statusShort())) ? null : 'working tree is dirty'
 }
 
 async function harnessFailure(harness: ReturnType<typeof getHarness>, commandName: 'start'): Promise<string | null> {
 	const harnessV = await harness.detectVersion()
-	return harnessV.installed ? null : `${harness.kind} CLI not found on PATH (required for trowel ${commandName} with agent.harness=${harness.kind})`
+	return harnessV.installed
+		? null
+		: `${harness.name} CLI not found on PATH (required for trowel ${commandName} with agent.harness=${harness.name})`
 }
 
 async function ghAuthFailure(): Promise<string | null> {
@@ -120,7 +127,8 @@ async function confirmDirtyStart(statusShort: string): Promise<boolean> {
 	const { confirm } = await import('@inquirer/prompts')
 	if (statusShort.trim()) process.stdout.write(`\nDirty working tree:\n${statusShort.trimEnd()}\n\n`)
 	return confirm({
-		message: 'Working tree is dirty. Commit/stash first for a clean start, or continue and let the start grill account for your current changes. Continue with dirty tree?',
+		message:
+			'Working tree is dirty. Commit/stash first for a clean start, or continue and let the start grill account for your current changes. Continue with dirty tree?',
 		default: false,
 	})
 }

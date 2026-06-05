@@ -2,11 +2,10 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+import type { Config } from '../config'
 import { buildStorage, loadCommandBase } from './runtime.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt, type Role } from '../prompts/load.ts'
-import type { Config } from '../schema.ts'
-import type { StorageKind } from '../storages/registry.ts'
 import type { PhaseCtx, Slice, Storage } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
@@ -26,14 +25,13 @@ type LoopWiring = {
 	runEntityLoopFor: (entity: LoopEntity) => Promise<void>
 }
 
-export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: HarnessKind }): Promise<LoopWiring> {
+export async function buildLoopWiring(opts: { storage?: string; harness?: HarnessKind }): Promise<LoopWiring> {
 	const base = await loadCommandBase('work')
 	const { config, projectRoot, git, gh } = base
-	const storageKind = opts.storage ?? config.storage
 	const harnessKind = opts.harness ?? config.agent.harness
 	const harness = getHarness(harnessKind)
 	const log = (m: string) => process.stdout.write(`${new Date().toISOString()} ${m}\n`)
-	const storage = buildStorage(base, storageKind, { log })
+	const storage = buildStorage(base, opts.storage ?? config.storage, { log })
 
 	await ensureTrowelDir(projectRoot)
 
@@ -55,7 +53,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		const logStream = createWriteStream(logPath, { flags: 'a' })
 
 		const startedAt = new Date().toISOString()
-		logStream.write(`\n=== ${startedAt} · change-${worktree.changeId} · ${role} · harness=${harness.kind} ===\n`)
+		logStream.write(`\n=== ${startedAt} · change-${worktree.changeId} · ${role} · harness=${harness.name} ===\n`)
 
 		const baseHead = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], '')
 		const { waitForExit } = await harness.spawnPrint({
@@ -68,7 +66,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 		const endedAt = new Date().toISOString()
 		logStream.write(`\n=== ${endedAt} · exit=${exitCode} ===\n`)
 		logStream.end()
-		logHarnessExitIfFailed(exitCode, worktree, harness.kind, logPath, log)
+		logHarnessExitIfFailed(exitCode, worktree, harness.name, logPath, log)
 
 		const headAfter = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], baseHead)
 		const commits = await gitCountOrZero(worktree.worktreePath, `${baseHead}..${headAfter}`)

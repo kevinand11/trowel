@@ -1,7 +1,7 @@
 import path from 'node:path'
 
 import { renderStatus, renderStatusSlice } from './render.ts'
-import { loadConfig } from '../../config.ts'
+import { loadConfig } from '../../config'
 import { getStorage } from '../../storages/registry.ts'
 import type { ChangeRecord, ClassifiedSlice, Slice, Storage, StorageDeps } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
@@ -53,7 +53,7 @@ async function buildStatusStorage(opts: {
 		process.stderr.write('trowel status: no project root found\n')
 		process.exit(1)
 	}
-	const storageKind = opts.storage ?? config.storage
+	const storage = opts.storage ?? config.storage
 	const gh = createGh()
 	const git = branchStableGitOps(createRepoGit(projectRoot))
 	const storageDeps: StorageDeps = {
@@ -66,7 +66,7 @@ async function buildStatusStorage(opts: {
 		abortOptions: config.abort,
 	}
 	return {
-		storage: getStorage(storageKind, storageDeps),
+		storage: getStorage(storage, storageDeps),
 		projectRoot,
 		gh,
 		git: branchStableGitFacts(git),

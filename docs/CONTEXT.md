@@ -84,7 +84,7 @@ The directory trowel considers the project anchor. Resolved by walking up from c
 _Avoid_: Repo root.
 
 **Layer**:
-One of `default`, `global`, `private`, `project`. Precedence: default < global < private < project. Path values resolve relative to the layer anchor before merging.
+One of `default`, `global`, `project`. Precedence: default < global < project. Path values resolve relative to the layer anchor before merging.
 
 **BACK_TO branch**:
 The branch the user was on when they invoked a command that switches branches. Captured at command start and restored when the command lifecycle requires it.

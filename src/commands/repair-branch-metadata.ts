@@ -1,4 +1,4 @@
-import type { Config } from '../schema.ts'
+import type { Config } from '../config'
 import { exitOnCommandError, loadCommandBase } from './runtime.ts'
 import { createIssueStorage } from '../storages/implementations/issue.ts'
 import type { StorageDeps } from '../storages/types.ts'
@@ -40,7 +40,7 @@ type PlannedPatch = {
 }
 
 export async function runRepairBranchMetadata(rt: BranchMetadataRepairRuntime, opts: BranchMetadataRepairOptions): Promise<void> {
-	const targetBranch = opts.targetBranch ?? rt.targetBranch ?? await rt.git.baseBranch()
+	const targetBranch = opts.targetBranch ?? rt.targetBranch ?? (await rt.git.baseBranch())
 	const perSliceBranches = opts.perSliceBranches ?? rt.perSliceBranches
 	const patches = await planIssueBranchMetadataPatches(rt, { targetBranch, perSliceBranches })
 	if (patches.length === 0) {
@@ -55,7 +55,10 @@ export async function runRepairBranchMetadata(rt: BranchMetadataRepairRuntime, o
 	rt.stdout('Strict issue storage reads succeeded after repair.\n')
 }
 
-async function planIssueBranchMetadataPatches(rt: BranchMetadataRepairRuntime, opts: { targetBranch: string; perSliceBranches: boolean }): Promise<PlannedPatch[]> {
+async function planIssueBranchMetadataPatches(
+	rt: BranchMetadataRepairRuntime,
+	opts: { targetBranch: string; perSliceBranches: boolean },
+): Promise<PlannedPatch[]> {
 	const patches: PlannedPatch[] = []
 	const changes = await rt.gh.listIssues({ label: rt.labels.change, state: 'all' })
 	for (const change of changes) {
@@ -63,12 +66,17 @@ async function planIssueBranchMetadataPatches(rt: BranchMetadataRepairRuntime, o
 		const changeBranch = metadataString(changeMeta, 'changeBranch') ?? legacyChangeBranchName(change)
 		const changePatch = missingChangeMetadataPatch(changeMeta, opts.targetBranch, changeBranch)
 		if (Object.keys(changePatch).length > 0) patches.push(plannedPatch('Change', change, changePatch))
-		patches.push(...await planSlicePatches(rt, String(change.number), changeBranch, opts.perSliceBranches))
+		patches.push(...(await planSlicePatches(rt, String(change.number), changeBranch, opts.perSliceBranches)))
 	}
 	return patches
 }
 
-async function planSlicePatches(rt: BranchMetadataRepairRuntime, changeId: string, changeBranch: string, perSliceBranches: boolean): Promise<PlannedPatch[]> {
+async function planSlicePatches(
+	rt: BranchMetadataRepairRuntime,
+	changeId: string,
+	changeBranch: string,
+	perSliceBranches: boolean,
+): Promise<PlannedPatch[]> {
 	const slices = await rt.gh.listSubIssues(changeId)
 	return slices.flatMap((slice) => {
 		const meta = metadataFromBody(slice.body)
@@ -139,7 +147,13 @@ function replaceOrAppendMetadata(body: string, metadata: TrowelMetadata): string
 	return publicBody ? `${publicBody}\n\n${serialized}` : serialized
 }
 
-function printPatchPlan(rt: BranchMetadataRepairRuntime, patches: PlannedPatch[], mode: BranchMetadataRepairMode, targetBranch: string, perSliceBranches: boolean): void {
+function printPatchPlan(
+	rt: BranchMetadataRepairRuntime,
+	patches: PlannedPatch[],
+	mode: BranchMetadataRepairMode,
+	targetBranch: string,
+	perSliceBranches: boolean,
+): void {
 	rt.stdout(`${mode === 'apply' ? 'Applying' : 'Dry run: would apply'} ${patches.length} issue-storage branch metadata patch(es).\n`)
 	rt.stdout(`Target branch for missing Change metadata: ${targetBranch}\n`)
 	rt.stdout(`Slice branch mode: ${perSliceBranches ? 'per-slice branches' : 'shared Change branch'}\n`)
@@ -170,9 +184,16 @@ function storageDepsForStrictRead(rt: BranchMetadataRepairRuntime): StorageDeps 
 	}
 }
 
-function parseRepairOptions(opts: { apply?: boolean; dryRun?: boolean; targetBranch?: string; perSliceBranches?: boolean; sharedSliceBranches?: boolean }): BranchMetadataRepairOptions {
+function parseRepairOptions(opts: {
+	apply?: boolean
+	dryRun?: boolean
+	targetBranch?: string
+	perSliceBranches?: boolean
+	sharedSliceBranches?: boolean
+}): BranchMetadataRepairOptions {
 	if (opts.apply && opts.dryRun) throw new Error('choose either --apply or --dry-run, not both')
-	if (opts.perSliceBranches && opts.sharedSliceBranches) throw new Error('choose either --per-slice-branches or --shared-slice-branches, not both')
+	if (opts.perSliceBranches && opts.sharedSliceBranches)
+		throw new Error('choose either --per-slice-branches or --shared-slice-branches, not both')
 	return {
 		mode: opts.apply ? 'apply' : 'dry-run',
 		targetBranch: opts.targetBranch,
@@ -180,21 +201,34 @@ function parseRepairOptions(opts: { apply?: boolean; dryRun?: boolean; targetBra
 	}
 }
 
-export async function repairBranchMetadata(opts: { apply?: boolean; dryRun?: boolean; targetBranch?: string; perSliceBranches?: boolean; sharedSliceBranches?: boolean }): Promise<void> {
+export async function repairBranchMetadata(opts: {
+	apply?: boolean
+	dryRun?: boolean
+	targetBranch?: string
+	perSliceBranches?: boolean
+	sharedSliceBranches?: boolean
+}): Promise<void> {
 	const base = await loadCommandBase('repair branch-metadata')
 	const parsed = parseRepairOptions(opts)
-	await exitOnCommandError('repair branch-metadata', () => withMutationLock(base.projectRoot, () => runRepairBranchMetadata({
-		gh: base.gh,
-		git: base.git,
-		labels: base.config.labels,
-		abortOptions: base.config.abort,
-		projectRoot: base.projectRoot,
-		repoRoot: base.projectRoot,
-		changesDir: base.config.docs.changesDir,
-		perSliceBranches: base.config.work.perSliceBranches,
-		targetBranch: parsed.targetBranch,
-		stdout: (s) => process.stdout.write(s),
-	}, parsed)))
+	await exitOnCommandError('repair branch-metadata', () =>
+		withMutationLock(base.projectRoot, () =>
+			runRepairBranchMetadata(
+				{
+					gh: base.gh,
+					git: base.git,
+					labels: base.config.labels,
+					abortOptions: base.config.abort,
+					projectRoot: base.projectRoot,
+					repoRoot: base.projectRoot,
+					changesDir: base.config.docs.changesDir,
+					perSliceBranches: base.config.work.perSliceBranches,
+					targetBranch: parsed.targetBranch,
+					stdout: (s) => process.stdout.write(s),
+				},
+				parsed,
+			),
+		),
+	)
 }
 
 if (import.meta.vitest) {
@@ -202,7 +236,10 @@ if (import.meta.vitest) {
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
-	function makeRt(overrides: Partial<BranchMetadataRepairRuntime> = {}, data?: { changes: IssueSummary[]; slicesByChange: Record<string, RawSubIssue[]> }): { rt: BranchMetadataRepairRuntime; calls: unknown[][]; out: string[] } {
+	function makeRt(
+		overrides: Partial<BranchMetadataRepairRuntime> = {},
+		data?: { changes: IssueSummary[]; slicesByChange: Record<string, RawSubIssue[]> },
+	): { rt: BranchMetadataRepairRuntime; calls: unknown[][]; out: string[] } {
 		const store = data ?? { changes: [], slicesByChange: {} }
 		const { gh, calls } = recordingGhOps({
 			listIssues: async () => store.changes,
@@ -231,7 +268,9 @@ if (import.meta.vitest) {
 				repoRoot: '/tmp/trowel-repair-test',
 				changesDir: '/tmp/trowel-repair-test/.trowel/changes',
 				perSliceBranches: true,
-				stdout: (s) => { out.push(s) },
+				stdout: (s) => {
+					out.push(s)
+				},
 				...overrides,
 			},
 			calls,
@@ -266,8 +305,19 @@ if (import.meta.vitest) {
 
 		test('apply patches legacy issues, preserves existing metadata, and strict issue storage can read them', async () => {
 			const data = {
-				changes: [{ number: 42, title: 'Fix Tabs', createdAt: '2026-06-01T00:00:00Z', body: trowelBody('change body', { owner: 'docs' }) }],
-				slicesByChange: { '42': [{ number: 57, title: 'Implement Parser', body: 'slice body', state: 'open', labels: [{ name: 'ready-for-agent' }] }] },
+				changes: [
+					{
+						number: 42,
+						title: 'Fix Tabs',
+						createdAt: '2026-06-01T00:00:00Z',
+						body: trowelBody('change body', { owner: 'docs' }),
+					},
+				],
+				slicesByChange: {
+					'42': [
+						{ number: 57, title: 'Implement Parser', body: 'slice body', state: 'open', labels: [{ name: 'ready-for-agent' }] },
+					],
+				},
 			}
 			const { rt, calls, out } = makeRt({}, data)
 
@@ -283,7 +333,14 @@ if (import.meta.vitest) {
 
 		test('shared Slice branch mode records the Change branch as missing Slice metadata', async () => {
 			const data = {
-				changes: [{ number: 42, title: 'Fix Tabs', createdAt: '2026-06-01T00:00:00Z', body: trowelBody('change body', { targetBranch: 'main', changeBranch: 'stored-change' }) }],
+				changes: [
+					{
+						number: 42,
+						title: 'Fix Tabs',
+						createdAt: '2026-06-01T00:00:00Z',
+						body: trowelBody('change body', { targetBranch: 'main', changeBranch: 'stored-change' }),
+					},
+				],
 				slicesByChange: { '42': [{ number: 57, title: 'Implement Parser', body: 'slice body', state: 'open', labels: [] }] },
 			}
 			const { rt, out } = makeRt({ perSliceBranches: false }, data)

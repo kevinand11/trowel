@@ -1,11 +1,11 @@
-import { loadConfig } from '../config.ts'
+import { loadConfig } from '../config'
 
 export async function showConfig(): Promise<void> {
 	const resolved = await loadConfig()
 
 	process.stdout.write(`# Resolved config\n\n`)
 	process.stdout.write(`Project root: ${resolved.projectRoot ?? '(none — no .trowel/ or .git/ in any ancestor)'}\n\n`)
-	process.stdout.write(`# Layers loaded (lowest precedence first; project wins outright)\n\n`)
+	process.stdout.write(`# Layers loaded (lowest precedence first; project has highest precedence)\n\n`)
 	if (resolved.loaded.length === 0) {
 		process.stdout.write(`(none — 'default' (hard-coded) only)\n\n`)
 	} else {

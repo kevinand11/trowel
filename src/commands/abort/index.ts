@@ -1,6 +1,5 @@
 import { confirm as inqConfirm, input as inqInput } from '@inquirer/prompts'
 
-import type { StorageKind } from '../../storages/registry.ts'
 import type { ChangeRecord, ChangeState, ClassifiedSlice, DeleteBranchPolicy, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
@@ -165,11 +164,10 @@ function listOpenPrsFor(base: CommandBase): (branch: string) => Promise<OpenPr[]
 	}
 }
 
-async function buildAbortRuntime(opts: { storage?: StorageKind }): Promise<{ base: CommandBase; rt: AbortRuntime }> {
+async function buildAbortRuntime(opts: { storage?: string }): Promise<{ base: CommandBase; rt: AbortRuntime }> {
 	const base = await loadCommandBase('change abort')
 	const confirm = (msg: string) => inqConfirm({ message: msg, default: false })
-	const storageKind = opts.storage ?? base.config.storage
-	const storage = buildStorage(base, storageKind, { confirm })
+	const storage = buildStorage(base, opts.storage ?? base.config.storage, { confirm })
 	return {
 		base,
 		rt: {
@@ -189,7 +187,7 @@ async function buildAbortRuntime(opts: { storage?: StorageKind }): Promise<{ bas
 	}
 }
 
-export async function abortChange(changeId: string, opts: { storage?: StorageKind }): Promise<void> {
+export async function abortChange(changeId: string, opts: { storage?: string }): Promise<void> {
 	const { base, rt } = await buildAbortRuntime(opts)
 	await exitOnCommandError('change abort', () => withMutationLock(base.projectRoot, () => runAbortChange(changeId, rt)))
 }

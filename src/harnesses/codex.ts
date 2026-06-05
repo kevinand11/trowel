@@ -2,16 +2,10 @@ import { unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { detectCliVersion, spawnHarness, spawnPrintCommand } from './process.ts'
-import type {
-	HarnessAdapter,
-	HarnessSpawnHandle,
-	HarnessSpawnInteractiveArgs,
-	HarnessSpawnPrintArgs,
-	HarnessVersionInfo,
-} from './types.ts'
+import type { HarnessAdapter, HarnessSpawnHandle, HarnessSpawnInteractiveArgs, HarnessSpawnPrintArgs, HarnessVersionInfo } from './types.ts'
 
 export const codexHarness: HarnessAdapter = {
-	kind: 'codex',
+	name: 'codex',
 	// Placeholder — verify against `codex --list-models` at adapter-implementation time.
 	defaultModel: 'gpt-5.1-codex',
 
@@ -19,11 +13,15 @@ export const codexHarness: HarnessAdapter = {
 		// `--json` streams NDJSON events per agent step (tool calls, results, deltas) rather than
 		// only the final response. Flag name has shifted between codex CLI versions; verify
 		// against `codex exec --help` if upgrading.
-		return spawnPrintCommand('codex', ['exec', '--json', '--model', args.model, '--dangerously-bypass-approvals-and-sandbox', '--cd', args.cwd, '-'], {
-			cwd: args.cwd,
-			prompt: args.prompt,
-			logStream: args.logStream,
-		})
+		return spawnPrintCommand(
+			'codex',
+			['exec', '--json', '--model', args.model, '--dangerously-bypass-approvals-and-sandbox', '--cd', args.cwd, '-'],
+			{
+				cwd: args.cwd,
+				prompt: args.prompt,
+				logStream: args.logStream,
+			},
+		)
 	},
 
 	// Codex has no --append-system-prompt; codex auto-discovers AGENTS.md in cwd.
@@ -59,7 +57,7 @@ if (import.meta.vitest) {
 
 	describe('codexHarness', () => {
 		test('kind is codex', () => {
-			expect(codexHarness.kind).toBe('codex')
+			expect(codexHarness.name).toBe('codex')
 		})
 	})
 }

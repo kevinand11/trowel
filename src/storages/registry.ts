@@ -7,11 +7,9 @@ export const storageFactories = {
 	issue: createIssueStorage,
 } satisfies Record<string, StorageFactory>
 
-export type StorageKind = keyof typeof storageFactories
-
-export function getStorage(kind: string, deps: StorageDeps): Storage {
-	const factory = storageFactories[kind]
-	if (!factory) throw new Error(`No storage registered for kind '${kind}'`)
+export function getStorage(name: string, deps: StorageDeps): Storage {
+	const factory = storageFactories[name]
+	if (!factory) throw new Error(`No storage registered for name '${name}'`)
 	return factory(deps)
 }
 
@@ -31,7 +29,7 @@ if (import.meta.vitest) {
 	}
 
 	describe('getStorage', () => {
-		test('throws when no storage is registered for the kind', () => {
+		test('throws when no storage is registered for the name', () => {
 			expect(() => getStorage('mongo', testDeps)).toThrow(/No storage registered/)
 		})
 	})

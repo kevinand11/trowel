@@ -17,15 +17,12 @@ async function exists(p: string): Promise<boolean> {
 export async function resolveProjectRoot(cwd: string): Promise<string | null> {
 	let dir = path.resolve(cwd)
 	while (true) {
-		if (await isProjectRoot(dir)) return dir
+		if (await exists(path.join(dir, '.trowel'))) return dir
+		if (await exists(path.join(dir, '.git'))) return dir
 		const parent = path.dirname(dir)
 		if (parent === dir) return null
 		dir = parent
 	}
-}
-
-async function isProjectRoot(dir: string): Promise<boolean> {
-	return (await exists(path.join(dir, '.trowel'))) || (await exists(path.join(dir, '.git')))
 }
 
 if (import.meta.vitest) {

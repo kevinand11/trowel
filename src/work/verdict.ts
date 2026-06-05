@@ -1,7 +1,7 @@
-import { v, type PipeOutput } from 'valleyed'
+import { v } from 'valleyed'
 
-import { validateJson } from './parse-json.ts'
 import type { Role } from '../prompts/load.ts'
+import { validateJson } from '../utils/parse-json.ts'
 
 type VerdictKind = 'ready' | 'no-work-needed' | 'partial'
 
@@ -38,17 +38,12 @@ const turnOutPipe = () =>
 	})
 
 export function parseVerdict(raw: string | null, role: Role, commits: number): TurnOut {
-	const value = parseTurnOut(raw)
+	if (raw === null) throw new Error('verdict file missing (.trowel/turn-out.json)')
+	rejectUnknownVerdictKind(parseVerdictJson(raw))
+	const value = validateJson(turnOutPipe(), raw, 'verdict file rejected')
 	const kind = assertVerdictAllowedForRole(value.verdict as VerdictKind, role)
 	assertImplementerReadyHasCommits(role, kind, commits)
 	return toTurnOut(kind, value.notes, commits)
-}
-
-function parseTurnOut(raw: string | null): PipeOutput<ReturnType<typeof turnOutPipe>> {
-	if (raw === null) throw new Error('verdict file missing (.trowel/turn-out.json)')
-	const parsed = parseVerdictJson(raw)
-	rejectUnknownVerdictKind(parsed)
-	return validateJson<PipeOutput<ReturnType<typeof turnOutPipe>>>(turnOutPipe(), parsed, 'verdict file rejected')
 }
 
 function parseVerdictJson(raw: string): unknown {

@@ -22,9 +22,9 @@ if (import.meta.vitest) {
 
 	describe('getHarness', () => {
 		test('returns the registered adapter', () => {
-			expect(getHarness('claude').kind).toBe('claude')
-			expect(getHarness('codex').kind).toBe('codex')
-			expect(getHarness('pi').kind).toBe('pi')
+			expect(getHarness('claude').name).toBe('claude')
+			expect(getHarness('codex').name).toBe('codex')
+			expect(getHarness('pi').name).toBe('pi')
 		})
 
 		test('throws when no harness is registered for the kind', () => {

@@ -1,33 +1,39 @@
-import { v, type PipeOutput } from 'valleyed'
+import { PipeError, v, type PipeOutput } from 'valleyed'
 
-import { validateJson } from './parse-json.ts'
+import { validateJson } from '../utils/parse-json.ts'
+
+const slicePipe = v.object({
+	title: v.string(),
+	body: v.string(),
+	blockedBy: v.array(v.number()),
+	readyForAgent: v.boolean(),
+})
+
+type Slice = PipeOutput<typeof slicePipe>
 
 const createChangePipe = v.object({
-		outcome: v.is('create-change' as const),
-		change: v.object({
-			title: v.string(),
-			body: v.string(),
-		}),
-		slices: v.array(
-			v.object({
-				title: v.string(),
-				body: v.string(),
-				blockedBy: v.array(v.number()),
-				readyForAgent: v.boolean(),
-			}),
-		),
-	})
+	outcome: v.is('create-change' as const),
+	change: v.object({
+		title: v.string(),
+		body: v.string(),
+	}),
+	slices: v.array(slicePipe).pipe((slices) => {
+		const message = blockedByReferencesError(slices) ?? blockedByAcyclicError(slices)
+		if (!message) return slices
+		return PipeError.root(message, slices)
+	}),
+})
 
 const existingChangePipe = v.object({
-		outcome: v.is('existing-change' as const),
-		changeId: v.string(),
-		reason: v.string(),
-	})
+	outcome: v.is('existing-change' as const),
+	changeId: v.string(),
+	reason: v.string(),
+})
 
 const noChangePipe = v.object({
-		outcome: v.is('no-change' as const),
-		reason: v.string(),
-	})
+	outcome: v.is('no-change' as const),
+	reason: v.string(),
+})
 
 const startOutPipe = v.discriminate((x) => x?.outcome, {
 	['create-change']: createChangePipe,
@@ -41,54 +47,57 @@ export type NoChangeStartOut = PipeOutput<typeof noChangePipe>
 export type StartOut = CreateChangeStartOut | ExistingChangeStartOut | NoChangeStartOut
 
 export function parseStartOut(raw: string): StartOut {
-	const value = validateJson<StartOut>(startOutPipe, raw, 'Invalid start-out.json')
-	if (value.outcome === 'create-change') checkBlockedBy(value.slices)
-	return value
+	return validateJson<StartOut>(startOutPipe, raw, 'Invalid start-out.json')
 }
 
-function checkBlockedBy(slices: CreateChangeStartOut['slices']): void {
-	checkBlockedByReferences(slices)
-	checkBlockedByAcyclic(slices)
-}
-
-function checkBlockedByReferences(slices: CreateChangeStartOut['slices']): void {
+function blockedByReferencesError(slices: Slice[]): string | null {
 	for (const [i, slice] of slices.entries()) {
-		for (const ref of slice.blockedBy) checkBlockedByReference(slices, i, ref)
+		for (const ref of slice.blockedBy) {
+			const message = blockedByReferenceError(slices, i, ref)
+			if (message) return message
+		}
 	}
+	return null
 }
 
-function checkBlockedByReference(slices: CreateChangeStartOut['slices'], sliceIndex: number, ref: number): void {
-	if (!isSliceIndex(ref, slices.length)) {
-		throw new Error(`Invalid start-out.json: slice ${sliceIndex} blockedBy references out-of-range index ${ref} (valid range: 0..${slices.length - 1})`)
-	}
-	if (ref === sliceIndex) throw new Error(`Invalid start-out.json: slice ${sliceIndex} blockedBy contains a self-reference`)
+function blockedByReferenceError (slices: Slice[], sliceIndex: number, ref: number): string | null {
+	const isSliceIndex = Number.isInteger(ref) && ref >= 0 && ref < slices.length
+	if (!isSliceIndex) return `slice ${sliceIndex} blockedBy references out-of-range index ${ref} (valid range: 0..${slices.length - 1})`
+	if (ref === sliceIndex) return `slice ${sliceIndex} blockedBy contains a self-reference`
+	return null
 }
 
-function isSliceIndex(ref: number, length: number): boolean {
-	return Number.isInteger(ref) && ref >= 0 && ref < length
-}
-
-function checkBlockedByAcyclic(slices: CreateChangeStartOut['slices']): void {
+function blockedByAcyclicError(slices: Slice[]): string | null {
 	const state = {
 		visited: new Array<0 | 1 | 2>(slices.length).fill(0), // 0=unseen, 1=in-stack, 2=done
 		stack: [] as number[],
 	}
-	for (let i = 0; i < slices.length; i++) visitBlockedBy(slices, state, i)
+	for (let i = 0; i < slices.length; i++) {
+		const message = visitBlockedBy(slices, state, i)
+		if (message) return message
+	}
+	return null
 }
 
-function visitBlockedBy(slices: CreateChangeStartOut['slices'], state: { visited: Array<0 | 1 | 2>; stack: number[] }, i: number): void {
-	if (state.visited[i] === 2) return
-	if (state.visited[i] === 1) throw blockedByCycleError(state.stack, i)
+function visitBlockedBy(
+	slices: Slice[],
+	state: { visited: Array<0 | 1 | 2>; stack: number[] },
+	i: number,
+): string | null {
+	if (state.visited[i] === 2) return null
+	if (state.visited[i] === 1) {
+		const start = state.stack.indexOf(i)
+		return `blockedBy cycle detected: ${state.stack.slice(start).concat(i).join(' → ')}`
+	}
 	state.visited[i] = 1
 	state.stack.push(i)
-	for (const ref of slices[i].blockedBy) visitBlockedBy(slices, state, ref)
+	for (const ref of slices[i].blockedBy) {
+		const message = visitBlockedBy(slices, state, ref)
+		if (message) return message
+	}
 	state.stack.pop()
 	state.visited[i] = 2
-}
-
-function blockedByCycleError(stack: number[], repeated: number): Error {
-	const start = stack.indexOf(repeated)
-	return new Error(`Invalid start-out.json: blockedBy cycle detected: ${stack.slice(start).concat(repeated).join(' → ')}`)
+	return null
 }
 
 if (import.meta.vitest) {

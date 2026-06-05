@@ -1,4 +1,3 @@
-import type { StorageKind } from '../../storages/registry.ts'
 import type { ChangeState, ChangeSummary, ClassifiedSlice, SliceState, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
@@ -13,7 +12,7 @@ type ChangeListRow = ChangeSummary & { state: ChangeState; slices: ClassifiedSli
 export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
 	const git = branchStableGitOps(base.git)
-	const storage = buildStorage({ ...base, git }, (opts.storage as StorageKind | undefined) ?? base.config.storage)
+	const storage = buildStorage({ ...base, git }, opts.storage ?? base.config.storage)
 	const rows = await listChangeRows({ storage, pr: base.config.ship.pr, gh: base.gh, git: branchStableGitFacts(git) })
 	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }

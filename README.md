@@ -29,7 +29,7 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel doctor` | Check local tool/config health. |
 | `trowel repair branch-metadata [--dry-run\|--apply]` | Patch legacy issue-storage records with required Target, Change, and Slice branch metadata. |
 | `trowel config` | Print resolved config. |
-| `trowel init [global\|private\|project]` | Write a config layer. |
+| `trowel init [global\|project]` | Write a config layer. |
 
 `--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn.
 

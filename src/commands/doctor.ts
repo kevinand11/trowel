@@ -1,4 +1,4 @@
-import { loadConfig, type ConfigResolution } from '../config.ts'
+import { loadConfig, type ConfigResolution } from '../config'
 import { harnessFactories } from '../harnesses/registry.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { createRepoGit } from '../utils/git-ops.ts'
@@ -50,11 +50,21 @@ function harnessCheck(kind: string, version: { installed: boolean; version?: str
 }
 
 function installedHarnessCheck(kind: string, version: { version?: string }, isConfigured: boolean): Check {
-	return { tag: 'i', label: `${kind} harness`, detail: `${versionDetail(version)}${configuredAnnotation(isConfigured)}`, failsDoctor: false }
+	return {
+		tag: 'i',
+		label: `${kind} harness`,
+		detail: `${versionDetail(version)}${configuredAnnotation(isConfigured)}`,
+		failsDoctor: false,
+	}
 }
 
 function missingHarnessCheck(kind: string, isConfigured: boolean): Check {
-	return { tag: isConfigured ? 'X' : 'i', label: `${kind} harness`, detail: `not installed${configuredAnnotation(isConfigured)}`, failsDoctor: isConfigured }
+	return {
+		tag: isConfigured ? 'X' : 'i',
+		label: `${kind} harness`,
+		detail: `not installed${configuredAnnotation(isConfigured)}`,
+		failsDoctor: isConfigured,
+	}
 }
 
 function configuredAnnotation(isConfigured: boolean): string {

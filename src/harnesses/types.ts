@@ -25,7 +25,7 @@ export type HarnessVersionInfo = {
 }
 
 export interface HarnessAdapter {
-	readonly kind: string
+	readonly name: string
 	readonly defaultModel: string
 	spawnPrint(args: HarnessSpawnPrintArgs): Promise<HarnessSpawnHandle>
 	spawnInteractive(args: HarnessSpawnInteractiveArgs): Promise<HarnessSpawnHandle>

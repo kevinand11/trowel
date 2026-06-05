@@ -1,14 +1,13 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
 import { confirm, input, select } from '@inquirer/prompts'
 
-import { pathForLayer, validatePartialConfig } from '../config.ts'
+import { defaultConfig, emitConfigJsonSchema, loadPartialConfig, pathForLayer, type InitableLayer, type PartialConfig } from '../config'
 import { harnessFactories } from '../harnesses/registry.ts'
-import { resolveProjectRoot } from '../project.ts'
-import { defaultConfig, emitJsonSchema, type InitableLayer, type PartialConfig } from '../schema.ts'
 import { storageFactories } from '../storages/registry.ts'
+import { resolveProjectRoot } from '../utils/project.ts'
 
 type InitPrompts = {
 	storage: (current: string) => Promise<string>
@@ -37,7 +36,7 @@ type InitTarget = { projectRoot: string | null; filePath: string }
 async function runInit(opts: RunInitOptions): Promise<RunInitResult> {
 	const ctx = initRuntimeContext(opts)
 	const target = await resolveInitTarget(opts, ctx)
-	const existing = await readExisting(target.filePath)
+	const existing = await loadPartialConfig(target.filePath)
 	await emitSchemaFile(target.filePath, ctx.stdout)
 	const merged = await buildInitConfig(opts, existing)
 	const json = JSON.stringify(merged, null, 2) + '\n'
@@ -60,7 +59,9 @@ function valueOrDefault<T>(value: T | undefined, fallback: T): T {
 async function resolveInitTarget(opts: RunInitOptions, ctx: InitRuntimeContext): Promise<InitTarget> {
 	const projectRoot = await ctx.resolveRoot(ctx.cwd)
 	if (requiresProjectRoot(opts.layer) && projectRoot === null) {
-		throw new Error(`no project root found (no .git/ or .trowel/ walking up from ${ctx.cwd}). Run 'git init' first, or cd into a git repo.`)
+		throw new Error(
+			`no project root found (no .git/ or .trowel/ walking up from ${ctx.cwd}). Run 'git init' first, or cd into a git repo.`,
+		)
 	}
 	const filePath = pathForLayer(opts.layer, projectRoot, ctx.home)
 	if (filePath === null) throw new Error(`cannot resolve config path for layer '${opts.layer}'`)
@@ -68,13 +69,13 @@ async function resolveInitTarget(opts: RunInitOptions, ctx: InitRuntimeContext):
 }
 
 function requiresProjectRoot(layer: InitableLayer): boolean {
-	return layer === 'project' || layer === 'private'
+	return layer === 'project'
 }
 
 async function emitSchemaFile(filePath: string, stdout: (s: string) => void): Promise<void> {
 	const schemaPath = path.join(path.dirname(filePath), 'schema.json')
 	await mkdir(path.dirname(schemaPath), { recursive: true })
-	await writeFile(schemaPath, JSON.stringify(emitJsonSchema(), null, 2) + '\n', 'utf8')
+	await writeFile(schemaPath, JSON.stringify(emitConfigJsonSchema(), null, 2) + '\n', 'utf8')
 	stdout(`Wrote ${schemaPath}\n`)
 }
 
@@ -157,7 +158,12 @@ function currentAudit(existing: PartialConfig | null): boolean {
 	return valueOrDefault(workConfig(existing).audit, defaultConfig.work.audit)
 }
 
-async function confirmAndWriteInitConfig(opts: RunInitOptions, filePath: string, json: string, stdout: (s: string) => void): Promise<RunInitResult> {
+async function confirmAndWriteInitConfig(
+	opts: RunInitOptions,
+	filePath: string,
+	json: string,
+	stdout: (s: string) => void,
+): Promise<RunInitResult> {
 	const ok = await opts.prompts.confirm(`About to write to ${filePath}:\n\n${json}\nWrite?`)
 	if (!ok) {
 		stdout(`Aborted; nothing written.\n`)
@@ -170,7 +176,7 @@ async function confirmAndWriteInitConfig(opts: RunInitOptions, filePath: string,
 }
 
 export async function init(layerArg: string): Promise<void> {
-	const allowed: InitableLayer[] = ['global', 'private', 'project']
+	const allowed: InitableLayer[] = ['global', 'project']
 	if (!allowed.includes(layerArg as InitableLayer)) {
 		process.stderr.write(`trowel init: layer must be one of ${allowed.join(' | ')} (got: ${layerArg})\n`)
 		process.exit(1)
@@ -229,17 +235,6 @@ function validateChangesDir(s: string): true | string {
 	return true
 }
 
-async function readExisting(filePath: string): Promise<PartialConfig | null> {
-	let raw: string
-	try {
-		raw = await readFile(filePath, 'utf8')
-	} catch (error) {
-		if ((error as any).code === 'ENOENT') return null
-		throw error
-	}
-	return validatePartialConfig(filePath, JSON.parse(raw), 'Invalid existing config')
-}
-
 if (import.meta.vitest) {
 	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
 	const { mkdtemp, rm, readFile: read, writeFile: write, mkdir: mk } = await import('node:fs/promises')
@@ -287,7 +282,11 @@ if (import.meta.vitest) {
 		return fixedPrompts('issue', true, { shipPr: async () => true, audit: async () => false, ...overrides })
 	}
 
-	async function modelDefaultForExistingAgent(f: Fixture, agent: Record<string, string>, harness = 'claude'): Promise<string | undefined> {
+	async function modelDefaultForExistingAgent(
+		f: Fixture,
+		agent: Record<string, string>,
+		harness = 'claude',
+	): Promise<string | undefined> {
 		const configPath = path.join(f.project, '.trowel', 'config.json')
 		await mk(path.dirname(configPath), { recursive: true })
 		await write(configPath, JSON.stringify({ agent }), 'utf8')
@@ -519,7 +518,7 @@ if (import.meta.vitest) {
 			expect(written.agent.harness).toBe('claude')
 		})
 
-		test('switching harness resets the model default to the new harness\'s defaultModel', async () => {
+		test("switching harness resets the model default to the new harness's defaultModel", async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
 			await write(configPath, JSON.stringify({ agent: { harness: 'claude', model: 'claude-opus-4-6' } }), 'utf8')
@@ -594,30 +593,6 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('init: parent dir auto-creation', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test("'private' layer creates the deep ~/.trowel/projects/<mirror>/ parent dir", async () => {
-			const result = await runInit({
-				layer: 'private',
-				cwd: f.project,
-				home: f.home,
-				prompts: promptsForFile(),
-				stdout: () => {},
-			})
-			expect(result.wrote).toBe(true)
-			expect(result.path).toBe(path.join(f.home, '.trowel', 'projects', f.project.replace(/^\//, ''), 'config.json'))
-			const raw = await read(result.path, 'utf8')
-			expect(JSON.parse(raw)).toMatchObject({ storage: 'file' })
-		})
-	})
-
 	describe('init: merge with existing file', () => {
 		let f: Fixture
 		beforeEach(async () => {
@@ -663,19 +638,6 @@ if (import.meta.vitest) {
 			await expect(
 				runInit({
 					layer: 'project',
-					cwd: '/tmp/elsewhere',
-					home: f.home,
-					prompts: promptsForFile(),
-					stdout: () => {},
-					resolveRoot: async () => null,
-				}),
-			).rejects.toThrow(/no project root found/i)
-		})
-
-		test("refuses 'private' layer when no project root", async () => {
-			await expect(
-				runInit({
-					layer: 'private',
 					cwd: '/tmp/elsewhere',
 					home: f.home,
 					prompts: promptsForFile(),
@@ -741,7 +703,7 @@ if (import.meta.vitest) {
 					prompts: promptsForFile(),
 					stdout: () => {},
 				}),
-			).rejects.toThrow(/Invalid existing config/)
+			).rejects.toThrow(/Invalid config/)
 		})
 	})
 }

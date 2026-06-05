@@ -140,7 +140,7 @@ export function run(): void {
 	program
 		.command('init')
 		.description("Initialise a config file. Layer arg defaults to 'project'.")
-		.argument('[layer]', "Which layer to write: global | private | project", 'project')
+		.argument('[layer]', "Which layer to write: global | project", 'project')
 		.action(async (layer: string) => {
 			await init(layer)
 		})

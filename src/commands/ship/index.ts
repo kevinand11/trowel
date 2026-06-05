@@ -1,4 +1,3 @@
-import type { StorageKind } from '../../storages/registry.ts'
 import type { ChangeRecord, ChangeState, ClassifiedSlice, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
@@ -241,10 +240,9 @@ function listOpenPrsFor(base: CommandBase): (branch: string) => Promise<OpenPr[]
 		(await base.gh.listOpenPrs({ base: branch })).map((pr) => ({ number: pr.number, url: pr.url ?? `#${pr.number}` }))
 }
 
-async function buildShipRuntime(opts: { storage?: StorageKind }): Promise<{ base: CommandBase; rt: ShipRuntime }> {
+async function buildShipRuntime(opts: { storage?: string }): Promise<{ base: CommandBase; rt: ShipRuntime }> {
 	const base = await loadCommandBase('change ship')
-	const storageKind = opts.storage ?? base.config.storage
-	const storage = buildStorage(base, storageKind)
+	const storage = buildStorage(base, opts.storage ?? base.config.storage)
 	const { confirm } = await import('@inquirer/prompts')
 	return {
 		base,
@@ -269,7 +267,7 @@ function confirmDefault(message: string): boolean {
 	return message.includes('[Y/n]')
 }
 
-export async function shipChange(changeId: string, opts: { storage?: StorageKind }): Promise<void> {
+export async function shipChange(changeId: string, opts: { storage?: string }): Promise<void> {
 	const { base, rt } = await buildShipRuntime(opts)
 	await exitOnCommandError('change ship', () => withMutationLock(base.projectRoot, () => runShip(changeId, rt)))
 }
