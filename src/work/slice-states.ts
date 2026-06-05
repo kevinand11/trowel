@@ -1,5 +1,6 @@
 import { createEffectiveSliceReader } from './effective-slices.ts'
-import type { Slice, Storage } from '../storages/types.ts'
+import type { Storage } from '../storages/types.ts'
+import type { ClassifiedSlice } from './slice-types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 
 export async function classifySlicesForChange(args: {
@@ -8,7 +9,7 @@ export async function classifySlicesForChange(args: {
 	changeId: string
 	pr: boolean
 	needsRevisionLabel?: string
-}): Promise<Slice[]> {
+}): Promise<ClassifiedSlice[]> {
 	const reader = createEffectiveSliceReader({
 		storage: args.storage,
 		gh: args.gh,

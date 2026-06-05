@@ -31,15 +31,12 @@ export const createIssueStorage: StorageFactory = (deps) => {
 			id: String(issue.number),
 			title: issue.title,
 			body: bodyWithoutMetadata(issue.body),
-			state: closedAt === null ? 'draft' : 'done',
 			closedAt,
 			implementedAt: milestones.implementedAt,
 			auditedAt: milestones.auditedAt,
 			readyForAgent: hasIssueLabel(issue, deps.labels.readyForAgent),
-			needsRevision: false,
 			blockedBy: await blockedByForIssue(issue),
 			sliceBranch: requiredMetadataStringOrNull(issue.body, `issue #${issue.number}`, 'sliceBranch'),
-			prState: null,
 		}
 	}
 
@@ -217,7 +214,7 @@ export const createIssueStorage: StorageFactory = (deps) => {
 		},
 		findSlices: async (changeId) => {
 			const rawIssues = await deps.gh.listSubIssues(entityIdToGhNumber(changeId))
-			return classifySlices(await Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue))))
+			return Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue)))
 		},
 		updateSlice: async (_changeId, sliceId, patch) => {
 			await applyLabelPatch(sliceId, patch)
@@ -697,7 +694,6 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			const [slice] = await storage.findSlices('42')
 			expect(slice!.readyForAgent).toBe(true)
-			expect(slice!.needsRevision).toBe(false)
 		})
 	})
 
@@ -716,7 +712,6 @@ if (import.meta.vitest) {
 			})
 			const storage = createIssueStorage(deps)
 			const slices = await storage.findSlices('42')
-			expect(slices[0]!.prState).toBeNull()
 			expect(classifySlices(slices)[0]!.state).toBe('open')
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeUndefined()
 		})

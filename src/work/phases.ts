@@ -1,5 +1,6 @@
 import { MERGE_SLICE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from './merge-worktree.ts'
 import { fetchPrFeedback } from './pr-flow.ts'
+import type { ClassifiedSlice } from './slice-types.ts'
 import type { PhaseCtx, PhaseOutcome, PreparedPhase } from './types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Slice, Storage } from '../storages/types.ts'
@@ -190,11 +191,11 @@ async function finalizeSlice(deps: PhaseDeps, changeId: string, sliceId: string)
 	await deps.storage.updateSlice(changeId, sliceId, { closedAt: new Date().toISOString() })
 }
 
-export async function integrateSlice(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
+export async function integrateSlice(deps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	return withPhaseLock(deps, () => integrateSliceLocked(deps, slice, ctx))
 }
 
-async function integrateSliceLocked(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
+async function integrateSliceLocked(deps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const branch = sliceBranchFor(slice)
 	if (ctx.config.pr && branch !== ctx.changeBranch) return openReadySlicePr(deps, slice, ctx, branch)
 	if (branch === ctx.changeBranch) return closeDirectStoredSliceBranch(deps, slice, ctx, branch)
@@ -202,7 +203,7 @@ async function integrateSliceLocked(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
 	return 'done'
 }
 
-async function closeDirectStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
+async function closeDirectStoredSliceBranch(deps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	await deps.git.push(branch)
 	deps.log(`${tag} pushed ${branch}`)
@@ -211,7 +212,7 @@ async function closeDirectStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: 
 	return 'done'
 }
 
-async function openReadySlicePr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
+async function openReadySlicePr(deps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
 	assertPrHeadCanTargetChangeBranch(slice, ctx, branch)
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	if (slice.prState === 'draft') {
@@ -257,7 +258,7 @@ async function landAuditLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, 
  * Reviewer work is tied to PR review feedback: the loop dispatches `review` when PR enrichment
  * computes the Slice state as `needs-revision`.
  */
-export async function prepareReview(deps: PhaseDeps, slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
+export async function prepareReview(deps: PhaseDeps, slice: ClassifiedSlice, _ctx: PhaseCtx): Promise<PreparedPhase> {
 	const branch = sliceBranchFor(slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
@@ -277,11 +278,11 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, _ctx: PhaseCt
  *   Slice for this run.
  * - `partial` → return `'partial'`, no side effects.
  */
-export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+export async function landReview(deps: PhaseDeps, slice: ClassifiedSlice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	return withPhaseLock(deps, async () => landReviewLocked(deps, slice, verdict, ctx))
 }
 
-async function landReviewLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+async function landReviewLocked(deps: PhaseDeps, slice: ClassifiedSlice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	const branch = sliceBranchFor(slice)
 	if (verdict.verdict === 'partial') return 'partial'
@@ -451,7 +452,7 @@ if (import.meta.vitest) {
 		return { deps, calls, storageState, logs }
 	}
 
-	const slice: Slice = {
+	const slice: ClassifiedSlice = {
 		id: '42',
 		title: 'A slice',
 		body: 'b',

@@ -22,4 +22,8 @@ export type SliceState =
 	| 'landed'
 	| 'done'
 
-export type ClassifiedSlice = Slice
+export type ClassifiedSlice = Slice & {
+	state: SliceState
+	prState: SlicePrState
+	needsRevision: boolean
+}

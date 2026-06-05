@@ -1,5 +1,5 @@
 import type { ClassifySliceConfig, ResumeState } from './types.ts'
-import type { Slice } from '../storages/types.ts'
+import type { ClassifiedSlice } from './slice-types.ts'
 
 /**
  * Decide what the loop should do next for this slice. Pure: reads computed Slice state,
@@ -7,7 +7,7 @@ import type { Slice } from '../storages/types.ts'
  */
 type ResumeRule = {
 	state: ResumeState
-	matches: (slice: Slice, config: ClassifySliceConfig, changeBranch: string) => boolean
+	matches: (slice: ClassifiedSlice, config: ClassifySliceConfig, changeBranch: string) => boolean
 }
 
 const RESUME_RULES: ResumeRule[] = [
@@ -27,11 +27,11 @@ const RESUME_RULES: ResumeRule[] = [
 	{ state: 'implement', matches: (slice) => slice.state === 'open' },
 ]
 
-function auditApplies(slice: Slice, config: ClassifySliceConfig, changeBranch: string): boolean {
+function auditApplies(slice: ClassifiedSlice, config: ClassifySliceConfig, changeBranch: string): boolean {
 	return config.audit && slice.sliceBranch !== null && slice.sliceBranch !== changeBranch && slice.auditedAt === null
 }
 
-export function classify(slice: Slice, config: ClassifySliceConfig, changeBranch: string): ResumeState {
+export function classify(slice: ClassifiedSlice, config: ClassifySliceConfig, changeBranch: string): ResumeState {
 	return RESUME_RULES.find((rule) => rule.matches(slice, config, changeBranch))?.state ?? 'done'
 }
 
@@ -40,7 +40,7 @@ if (import.meta.vitest) {
 
 	const config: ClassifySliceConfig = { pr: true, audit: true, perSliceBranches: true }
 
-	function makeSlice(overrides: Partial<Slice> = {}): Slice {
+	function makeSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 		return {
 			id: 's1',
 			title: 't',

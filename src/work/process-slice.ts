@@ -14,7 +14,6 @@ import type { ClassifiedSlice } from './slice-types.ts'
 import type { ClassifySliceConfig, PhaseOutcome, ResumeState } from './types.ts'
 import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { Slice } from '../storages/types.ts'
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
@@ -111,13 +110,13 @@ function phaseDepsFor(deps: LoopDeps): PhaseDeps {
 	}
 }
 
-function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: LoopPhaseCtx) {
+function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: ClassifiedSlice, ctx: LoopPhaseCtx) {
 	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
 	if (role === 'audit') return prepareAudit(phaseDeps, slice, ctx)
 	return prepareReview(phaseDeps, slice, ctx)
 }
 
-function callLand(phaseDeps: PhaseDeps, role: Role, slice: Slice, verdict: TurnOut, ctx: LoopPhaseCtx) {
+function callLand(phaseDeps: PhaseDeps, role: Role, slice: ClassifiedSlice, verdict: TurnOut, ctx: LoopPhaseCtx) {
 	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
 	if (role === 'audit') return landAudit(phaseDeps, slice, verdict, ctx)
 	return landReview(phaseDeps, slice, verdict, ctx)

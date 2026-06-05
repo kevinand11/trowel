@@ -261,7 +261,7 @@ export const createFileStorage: StorageFactory = (deps) => {
 			const slice = await readSliceFromDir(path.join(slicesPath, entry))
 			if (slice) result.push(slice)
 		}
-		return classifySlices(result)
+		return result
 	}
 
 	async function slicesDirOrNull(changeId: string): Promise<string | null> {
@@ -304,15 +304,12 @@ export const createFileStorage: StorageFactory = (deps) => {
 			id: store.id,
 			title: store.title,
 			body,
-			state: store.closedAt === null ? 'draft' : 'done',
 			closedAt: store.closedAt,
 			implementedAt: store.implementedAt ?? null,
 			auditedAt: store.auditedAt ?? null,
 			readyForAgent: store.readyForAgent,
-			needsRevision: false,
 			blockedBy: store.blockedBy ?? [],
 			sliceBranch: store.sliceBranch,
-			prState: null,
 		}
 	}
 
@@ -681,7 +678,7 @@ if (import.meta.vitest) {
 				changeBranch: result.changeBranch,
 				config: { pr: false, audit: false, perSliceBranches: false },
 			})
-			return { outcome, after: await storage.findSlices(result.id) }
+			return { outcome, after: classifySlices(await storage.findSlices(result.id)) }
 		}
 
 		async function readySliceBranchFixture(f: Fixture, baseBranch: string) {
@@ -743,7 +740,7 @@ if (import.meta.vitest) {
 
 				expect(outcome).toBe('progress')
 				expect(f.calls.git).toContainEqual(['push', result.changeBranch])
-				const after = await storage.findSlices(result.id)
+				const after = classifySlices(await storage.findSlices(result.id))
 				expect(after[0]!.state).toBe('implemented')
 				expect(after[0]!.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 			} finally {
@@ -817,7 +814,7 @@ if (import.meta.vitest) {
 				expect(outcome).toBe('progress')
 				expect(calls.map((c) => c[0])).toEqual(['push'])
 				expect(calls).toContainEqual(['push', sliceBranch])
-				const after = await storage.findSlices(changeId)
+				const after = classifySlices(await storage.findSlices(changeId))
 				expect(after[0]!.state).toBe('implemented')
 			} finally {
 				await teardown(f)
@@ -851,7 +848,7 @@ if (import.meta.vitest) {
 				expect(gitCalls.map((c) => c[0])).not.toContain('mergeNoFf')
 				expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
 				expect(ghCalls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
-				const after = await storage.findSlices(changeId)
+				const after = classifySlices(await storage.findSlices(changeId))
 				expect(after[0]!.state).toBe('implemented')
 			} finally {
 				await teardown(f)
@@ -1065,7 +1062,7 @@ if (import.meta.vitest) {
 			const store = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
 			expect(store.sliceBranch).toBeNull()
 			expect(store).not.toHaveProperty('needsRevision')
-			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: null, needsRevision: false })
+			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: null })
 		})
 	})
 

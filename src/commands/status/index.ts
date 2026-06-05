@@ -193,7 +193,7 @@ if (import.meta.vitest) {
 	}
 	const renderedChange = { ...change, state: 'open' as const }
 	const unmergedGit = () => branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false }))
-	const rawStatusSlice = (overrides: Partial<Slice> = {}): Slice => ({
+	const rawStatusSlice = (overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice => ({
 		id: '42',
 		title: 'Implement tab parser',
 		body: '',
@@ -465,15 +465,12 @@ if (import.meta.vitest) {
 						id: '124',
 						title: 'Read query-shape validation',
 						body: '',
-						state: 'open',
 						closedAt: null,
 						implementedAt: null,
 						auditedAt: null,
 						readyForAgent: true,
-						needsRevision: false,
 						blockedBy: [],
 						sliceBranch: `change-${change.id}/slice-124-read-query-shape-validation`,
-						prState: null,
 					},
 				],
 			})
@@ -593,7 +590,7 @@ if (import.meta.vitest) {
 			}
 		}
 
-		const rawSlice = (overrides: Partial<Slice>): Slice => ({
+		const rawSlice = (overrides: Partial<ClassifiedSlice>): ClassifiedSlice => ({
 			id: '42',
 			title: 'Implement tab parser',
 			body: '',

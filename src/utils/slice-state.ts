@@ -1,5 +1,5 @@
 import type { Slice } from '../storages/types.ts'
-import type { SliceState } from '../work/slice-types.ts'
+import type { ClassifiedSlice, SlicePrState, SliceState } from '../work/slice-types.ts'
 
 export type { SliceState }
 
@@ -9,7 +9,7 @@ type ClassifyInput = {
 	auditedAt: string | null
 	readyForAgent: boolean
 	needsRevision: boolean
-	prState: Slice['prState']
+	prState: SlicePrState
 }
 
 type ClassifyContext = {
@@ -57,11 +57,12 @@ function classify(s: ClassifyInput, ctx: ClassifyContext): SliceState {
  * signals (`closedAt`, readiness, revision, blocker, PR fields); this projection makes `state`
  * consistent anywhere the slice is rendered or dispatched.
  */
-export function classifySlices(slices: Slice[]): Slice[] {
+export function classifySlices(slices: Array<Slice & Partial<Pick<ClassifiedSlice, 'prState' | 'needsRevision'>>>): ClassifiedSlice[] {
 	const doneIds = new Set(slices.filter((s) => s.closedAt !== null).map((s) => s.id))
 	return slices.map((s) => {
-		const unmetDepIds = s.blockedBy.filter((d) => !doneIds.has(d))
-		return { ...s, state: classify(s, { unmetDepIds }) }
+		const slice = { ...s, prState: s.prState ?? null, needsRevision: s.needsRevision ?? false }
+		const unmetDepIds = slice.blockedBy.filter((d) => !doneIds.has(d))
+		return { ...slice, state: classify(slice, { unmetDepIds }) }
 	})
 }
 

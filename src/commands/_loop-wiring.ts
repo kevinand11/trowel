@@ -6,7 +6,8 @@ import type { Config } from '../config'
 import { buildStorage, loadCommandBase } from './runtime.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt, type Role } from '../prompts/load.ts'
-import type { Slice, Storage } from '../storages/types.ts'
+import type { Storage } from '../storages/types.ts'
+import type { ClassifiedSlice } from '../work/slice-types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
@@ -22,7 +23,7 @@ type LoopWiring = {
 	storage: Storage
 	gh: ReturnType<typeof createGh>
 	changeBranch: (changeId: string) => Promise<string>
-	runOnePhase: (changeId: string, slice: Slice, role: Role) => Promise<void>
+	runOnePhase: (changeId: string, slice: ClassifiedSlice, role: Role) => Promise<void>
 	runEntityLoopFor: (entity: LoopEntity) => Promise<void>
 }
 
@@ -74,7 +75,7 @@ export async function buildLoopWiring(opts: { storage?: string; harness?: Harnes
 		return { commits }
 	}
 
-	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
+	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice: ClassifiedSlice; branch: string; turnIn: TurnIn }) =>
 		spawnTurn(args, {
 			changeId: scopeId,
 			projectRoot,
@@ -90,7 +91,7 @@ export async function buildLoopWiring(opts: { storage?: string; harness?: Harnes
 		return change.changeBranch
 	}
 
-	const runOnePhase = async (changeId: string, slice: Slice, role: Role): Promise<void> => {
+	const runOnePhase = async (changeId: string, slice: ClassifiedSlice, role: Role): Promise<void> => {
 		const branch = await changeBranch(changeId)
 		const ctx: PhaseCtx = {
 			changeId,
@@ -146,13 +147,13 @@ function logHarnessExitIfFailed(
 	if (exitCode !== 0) log(`[work change-${worktree.changeId} slice-${worktree.branch}] ${harnessKind} exited ${exitCode}; see ${logPath}`)
 }
 
-function prepareOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, ctx: PhaseCtx) {
+function prepareOnePhase(role: Role, phaseDeps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx) {
 	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
 	if (role === 'audit') return prepareAudit(phaseDeps, slice, ctx)
 	return prepareReview(phaseDeps, slice, ctx)
 }
 
-function landOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx) {
+function landOnePhase(role: Role, phaseDeps: PhaseDeps, slice: ClassifiedSlice, verdict: TurnOut, ctx: PhaseCtx) {
 	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
 	if (role === 'audit') return landAudit(phaseDeps, slice, verdict, ctx)
 	return landReview(phaseDeps, slice, verdict, ctx)

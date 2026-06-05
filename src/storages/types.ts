@@ -1,6 +1,5 @@
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import type { SlicePrState, SliceState } from '../work/slice-types.ts'
 
 export type { GitOps }
 
@@ -51,8 +50,6 @@ export type Slice = {
 	id: string
 	title: string
 	body: string
-	/** Computed lowercase lifecycle state. */
-	state: SliceState
 	/** Raw terminal timestamp. `null` means the Slice has not been finalized. */
 	closedAt: string | null
 	/** Implementer success milestone. `null` means the Implementer has not declared ready. */
@@ -60,14 +57,10 @@ export type Slice = {
 	/** Auditor success milestone. `null` means Auditing has not passed. */
 	auditedAt: string | null
 	readyForAgent: boolean
-	/** Derived from the PR review surface during enrichment; never stored on a Slice. */
-	needsRevision: boolean
 	/** Ids of slices that block this one. See ADR `storage-native-blocker-storage`. */
 	blockedBy: string[]
 	/** Stored branch this Slice's Turns run on. Null until first implementation preparation assigns it. */
 	sliceBranch: string | null
-	/** Current PR pipeline state for this slice, or null when no PR / no PR concept. Always null on the file storage. */
-	prState: SlicePrState
 }
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'closedAt' | 'implementedAt' | 'auditedAt' | 'blockedBy'>>

@@ -1,7 +1,7 @@
 import { runManualSliceCommand } from './manual-slice-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
-import type { Slice } from '../storages/types.ts'
 import type { PhaseDeps } from '../work/phases.ts'
+import type { ClassifiedSlice } from '../work/slice-types.ts'
 import type { PhaseCtx } from '../work/types.ts'
 
 export async function implement(changeId: string, sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
@@ -38,7 +38,7 @@ if (import.meta.vitest) {
 			const slice = fakeClassifiedSlice({ id: 's1', state: 'open' })
 			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
-			const calls: Array<{ changeId: string; slice: Slice }> = []
+			const calls: Array<{ changeId: string; slice: ClassifiedSlice }> = []
 			await runImplement('s1', {
 				storage,
 				gh,

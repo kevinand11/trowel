@@ -74,15 +74,12 @@ if (import.meta.vitest) {
 			id: '145',
 			title: 'Session Middleware',
 			body: 'wire JWT validation',
-			state: 'open',
 			closedAt: null,
 			implementedAt: null,
 			auditedAt: null,
 			readyForAgent: true,
-			needsRevision: false,
 			blockedBy: [],
 			sliceBranch: 'change-142/slice-145-session-middleware',
-			prState: null,
 		}
 		return {
 			role: 'implement',

@@ -18,7 +18,7 @@ export type EntityLoopDeps = {
 	storage: Storage
 	git: GitOps
 	gh: GhOps
-	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
+	spawnTurn: (args: { role: Role; slice: ClassifiedSlice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
 	projectRoot?: string
@@ -243,14 +243,11 @@ if (import.meta.vitest) {
 		})
 
 		test('landed Slice finalization still runs and can report the parent Change ready afterward', async () => {
-			const landed: Slice = { ...doneSlice, state: 'landed', closedAt: null, prState: 'merged' }
+			const landed: ClassifiedSlice = { ...doneSlice, state: 'landed', closedAt: null, prState: 'merged' }
 			const result = await runLoopFixture({
 				slices: [landed],
 				updateSlice: async (_changeId, sliceId, patch) => {
-					if (sliceId === landed.id && patch.closedAt !== undefined) {
-						landed.closedAt = patch.closedAt
-						landed.state = patch.closedAt === null ? 'landed' : 'done'
-					}
+					if (sliceId === landed.id && patch.closedAt !== undefined) landed.closedAt = patch.closedAt
 				},
 			})
 			expect(result.spawned).toBe(0)
@@ -293,7 +290,7 @@ if (import.meta.vitest) {
 				)
 
 				expect(await fixture.currentBranch()).toBe('main')
-				expect(fixture.state.slice.state).toBe('done')
+				expect(fixture.state.slice.closedAt).not.toBeNull()
 				expect(logs.join('\n')).toContain(`merged ${fixture.state.slice.sliceBranch} into ${fixture.state.change.changeBranch}`)
 			} finally {
 				await fixture.cleanup()

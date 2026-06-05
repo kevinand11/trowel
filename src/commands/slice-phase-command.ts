@@ -1,14 +1,14 @@
-import type { Slice, Storage } from '../storages/types.ts'
+import type { Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import { classifySlicesForChange } from '../work/slice-states.ts'
-import type { SliceState } from '../work/slice-types.ts'
+import type { ClassifiedSlice, SliceState } from '../work/slice-types.ts'
 
 export type SlicePhaseRuntime = {
 	storage: Storage
 	gh: GhOps
 	prs: boolean
 	needsRevisionLabel?: string
-	runOnePhase: (changeId: string, slice: Slice) => Promise<void>
+	runOnePhase: (changeId: string, slice: ClassifiedSlice) => Promise<void>
 }
 
 export async function runSlicePhaseCommand(opts: {

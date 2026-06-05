@@ -64,15 +64,12 @@ function testSlice(changeId: string, overrides: Partial<Slice> = {}): Slice {
 		id,
 		title: 'Implement A',
 		body: 'spec',
-		state: 'open',
 		closedAt: null,
 		implementedAt: null,
 		auditedAt: null,
 		readyForAgent: true,
-		needsRevision: false,
 		blockedBy: [],
 		sliceBranch: `${changeId}/${id}-implement-a`,
-		prState: null,
 		...overrides,
 	}
 }
@@ -104,10 +101,7 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 }
 
 function applySlicePatch(slice: Slice, patch: SlicePatch): void {
-	if (patch.closedAt !== undefined) {
-		slice.closedAt = patch.closedAt
-		slice.state = patch.closedAt === null ? 'open' : 'done'
-	}
+	if (patch.closedAt !== undefined) slice.closedAt = patch.closedAt
 	if (patch.implementedAt !== undefined) slice.implementedAt = patch.implementedAt
 	if (patch.auditedAt !== undefined) slice.auditedAt = patch.auditedAt
 	if (patch.readyForAgent !== undefined) slice.readyForAgent = patch.readyForAgent

@@ -24,7 +24,7 @@ export type LoopDeps = {
 	git: GitOps
 	gh: GhOps
 	changeBranch: string
-	spawnTurn: (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
+	spawnTurn: (args: { role: Role; slice: ClassifiedSlice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
 	projectRoot?: string
@@ -40,7 +40,7 @@ function effectiveConcurrency(configCap: number | null): number {
 }
 
 async function findNextActionableSlice(
-	fetchEnriched: () => Promise<Slice[]>,
+	fetchEnriched: () => Promise<ClassifiedSlice[]>,
 	failed: Set<string>,
 	running: Map<string, Promise<void>>,
 	runningBranches: Set<string>,
@@ -117,7 +117,7 @@ type WorkerLoopState = {
 	failed: Set<string>
 	running: Map<string, Promise<void>>
 	runningBranches: Set<string>
-	fetchEnriched: () => Promise<Slice[]>
+	fetchEnriched: () => Promise<ClassifiedSlice[]>
 	config: ClassifySliceConfig
 	limit: number
 	claims: number
@@ -228,9 +228,7 @@ if (import.meta.vitest) {
 	}
 
 	function setTestSliceClosedAt(slice: Slice, closedAt: SlicePatch['closedAt']): void {
-		if (closedAt === undefined) return
-		slice.closedAt = closedAt
-		slice.state = closedAt === null ? 'open' : 'done'
+		if (closedAt !== undefined) slice.closedAt = closedAt
 	}
 
 	function setTestProcessMilestones(slice: Slice, patch: SlicePatch): void {
@@ -273,16 +271,16 @@ if (import.meta.vitest) {
 		}
 	}
 
-	function waitForSlowSlice(slice: Slice, slowGate: Promise<void>): Promise<void> | undefined {
+	function waitForSlowSlice(slice: ClassifiedSlice, slowGate: Promise<void>): Promise<void> | undefined {
 		return slice.id === 'slow' ? slowGate : undefined
 	}
 
-	function workerPoolVerdict(role: Role, slice: Slice): TurnOut {
+	function workerPoolVerdict(role: Role, slice: ClassifiedSlice): TurnOut {
 		return slice.id === 'slow' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: role === 'implement' ? 1 : 0 }
 	}
 
-	function prSummaryForSlice(s: Slice): import('../utils/gh-ops.ts').PrSummary | null {
-		const draftByState = new Map<Slice['prState'], boolean>([
+	function prSummaryForSlice(s: ClassifiedSlice): import('../utils/gh-ops.ts').PrSummary | null {
+		const draftByState = new Map<ClassifiedSlice['prState'], boolean>([
 			['draft', true],
 			['ready', false],
 		])
@@ -292,11 +290,11 @@ if (import.meta.vitest) {
 			: { number: prNumberForSlice(s), headRefName: `change-p1/slice-${s.id}-${s.title.toLowerCase()}`, isDraft }
 	}
 
-	function prNumberForSlice(s: Slice): number {
+	function prNumberForSlice(s: ClassifiedSlice): number {
 		return Number(new Map([['fast', 1]]).get(s.id) ?? 2)
 	}
 
-	function openPrsForSlices(slices: Slice[]): import('../utils/gh-ops.ts').PrSummary[] {
+	function openPrsForSlices(slices: ClassifiedSlice[]): import('../utils/gh-ops.ts').PrSummary[] {
 		return slices.map(prSummaryForSlice).filter((s): s is import('../utils/gh-ops.ts').PrSummary => s !== null)
 	}
 
@@ -388,7 +386,7 @@ if (import.meta.vitest) {
 				}),
 			)
 			expect(roles).toEqual(['implement'])
-			const after = await storage.findSlices('p1')
+			const after = classifySlices(await storage.findSlices('p1'))
 			expect(after[0]!.state).toBe('done')
 		})
 
@@ -456,7 +454,7 @@ if (import.meta.vitest) {
 			)
 			expect(spawnCalls).toBeGreaterThanOrEqual(2) // both slices were attempted
 			expect(logs.some((m) => /verdict file missing/.test(m))).toBe(true)
-			const after = await storage.findSlices('p1')
+			const after = classifySlices(await storage.findSlices('p1'))
 			expect(after.find((s) => s.id === 'fine')!.state).toBe('done')
 			expect(after.find((s) => s.id === 'stuck')!.state).toBe('open')
 		})
@@ -477,7 +475,7 @@ if (import.meta.vitest) {
 			)
 			// One claim: slice tried once, returned partial, added to skip set.
 			expect(claims).toBe(1)
-			const after = await storage.findSlices('p1')
+			const after = classifySlices(await storage.findSlices('p1'))
 			expect(after[0]!.state).toBe('open')
 		})
 
@@ -497,7 +495,7 @@ if (import.meta.vitest) {
 				}),
 			)
 			expect(calls).toContain('fine')
-			const after = await storage.findSlices('p1')
+			const after = classifySlices(await storage.findSlices('p1'))
 			expect(after.find((s) => s.id === 'fine')!.state).toBe('done')
 		})
 
