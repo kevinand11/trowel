@@ -226,3 +226,48 @@ Open questions to grill:
 - Should Slice branches equal to the Target branch also be protected?
 - Should current-branch refusal ignore protected branches so Ship does not fail before a safe cleanup?
 - What should output say when a protected branch is skipped?
+
+---
+
+## 12. Multiple Changes from one Grill
+
+**Goal.** Allow `trowel start` to produce more than one Change from a single Grill session when the user request naturally splits into independent
+ Changes.
+
+**Files likely touched.**
+
+- `src/commands/start.ts`, `src/commands/grill-flow.ts` — materialise multiple Change outcomes.
+- Start output schema / host handling — support an array of Changes with Slices.
+- `src/prompts/start.md` — allow the agent to propose multiple Changes and ask the user to confirm boundaries.
+- Storage implementations — verify branch creation and metadata writes are safe across multiple Changes.
+- Tests for one-Change backward compatibility, multi-Change materialisation, partial failure handling, and output guidance.
+
+Open questions to grill:
+
+- Should `start-out.json` support both single and multiple Changes, or hard-migrate to an array shape?
+- Should multiple Changes be materialised atomically, or can earlier Changes remain if later materialisation fails?
+- How should `trowel start` present next-step guidance for multiple created Changes?
+- Should Slices be allowed to block Slices in other Changes, or are Change boundaries dependency-isolated?
+- Should the Grill decide multiple Changes autonomously, or only after explicit user confirmation?
+
+---
+
+## 13. Loosen Grill doc-edit permissions
+
+**Goal.** Allow `trowel start` Grill sessions to edit any appropriate files under `docs/`, not only `docs/CONTEXT.md` and `docs/adr/**`, so domain
+decisions, TODOs, and other planning docs can be updated inline when they crystallize during grilling.
+
+**Files likely touched.**
+
+- `src/prompts/start.md` — update allowed edit paths for the start agent.
+- `src/commands/start.ts`, `src/commands/grill-flow.ts` — ensure host/session permissions match prompt constraints.
+- Tests or fixtures that assert allowed/blocked Grill file edits.
+- `docs/CONTEXT.md` / README — document what Grill may edit.
+
+Open questions to grill:
+
+- Should all `docs/**` be editable, or only markdown files under `docs/`?
+- Should generated Change/Slice artifacts under docs be protected from Grill edits?
+- Should `docs/TODO.md` be explicitly called out as editable?
+- Should ADR numbering/format rules remain special even when all docs are editable?
+- How should dirty-tree warnings describe broader docs edits during Grill?
