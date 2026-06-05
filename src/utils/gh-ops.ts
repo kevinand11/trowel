@@ -49,6 +49,7 @@ export type PrSummary = {
 	isDraft: boolean
 	url?: string
 	labels?: Array<{ name: string }>
+	reviewDecision?: 'CHANGES_REQUESTED' | 'APPROVED' | 'REVIEW_REQUIRED' | string | null
 }
 
 export type LineCommentRaw = {
@@ -230,7 +231,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			await ghOrThrow(['pr', 'merge', String(prNumber), `--${method}`])
 		},
 		async listOpenPrs(opts) {
-			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels']
+			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels,reviewDecision']
 			if (opts?.base !== undefined) {
 				args.splice(2, 0, '--base', opts.base)
 			}
@@ -470,13 +471,13 @@ if (import.meta.vitest) {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a', isDraft: false }])) }])
 			const out = await createGh(runner).listOpenPrs()
 			expect(out).toEqual([{ number: 1, headRefName: 'a', isDraft: false }])
-			expect(calls[0]).toEqual(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels'])
+			expect(calls[0]).toEqual(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels,reviewDecision'])
 		})
 
 		test('listOpenPrs with base filters by --base', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('[]') }])
 			await createGh(runner).listOpenPrs({ base: 'feature' })
-			expect(calls[0]).toEqual(['pr', 'list', '--base', 'feature', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels'])
+			expect(calls[0]).toEqual(['pr', 'list', '--base', 'feature', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels,reviewDecision'])
 		})
 	})
 

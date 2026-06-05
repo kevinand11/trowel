@@ -22,6 +22,7 @@ export type PhaseDeps = {
 	log: (msg: string) => void
 	mergeNoVerify: boolean
 	projectRoot?: string
+	needsRevisionLabel?: string
 }
 
 function withPhaseLock<T>(deps: PhaseDeps, fn: () => Promise<T>): Promise<T> {
@@ -208,6 +209,12 @@ async function closeDirectStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: 
 async function openReadySlicePr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<PhaseOutcome> {
 	assertPrHeadCanTargetChangeBranch(slice, ctx, branch)
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
+	if (slice.prState === 'draft') {
+		const prNumber = await deps.gh.findPrNumberByHead(branch)
+		await deps.gh.markPrReady(prNumber)
+		deps.log(`${tag} marked existing draft PR #${prNumber} for ${branch} ready for merge`)
+		return 'progress'
+	}
 	await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.changeBranch, body: `Closes #${slice.id}` })
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	await deps.gh.markPrReady(prNumber)
@@ -264,8 +271,8 @@ export async function prepareReview(deps: PhaseDeps, slice: Slice, _ctx: PhaseCt
  * - `ready` → push review commits (if any), then `gh pr ready` to flip the PR out of draft. The
  *   slice's `prState` becomes 'ready' on next `findSlices`; classify routes to 'done'. Returns
  *   `'progress'` so the inner step-cap loop refetches.
- * - `needs-revision` → push review commits, flip `needsRevision: true` via storage. Next iteration
- *   classifies to 'address'. Returns `'progress'`.
+ * - `needs-revision` → push review commits and apply the PR needs-revision label. Next iteration
+ *   classifies to 'address' from the PR review surface. Returns `'progress'`.
  * - `partial` → return `'partial'`, no side effects.
  */
 export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
@@ -294,9 +301,8 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, _ctx: PhaseC
 /**
  * Apply the addresser's verdict. Requires an open PR for the slice branch.
  *
- * - `ready` → push fixup commits (if any), clear `needsRevision` via storage. The next iteration
- *   classifies back to 'review' (draft PR still open). Returns `'progress'`.
- * - `no-work-needed` → clear `needsRevision` without pushing. Returns `'no-work'`; loop drops the
+ * - `ready` → push fixup commits (if any), clear the PR needs-revision label. Returns `'progress'`.
+ * - `no-work-needed` → clear the PR needs-revision label without pushing. Returns `'no-work'`; loop drops the
  *   slice for this run.
  * - `partial` → return `'partial'`, no side effects.
  */
@@ -324,10 +330,10 @@ async function landReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, sli
 	return rule?.land(kind, deps, slice, verdict, ctx, branch, tag) ?? 'partial'
 }
 
-async function landReadyReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+async function landReadyReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, _slice: Slice, verdict: TurnOut, _ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
 	if (kind === 'review') return markSlicePrReady(deps, branch, tag)
-	await clearSliceNeedsRevision(deps, ctx, slice, branch, tag)
+	await clearSliceNeedsRevision(deps, branch, tag)
 	return 'progress'
 }
 
@@ -338,28 +344,27 @@ async function markSlicePrReady(deps: PhaseDeps, branch: string, tag: string): P
 	return 'progress'
 }
 
-async function landReviewNeedsRevision(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+async function landReviewNeedsRevision(_kind: ReviewAddressKind, deps: PhaseDeps, _slice: Slice, verdict: TurnOut, _ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { needsRevision: true })
 	await updatePrNeedsRevisionLabel(deps, branch, true)
-	deps.log(`${tag} flagged needsRevision`)
+	deps.log(`${tag} flagged PR needs-revision`)
 	return 'progress'
 }
 
-async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, _verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
-	await clearSliceNeedsRevision(deps, ctx, slice, branch, tag, 'no-work-needed: ')
+async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps, _slice: Slice, _verdict: TurnOut, _ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+	await clearSliceNeedsRevision(deps, branch, tag, 'no-work-needed: ')
 	return 'no-work'
 }
 
-async function clearSliceNeedsRevision(deps: PhaseDeps, ctx: PhaseCtx, slice: Slice, branch: string, tag: string, prefix = ''): Promise<void> {
-	await deps.storage.updateSlice(ctx.changeId, slice.id, { needsRevision: false })
+async function clearSliceNeedsRevision(deps: PhaseDeps, branch: string, tag: string, prefix = ''): Promise<void> {
 	await updatePrNeedsRevisionLabel(deps, branch, false)
-	deps.log(`${tag} ${prefix}cleared needsRevision`)
+	deps.log(`${tag} ${prefix}cleared PR needs-revision`)
 }
 
 async function updatePrNeedsRevisionLabel(deps: PhaseDeps, branch: string, present: boolean): Promise<void> {
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
-	await deps.gh.editIssueLabels(String(prNumber), present ? { add: ['needs-revision'] } : { remove: ['needs-revision'] })
+	const label = deps.needsRevisionLabel ?? 'needs-revision'
+	await deps.gh.editIssueLabels(String(prNumber), present ? { add: [label] } : { remove: [label] })
 }
 
 if (import.meta.vitest) {
@@ -373,10 +378,10 @@ if (import.meta.vitest) {
 		remoteBranchExists?: (b: string) => boolean
 		branchExists?: (b: string) => boolean
 		commitsAhead?: number
-	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; implementedAt: string | null; auditedAt: string | null; needsRevision: boolean; sliceBranch: string | null }; logs: string[] } {
+	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; implementedAt: string | null; auditedAt: string | null; sliceBranch: string | null }; logs: string[] } {
 		const calls: GitCall[] = []
 		const logs: string[] = []
-		const storageState = { closedAt: null as string | null, implementedAt: null as string | null, auditedAt: null as string | null, needsRevision: true, sliceBranch: null as string | null }
+		const storageState = { closedAt: null as string | null, implementedAt: null as string | null, auditedAt: null as string | null, sliceBranch: null as string | null }
 		const recorded = (method: string) => (...args: unknown[]) => { calls.push({ method, args }); return Promise.resolve() }
 		const git: GitOps = {
 			fetch: recorded('fetch'),
@@ -436,7 +441,6 @@ if (import.meta.vitest) {
 				if (patch.closedAt !== undefined) storageState.closedAt = patch.closedAt
 				if (patch.implementedAt !== undefined) storageState.implementedAt = patch.implementedAt
 				if (patch.auditedAt !== undefined) storageState.auditedAt = patch.auditedAt
-				if (patch.needsRevision !== undefined) storageState.needsRevision = patch.needsRevision
 			},
 			updateSliceMetadata: async (_p, _s, patch) => {
 				calls.push({ method: 'updateSliceMetadata', args: [_p, _s, patch] })
@@ -444,6 +448,7 @@ if (import.meta.vitest) {
 			},
 		}
 		const gh: GhOps = {
+			createDraftPr: async (opts) => { calls.push({ method: 'createDraftPr', args: [opts] }) },
 			findPrNumberByHead: async (head) => { calls.push({ method: 'findPrNumberByHead', args: [head] }); return 132 },
 			editIssueLabels: async (id, patch) => { calls.push({ method: 'editIssueLabels', args: [id, patch] }) },
 			markPrReady: async (prNumber) => { calls.push({ method: 'markPrReady', args: [prNumber] }) },
@@ -601,6 +606,26 @@ if (import.meta.vitest) {
 		})
 	})
 
+	describe('integrateSlice: Slice PR readiness', () => {
+		test('ship.pr true opens a draft Slice PR and marks it ready for a distinct Slice branch', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			const outcome = await integrateSlice(deps, slice, { ...ctx, config: { usePrs: true, audit: false, perSliceBranches: true } })
+			expect(outcome).toBe('progress')
+			expect(calls).toContainEqual({ method: 'createDraftPr', args: [{ title: 'A slice', head: 'change-pid/slice-42-a-slice', base: 'change-branch', body: 'Closes #42' }] })
+			expect(calls).toContainEqual({ method: 'markPrReady', args: [132] })
+			expect(storageState.closedAt).toBeNull()
+		})
+
+		test('ship.pr true readies an existing draft Slice PR instead of creating a duplicate', async () => {
+			const { deps, calls, storageState } = makePhaseDeps()
+			const outcome = await integrateSlice(deps, { ...slice, prState: 'draft' }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
+			expect(outcome).toBe('progress')
+			expect(calls.map((c) => c.method)).not.toContain('createDraftPr')
+			expect(calls).toContainEqual({ method: 'markPrReady', args: [132] })
+			expect(storageState.closedAt).toBeNull()
+		})
+	})
+
 	describe('integrateSlice: slice host merges through the reserved merge worktree', () => {
 		test('projectRoot merges the slice branch into the Change branch from __merge-slice without checking it out', async () => {
 			const { mkdtemp, rm } = await import('node:fs/promises')
@@ -663,27 +688,24 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('landAddress: clears needs-revision state', () => {
-		test('ready clears storage flag and matching PR label so enrichment does not requeue address', async () => {
-			const { deps, calls, storageState } = makePhaseDeps()
+	describe('landAddress: clears needs-revision PR signal', () => {
+		test('ready clears matching PR label so enrichment does not requeue address', async () => {
+			const { deps, calls } = makePhaseDeps()
 			await landAddress(deps, { ...slice, needsRevision: true }, { verdict: 'ready', commits: 5 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
-			expect(storageState.needsRevision).toBe(false)
 			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
 		})
 
-		test('no-work-needed clears storage flag and matching PR label so enrichment does not requeue address', async () => {
-			const { deps, calls, storageState } = makePhaseDeps()
+		test('no-work-needed clears matching PR label so enrichment does not requeue address', async () => {
+			const { deps, calls } = makePhaseDeps()
 			await landAddress(deps, { ...slice, needsRevision: true }, { verdict: 'no-work-needed', commits: 0 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
-			expect(storageState.needsRevision).toBe(false)
 			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
 		})
 	})
 
-	describe('landReview: flags needs-revision state', () => {
-		test('needs-revision sets storage flag and matching PR label', async () => {
-			const { deps, calls, storageState } = makePhaseDeps()
+	describe('landReview: flags needs-revision PR signal', () => {
+		test('needs-revision sets matching PR label', async () => {
+			const { deps, calls } = makePhaseDeps()
 			await landReview(deps, slice, { verdict: 'needs-revision', commits: 0 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
-			expect(storageState.needsRevision).toBe(true)
 			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { add: ['needs-revision'] }] })
 		})
 	})

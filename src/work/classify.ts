@@ -12,12 +12,11 @@ type ResumeRule = {
 const RESUME_RULES: ResumeRule[] = [
 	{ state: 'done', matches: (slice) => slice.state === 'done' },
 	{ state: 'done', matches: (slice) => slice.state === 'draft' },
+	{ state: 'done', matches: (slice) => slice.state === 'in-flight' },
+	{ state: 'done', matches: (slice) => slice.state === 'awaiting-review' },
 	{ state: 'finalize', matches: (slice) => slice.state === 'landed' },
 	{ state: 'blocked', matches: (slice) => slice.state === 'blocked' },
 	{ state: 'address', matches: (slice) => slice.state === 'needs-revision' },
-	{ state: 'done', matches: (slice) => slice.prState === 'ready' },
-	{ state: 'done', matches: (slice, config) => slice.prState === 'draft' && !config.audit },
-	{ state: 'review', matches: (slice) => slice.prState === 'draft' },
 	{ state: 'integrate', matches: (slice) => slice.state === 'audited' },
 	{ state: 'audit', matches: (slice, config, changeBranch) => slice.state === 'implemented' && auditApplies(slice, config, changeBranch) },
 	{ state: 'integrate', matches: (slice) => slice.state === 'implemented' },
@@ -68,12 +67,12 @@ if (import.meta.vitest) {
 			expect(classify(makeSlice({ state: 'landed', prState: 'merged' }), config, 'change-branch')).toBe('finalize')
 		})
 
-		test('prState ready → done (awaiting human merge)', () => {
-			expect(classify(makeSlice({ state: 'in-flight', prState: 'ready' }), config, 'change-branch')).toBe('done')
+		test('awaiting-review → done (awaiting human merge)', () => {
+			expect(classify(makeSlice({ state: 'awaiting-review', prState: 'ready' }), config, 'change-branch')).toBe('done')
 		})
 
-		test('prState draft → review (legacy draft PR review path)', () => {
-			expect(classify(makeSlice({ state: 'in-flight', prState: 'draft' }), config, 'change-branch')).toBe('review')
+		test('draft PR without milestones → done (legacy reviewer no longer auto-runs)', () => {
+			expect(classify(makeSlice({ state: 'in-flight', prState: 'draft' }), config, 'change-branch')).toBe('done')
 		})
 
 		test('blocked → blocked', () => {
@@ -96,8 +95,8 @@ if (import.meta.vitest) {
 			expect(classify(makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z' }), { ...config, audit: false }, 'change-branch')).toBe('integrate')
 		})
 
-		test('audited → integrate', () => {
-			expect(classify(makeSlice({ state: 'audited', implementedAt: '2026-06-04T00:00:00.000Z', auditedAt: '2026-06-04T00:01:00.000Z' }), config, 'change-branch')).toBe('integrate')
+		test('audited (including a draft PR) → integrate', () => {
+			expect(classify(makeSlice({ state: 'audited', implementedAt: '2026-06-04T00:00:00.000Z', auditedAt: '2026-06-04T00:01:00.000Z', prState: 'draft' }), config, 'change-branch')).toBe('integrate')
 		})
 
 		test('open slice with no PR yet → implement', () => {

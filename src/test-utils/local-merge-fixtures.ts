@@ -113,7 +113,6 @@ function applySlicePatch(slice: Slice, patch: SlicePatch): void {
 	if (patch.implementedAt !== undefined) slice.implementedAt = patch.implementedAt
 	if (patch.auditedAt !== undefined) slice.auditedAt = patch.auditedAt
 	if (patch.readyForAgent !== undefined) slice.readyForAgent = patch.readyForAgent
-	if (patch.needsRevision !== undefined) slice.needsRevision = patch.needsRevision
 	if (patch.blockedBy !== undefined) slice.blockedBy = patch.blockedBy
 }
 

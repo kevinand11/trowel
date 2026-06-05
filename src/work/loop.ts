@@ -14,6 +14,7 @@ export type LoopConfig = {
 	perSliceBranches: boolean
 	maxConcurrent: number | null
 	mergeNoVerify: boolean
+	needsRevisionLabel?: string
 }
 
 export type LoopDeps = {
@@ -113,7 +114,7 @@ type WorkerLoopState = {
 
 function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 	const { storage, config } = deps
-	const effectiveSlices = createEffectiveSliceReader({ storage, gh: deps.gh, usePrs: config.usePrs })
+	const effectiveSlices = createEffectiveSliceReader({ storage, gh: deps.gh, usePrs: config.usePrs, needsRevisionLabel: config.needsRevisionLabel })
 	return {
 		changeId,
 		tag: `[work change-${changeId}]`,
@@ -185,7 +186,6 @@ if (import.meta.vitest) {
 		if (!slice) return
 		setTestSliceClosedAt(slice, patch.closedAt)
 		setTestReadyForAgent(slice, patch.readyForAgent)
-		setTestNeedsRevision(slice, patch.needsRevision)
 		setTestProcessMilestones(slice, patch)
 	}
 
@@ -202,10 +202,6 @@ if (import.meta.vitest) {
 
 	function setTestReadyForAgent(slice: Slice, value: boolean | undefined): void {
 		if (value !== undefined) slice.readyForAgent = value
-	}
-
-	function setTestNeedsRevision(slice: Slice, value: boolean | undefined): void {
-		if (value !== undefined) slice.needsRevision = value
 	}
 
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
@@ -480,16 +476,12 @@ if (import.meta.vitest) {
 	})
 
 	describe('processSlice', () => {
-		test('review ready stops after markPrReady makes the open PR non-draft', async () => {
+		test('draft PR without process milestones is not auto-reviewed by the loop', async () => {
 			const raw = makeSlice({ id: 's1', prState: null })
 			const initial = makeSlice({ id: 's1', prState: 'draft', state: 'in-flight' })
 			const storage = makeStorage({ slices: [raw] })
 			const roles: Role[] = []
-			const { gh } = recordingGhOps({
-				findPrNumberByHead: async () => 130,
-				markPrReady: async () => {},
-				listOpenPrs: async () => [{ number: 130, headRefName: 'change-p1/slice-s1-a', isDraft: false }],
-			})
+			const { gh } = recordingGhOps()
 
 			const outcome = await processSlice('p1', initial, makeDeps(storage, {
 				spawnTurn: async ({ role }) => {
@@ -500,8 +492,8 @@ if (import.meta.vitest) {
 				config: { usePrs: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
 			}))
 
-			expect(outcome).toBe('no-work')
-			expect(roles).toEqual(['review'])
+			expect(outcome).toBe('done')
+			expect(roles).toEqual([])
 		})
 
 		test('progress outcome releases the claim; scheduler owns the next refetch', async () => {

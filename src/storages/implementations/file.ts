@@ -33,22 +33,21 @@ import type {
 
 type ChangeStore = { id: string; slug: string; title: string; createdAt: string; closedAt: string | null; targetBranch: string; changeBranch: string }
 type ChangeStoreDraft = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & Partial<Pick<ChangeStore, 'targetBranch' | 'changeBranch'>>
-type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & { implementedAt: string | null; auditedAt: string | null; sliceBranch: string | null; readyForAgent: boolean; needsRevision: boolean; blockedBy: string[] }
+type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & { implementedAt: string | null; auditedAt: string | null; sliceBranch: string | null; readyForAgent: boolean; blockedBy: string[] }
 type SliceStoreDraft = SliceStore
-type MutableStore = { readyForAgent: boolean; needsRevision: boolean; blockedBy: string[]; closedAt: string | null; implementedAt: string | null; auditedAt: string | null }
+type MutableStore = { readyForAgent: boolean; blockedBy: string[]; closedAt: string | null; implementedAt: string | null; auditedAt: string | null }
 type StateFilter = { state: 'open' | 'closed' | 'all' }
 type SliceHit = { changeId: string; slice: Slice }
 
 function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
 	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
-	applyOptionalPatchValue(store, 'needsRevision', patch.needsRevision)
 	applyBlockedByPatch(store, patch.blockedBy)
 	applyTimestampPatch(store, 'closedAt', patch.closedAt)
 	applyTimestampPatch(store, 'implementedAt', patch.implementedAt)
 	applyTimestampPatch(store, 'auditedAt', patch.auditedAt)
 }
 
-function applyOptionalPatchValue<K extends 'readyForAgent' | 'needsRevision'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
+function applyOptionalPatchValue<K extends 'readyForAgent'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
 	if (value !== undefined) store[key] = value
 }
 
@@ -230,7 +229,6 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 				auditedAt: null,
 				sliceBranch: null,
 				readyForAgent: false,
-				needsRevision: false,
 				blockedBy: spec.blockedBy,
 			}
 			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(store))
@@ -295,7 +293,7 @@ export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage =>
 			implementedAt: store.implementedAt ?? null,
 			auditedAt: store.auditedAt ?? null,
 			readyForAgent: store.readyForAgent,
-			needsRevision: store.needsRevision,
+			needsRevision: false,
 			blockedBy: store.blockedBy ?? [],
 			sliceBranch: store.sliceBranch,
 			prState: null,
@@ -1011,7 +1009,8 @@ if (import.meta.vitest) {
 			expect(await exists(path.join(dir, 'store.json'))).toBe(true)
 			const store = JSON.parse(await readFile(path.join(dir, 'store.json'), 'utf8'))
 			expect(store.sliceBranch).toBeNull()
-			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: null })
+			expect(store).not.toHaveProperty('needsRevision')
+			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: null, needsRevision: false })
 		})
 	})
 
@@ -1041,14 +1040,14 @@ if (import.meta.vitest) {
 			const { id: changeId } = await createMaterialisedChange(storage)
 			const a = await createMaterialisedSlice(storage, changeId, { title: 'Alpha', body: 'aa', blockedBy: [] })
 			const b = await createMaterialisedSlice(storage, changeId, { title: 'Beta', body: 'bb', blockedBy: [] })
-			// Mark b as closed and needsRevision via updateSlice
-			await storage.updateSlice(changeId, b.id, { closedAt: new Date().toISOString(), needsRevision: true })
+			// Mark b as closed; needs-revision is PR-derived and not stored by file storage.
+			await storage.updateSlice(changeId, b.id, { closedAt: new Date().toISOString() })
 
 			const slices = classifySlices(await storage.findSlices(changeId))
 			expect(slices).toHaveLength(2)
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
 			expect(byId[a.id]).toMatchObject({ title: 'Alpha', body: 'aa', state: 'draft', closedAt: null, readyForAgent: false, needsRevision: false })
-			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'done', needsRevision: true })
+			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'done', needsRevision: false })
 		})
 	})
 
@@ -1098,12 +1097,6 @@ if (import.meta.vitest) {
 			expect(updated!.state).toBe('open')
 		})
 
-		test('needsRevision → needs-revision (regardless of readyForAgent)', async () => {
-			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.updateSlice(changeId, slice.id, { needsRevision: true, readyForAgent: true })
-			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.state).toBe('needs-revision')
-		})
 
 		test('CLOSED → done', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
@@ -1327,18 +1320,18 @@ if (import.meta.vitest) {
 			await teardown(f)
 		})
 
-		test('flips readyForAgent and needsRevision', async () => {
+		test('flips readyForAgent without writing needsRevision', async () => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b', blockedBy: [] })
 
 			await storage.updateSlice(changeId, slice.id, { readyForAgent: true })
 			let store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(true)
-			expect(store.needsRevision).toBe(false)
+			expect(store).not.toHaveProperty('needsRevision')
 
-			await storage.updateSlice(changeId, slice.id, { needsRevision: true, readyForAgent: false })
+			await storage.updateSlice(changeId, slice.id, { readyForAgent: false })
 			store = JSON.parse(await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'))
 			expect(store.readyForAgent).toBe(false)
-			expect(store.needsRevision).toBe(true)
+			expect(store).not.toHaveProperty('needsRevision')
 		})
 
 		test('setting state CLOSED stamps closedAt; setting state OPEN clears it', async () => {
