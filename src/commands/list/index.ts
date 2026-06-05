@@ -1,5 +1,5 @@
 import type { StorageKind } from '../../storages/registry.ts'
-import type { ClassifiedSlice, ChangeState, ChangeSummary, SliceState, Storage } from '../../storages/types.ts'
+import type { ChangeState, ChangeSummary, ClassifiedSlice, SliceState, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
@@ -7,14 +7,14 @@ import { emptySliceStateCounts, formatSliceStateCounts } from '../../utils/slice
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, loadCommandBase } from '../runtime.ts'
 
-type ListRuntime = { storage: Storage; usePrs: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts }
+type ListRuntime = { storage: Storage; pr: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts }
 type ChangeListRow = ChangeSummary & { state: ChangeState; slices: ClassifiedSlice[] }
 
 export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
 	const git = branchStableGitOps(base.git)
 	const storage = buildStorage({ ...base, git }, (opts.storage as StorageKind | undefined) ?? base.config.storage)
-	const rows = await listChangeRows({ storage, usePrs: base.config.ship.pr, gh: base.gh, git: branchStableGitFacts(git) })
+	const rows = await listChangeRows({ storage, pr: base.config.ship.pr, gh: base.gh, git: branchStableGitFacts(git) })
 	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }
 
@@ -43,7 +43,7 @@ async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
 
 async function listChangeRow(rt: ListRuntime, summary: ChangeSummary): Promise<ChangeListRow> {
 	const change = await rt.storage.findChange(summary.id)
-	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: summary.id, usePrs: rt.usePrs })
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: summary.id, pr: rt.pr })
 	return { ...summary, state: change ? await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) : 'open', slices }
 }
 
@@ -92,13 +92,15 @@ if (import.meta.vitest) {
 		})
 
 		test('state summary follows configured order', () => {
-			expect(changeSliceSummary([
-				fakeSlice({ id: 'd', state: 'done', closedAt: 'x' }),
-				fakeSlice({ id: 'o', state: 'open' }),
-				fakeSlice({ id: 'i', state: 'implemented', implementedAt: 'x' }),
-				fakeSlice({ id: 'a', state: 'audited', implementedAt: 'x', auditedAt: 'y' }),
-				fakeSlice({ id: 'l', state: 'landed', prState: 'merged' }),
-			])).toBe('1 done · 1 landed · 1 audited · 1 implemented · 1 open')
+			expect(
+				changeSliceSummary([
+					fakeSlice({ id: 'd', state: 'done', closedAt: 'x' }),
+					fakeSlice({ id: 'o', state: 'open' }),
+					fakeSlice({ id: 'i', state: 'implemented', implementedAt: 'x' }),
+					fakeSlice({ id: 'a', state: 'audited', implementedAt: 'x', auditedAt: 'y' }),
+					fakeSlice({ id: 'l', state: 'landed', prState: 'merged' }),
+				]),
+			).toBe('1 done · 1 landed · 1 audited · 1 implemented · 1 open')
 		})
 	})
 
@@ -109,49 +111,64 @@ if (import.meta.vitest) {
 					listStates.push(opts.state)
 					return summaries
 				},
-				findChange: async (id) => ({ id, changeBranch: `change-${id}`, targetBranch: 'fake-base', title: id, state: 'OPEN', closedAt: null }),
+				findChange: async (id) => ({
+					id,
+					changeBranch: `change-${id}`,
+					targetBranch: 'fake-base',
+					title: id,
+					state: 'OPEN',
+					closedAt: null,
+				}),
 			})
 		}
 
 		function branchSensitiveGit(calls: string[]) {
-			return branchStableGitFacts(noopGitOps({
-				remoteBranchExists: async (branch) => {
-					calls.push(`remoteBranchExists(${branch})`)
-					return true
-				},
-				fetch: async (branch) => { calls.push(`fetch(${branch})`) },
-				commitsAhead: async (branch, base) => {
-					calls.push(`commitsAhead(${branch},${base})`)
-					return 0
-				},
-				checkout: async (branch) => {
-					calls.push(`checkout(${branch})`)
-					throw new Error('checkout must not run during change list')
-				},
-				createLocalBranch: async (branch, base) => {
-					calls.push(`createLocalBranch(${branch},${base})`)
-					throw new Error('createLocalBranch must not run during change list')
-				},
-				createRemoteBranch: async (branch, base) => {
-					calls.push(`createRemoteBranch(${branch},${base})`)
-					throw new Error('createRemoteBranch must not run during change list')
-				},
-				deleteBranch: async (branch) => {
-					calls.push(`deleteBranch(${branch})`)
-					throw new Error('deleteBranch must not run during change list')
-				},
-			}))
+			return branchStableGitFacts(
+				noopGitOps({
+					remoteBranchExists: async (branch) => {
+						calls.push(`remoteBranchExists(${branch})`)
+						return true
+					},
+					fetch: async (branch) => {
+						calls.push(`fetch(${branch})`)
+					},
+					commitsAhead: async (branch, base) => {
+						calls.push(`commitsAhead(${branch},${base})`)
+						return 0
+					},
+					checkout: async (branch) => {
+						calls.push(`checkout(${branch})`)
+						throw new Error('checkout must not run during change list')
+					},
+					createLocalBranch: async (branch, base) => {
+						calls.push(`createLocalBranch(${branch},${base})`)
+						throw new Error('createLocalBranch must not run during change list')
+					},
+					createRemoteBranch: async (branch, base) => {
+						calls.push(`createRemoteBranch(${branch},${base})`)
+						throw new Error('createRemoteBranch must not run during change list')
+					},
+					deleteBranch: async (branch) => {
+						calls.push(`deleteBranch(${branch})`)
+						throw new Error('deleteBranch must not run during change list')
+					},
+				}),
+			)
 		}
 
 		test('sorts newest first by createdAt and requests all Changes', async () => {
 			const { gh } = recordingGhOps()
 			const listStates: string[] = []
 			const rows = await listChangeRows({
-				storage: storageWith([
-					{ id: 'old', title: 'Old', changeBranch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
-					{ id: 'new', title: 'New', changeBranch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
-				], [], listStates),
-				usePrs: false,
+				storage: storageWith(
+					[
+						{ id: 'old', title: 'Old', changeBranch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
+						{ id: 'new', title: 'New', changeBranch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
+					],
+					[],
+					listStates,
+				),
+				pr: false,
 				gh,
 				git: branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })),
 			})
@@ -166,8 +183,12 @@ if (import.meta.vitest) {
 			const slices = [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })]
 
 			const rows = await listChangeRows({
-				storage: storageWith([{ id: '1', title: 'Done', changeBranch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }], slices, listStates),
-				usePrs: false,
+				storage: storageWith(
+					[{ id: '1', title: 'Done', changeBranch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }],
+					slices,
+					listStates,
+				),
+				pr: false,
 				gh,
 				git: branchSensitiveGit(gitCalls),
 			})

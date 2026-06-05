@@ -3,7 +3,6 @@ import { fakeSliceStorage } from './storage-fixtures.ts'
 import { runSlicePhaseCommand } from '../commands/slice-phase-command.ts'
 import type { Slice } from '../storages/types.ts'
 
-
 export { runSlicePhaseCommand } from '../commands/slice-phase-command.ts'
 export { recordingGhOps } from './gh-ops-recorder.ts'
 export { fakeClassifiedSlice, fakeSliceStorage } from './storage-fixtures.ts'
@@ -18,7 +17,7 @@ export async function collectRunOnePhaseSlices(run: RunSlicePhase, slice: Slice)
 	await run('s1', {
 		storage,
 		gh,
-		usePrs: false,
+		prs: false,
 		runOnePhase: async (_changeId, s) => {
 			calls.push(s)
 		},

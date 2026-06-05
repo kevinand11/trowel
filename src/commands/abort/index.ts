@@ -1,6 +1,5 @@
 import { confirm as inqConfirm, input as inqInput } from '@inquirer/prompts'
 
-import { restoreStartingBranch, type OpenPr } from './branch.ts'
 import type { StorageKind } from '../../storages/registry.ts'
 import type { ChangeRecord, ChangeState, ClassifiedSlice, DeleteBranchPolicy, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
@@ -10,13 +9,14 @@ import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
+import { restoreStartingBranch, type OpenPr } from './branch.ts'
 
 type AbortRuntime = {
 	projectRoot?: string
 	storage: Storage
 	git: GitOps
 	gh: GhOps
-	usePrs: boolean
+	pr: boolean
 	deleteBranchPolicy: DeleteBranchPolicy
 	abortComment: string | null
 	interactive?: boolean
@@ -51,7 +51,7 @@ function abortMayRunCleanup(state: ChangeState): boolean {
 async function classifiedChangeOrThrow(changeId: string, rt: AbortRuntime): Promise<ClassifiedChange> {
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`Change '${changeId}' not found`)
-	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, usePrs: rt.usePrs })
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr })
 	return { change, slices, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) }
 }
 
@@ -74,11 +74,18 @@ async function abortChangeByState(target: ClassifiedChange, targetBranch: string
 			return
 		case 'landed':
 		case 'done':
-			throw new Error(`Change ${target.change.id} is ${target.state}; abort would discard shipped work. Run: trowel change ship ${target.change.id}`)
+			throw new Error(
+				`Change ${target.change.id} is ${target.state}; abort would discard shipped work. Run: trowel change ship ${target.change.id}`,
+			)
 	}
 }
 
-async function abortOpenOrReadyChange(change: ChangeRecord, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
+async function abortOpenOrReadyChange(
+	change: ChangeRecord,
+	slices: ClassifiedSlice[],
+	targetBranch: string,
+	rt: AbortRuntime,
+): Promise<void> {
 	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
 	await rt.storage.closeChange(change.id)
@@ -95,15 +102,19 @@ async function abortInFlightChange(change: ChangeRecord, slices: ClassifiedSlice
 }
 
 async function confirmAbortInFlightChange(changeId: string, rt: AbortRuntime): Promise<boolean> {
-	if (rt.interactive === false) throw new Error(`Change ${changeId} is in-flight; abort requires an interactive terminal and exact-id confirmation.`)
-	const ok = await rt.confirmExact(`Change ${changeId} is in-flight with an open Close-out PR. Type '${changeId}' to close it without merging and abort:`, changeId)
+	if (rt.interactive === false)
+		throw new Error(`Change ${changeId} is in-flight; abort requires an interactive terminal and exact-id confirmation.`)
+	const ok = await rt.confirmExact(
+		`Change ${changeId} is in-flight with an open Close-out PR. Type '${changeId}' to close it without merging and abort:`,
+		changeId,
+	)
 	if (ok) return true
 	rt.stdout('Aborted; nothing changed.\n')
 	return false
 }
 
 async function closeOpenSlicePrs(slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
-	if (!rt.usePrs) return
+	if (!rt.pr) return
 	const storedSliceHeads = new Set(slices.map((slice) => slice.sliceBranch).filter((branch): branch is string => branch !== null))
 	for (const pr of await rt.gh.listOpenPrs()) {
 		if (storedSliceHeads.has(pr.headRefName)) await closePrWithoutMerging(pr.number, rt)
@@ -166,7 +177,7 @@ async function buildAbortRuntime(opts: { storage?: StorageKind }): Promise<{ bas
 			storage,
 			git: base.git,
 			gh: base.gh,
-			usePrs: base.config.ship.pr,
+			pr: base.config.ship.pr,
 			deleteBranchPolicy: base.config.abort.deleteBranch,
 			abortComment: base.config.abort.comment,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
@@ -234,7 +245,9 @@ if (import.meta.vitest) {
 	function fakeStorage(state: FakeStorageState): { storage: Storage; calls: string[] } {
 		const calls: string[] = []
 		const storage: Storage = {
-			createChange: async () => { throw new Error('not implemented') },
+			createChange: async () => {
+				throw new Error('not implemented')
+			},
 			findChange: async (id) => {
 				calls.push(`findChange(${id})`)
 				return state.change && state.change.id === id ? { ...state.change } : null
@@ -248,7 +261,9 @@ if (import.meta.vitest) {
 					state.change.closedAt = new Date().toISOString()
 				}
 			},
-			createSlice: async () => { throw new Error('not implemented') },
+			createSlice: async () => {
+				throw new Error('not implemented')
+			},
 			findSlices: async () => {
 				calls.push('findSlices')
 				return state.slices.map((slice) => ({ ...slice }))
@@ -283,7 +298,9 @@ if (import.meta.vitest) {
 			branchExists: async (branch) => full.branches.has(branch),
 			listLocalBranches: async () => [...full.branches],
 			remoteBranchExists: async (branch) => full.remoteBranches.has(branch),
-			fetch: async (branch) => { calls.push(`fetch(${branch})`) },
+			fetch: async (branch) => {
+				calls.push(`fetch(${branch})`)
+			},
 			commitsAhead: async (branch, base) => {
 				calls.push(`commitsAhead(${branch},${base})`)
 				return full.ahead.get(`${branch}:${base}`) ?? full.ahead.get(branch) ?? 0
@@ -305,12 +322,21 @@ if (import.meta.vitest) {
 		return { git, calls, state: full }
 	}
 
-	async function runAbortChangeWith(args: {
-		storageState?: FakeStorageState
-		gitState?: Partial<GitState>
-		gh?: Partial<GhOps>
-		runtime?: Partial<Omit<AbortRuntime, 'storage' | 'git' | 'gh'>>
-	} = {}): Promise<{ storageState: FakeStorageState; storageCalls: string[]; gitCalls: string[]; ghCalls: unknown[][]; stdout: string; gitState: GitState }> {
+	async function runAbortChangeWith(
+		args: {
+			storageState?: FakeStorageState
+			gitState?: Partial<GitState>
+			gh?: Partial<GhOps>
+			runtime?: Partial<Omit<AbortRuntime, 'storage' | 'git' | 'gh'>>
+		} = {},
+	): Promise<{
+		storageState: FakeStorageState
+		storageCalls: string[]
+		gitCalls: string[]
+		ghCalls: unknown[][]
+		stdout: string
+		gitState: GitState
+	}> {
 		const storageState = args.storageState ?? { change: fakeChange(), slices: [] }
 		const { storage, calls: storageCalls } = fakeStorage(storageState)
 		const { git, calls: gitCalls, state: gitState } = fakeGit(args.gitState)
@@ -321,13 +347,15 @@ if (import.meta.vitest) {
 			storage,
 			git,
 			gh,
-			usePrs: false,
+			pr: false,
 			deleteBranchPolicy: 'never',
 			abortComment: 'Closed via trowel',
 			interactive: true,
 			confirm: async () => false,
 			confirmExact: async () => false,
-			stdout: (s) => { stdout += s },
+			stdout: (s) => {
+				stdout += s
+			},
 			listOpenPrs: async () => [],
 			...args.runtime,
 		})
@@ -346,21 +374,23 @@ if (import.meta.vitest) {
 				slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })],
 			}
 
-			await expect(runAbortChangeWith({
-				storageState,
-				gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
-				gh: { findAnyPrByHead: async () => ({ number: 20, state: 'OPEN' }) },
-				runtime: {
-					deleteBranchPolicy: 'prompt',
-					confirm: async () => {
-						throw new Error('should not prompt')
+			await expect(
+				runAbortChangeWith({
+					storageState,
+					gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
+					gh: { findAnyPrByHead: async () => ({ number: 20, state: 'OPEN' }) },
+					runtime: {
+						deleteBranchPolicy: 'prompt',
+						confirm: async () => {
+							throw new Error('should not prompt')
+						},
+						confirmExact: async () => {
+							confirmExactCalls += 1
+							throw new Error('should not prompt')
+						},
 					},
-					confirmExact: async () => {
-						confirmExactCalls += 1
-						throw new Error('should not prompt')
-					},
-				},
-			})).rejects.toThrow(/Switch branches first/)
+				}),
+			).rejects.toThrow(/Switch branches first/)
 			expect(confirmExactCalls).toBe(0)
 			expect(storageState.change.closedAt).toBeNull()
 		})
@@ -368,11 +398,13 @@ if (import.meta.vitest) {
 		test('refuses before closing records when the current branch is a Cleanup candidate under abort always policy', async () => {
 			const storageState = { change: fakeChange(), slices: [fakeSlice()] }
 
-			await expect(runAbortChangeWith({
-				storageState,
-				gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
-				runtime: { deleteBranchPolicy: 'always' },
-			})).rejects.toThrow(/Switch branches first/)
+			await expect(
+				runAbortChangeWith({
+					storageState,
+					gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
+					runtime: { deleteBranchPolicy: 'always' },
+				}),
+			).rejects.toThrow(/Switch branches first/)
 			expect(storageState.change.closedAt).toBeNull()
 			expect(storageState.slices[0]!.closedAt).toBeNull()
 		})
@@ -396,7 +428,7 @@ if (import.meta.vitest) {
 				storageState: { change: fakeChange(), slices: [slice] },
 				gitState: { branches: new Set(['main', 'change-42-feature', sliceBranch]) },
 				gh: { listOpenPrs: async () => [{ number: 10, headRefName: sliceBranch, isDraft: true }] },
-				runtime: { usePrs: true, deleteBranchPolicy: 'always' },
+				runtime: { pr: true, deleteBranchPolicy: 'always' },
 			})
 
 			expect(ghCalls).toContainEqual(['closePr', 10, { comment: 'Closed via trowel' }])
@@ -421,7 +453,7 @@ if (import.meta.vitest) {
 						{ number: 12, headRefName: newPrefixBranch, isDraft: true },
 					],
 				},
-				runtime: { usePrs: true },
+				runtime: { pr: true },
 			})
 
 			expect(ghCalls).toContainEqual(['closePr', 10, { comment: 'Closed via trowel' }])
@@ -434,7 +466,7 @@ if (import.meta.vitest) {
 			const { storageCalls, ghCalls } = await runAbortChangeWith({
 				storageState: { change: fakeChange(), slices: [doneSlice] },
 				gh: { listOpenPrs: async () => [{ number: 11, headRefName: 'change-42/slice-s1-first-slice', isDraft: false }] },
-				runtime: { usePrs: true },
+				runtime: { pr: true },
 			})
 
 			expect(ghCalls).toContainEqual(['closePr', 11, { comment: 'Closed via trowel' }])
@@ -444,7 +476,10 @@ if (import.meta.vitest) {
 
 		test('in-flight Change: declining exact-id confirmation leaves PRs and records untouched', async () => {
 			const { storageCalls, ghCalls, stdout } = await runAbortChangeWith({
-				storageState: { change: fakeChange(), slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })] },
+				storageState: {
+					change: fakeChange(),
+					slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })],
+				},
 				gh: { findAnyPrByHead: async () => ({ number: 20, state: 'OPEN' }) },
 				runtime: { confirmExact: async () => false },
 			})
@@ -460,10 +495,10 @@ if (import.meta.vitest) {
 			const { storageCalls, ghCalls } = await runAbortChangeWith({
 				storageState: { change: fakeChange(), slices: [slice] },
 				gh: {
-					findAnyPrByHead: async (head) => head === 'change-42-feature' ? { number: 20, state: 'OPEN' } : null,
+					findAnyPrByHead: async (head) => (head === 'change-42-feature' ? { number: 20, state: 'OPEN' } : null),
 					listOpenPrs: async () => [{ number: 21, headRefName: sliceBranch, isDraft: false }],
 				},
-				runtime: { usePrs: true, confirmExact: async (_msg, expected) => expected === '42' },
+				runtime: { pr: true, confirmExact: async (_msg, expected) => expected === '42' },
 			})
 
 			expect(ghCalls).toContainEqual(['closePr', 20, { comment: 'Closed via trowel' }])
@@ -484,17 +519,27 @@ if (import.meta.vitest) {
 		})
 
 		test('landed Change is refused with ship guidance', async () => {
-			await expect(runAbortChangeWith({
-				storageState: { change: fakeChange(), slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })] },
-				gitState: { mergedIntoTarget: true },
-			})).rejects.toThrow(/Run: trowel change ship 42/)
+			await expect(
+				runAbortChangeWith({
+					storageState: {
+						change: fakeChange(),
+						slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })],
+					},
+					gitState: { mergedIntoTarget: true },
+				}),
+			).rejects.toThrow(/Run: trowel change ship 42/)
 		})
 
 		test('done Change is refused with ship guidance', async () => {
-			await expect(runAbortChangeWith({
-				storageState: { change: fakeChange({ state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }), slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })] },
-				gitState: { mergedIntoTarget: true },
-			})).rejects.toThrow(/Run: trowel change ship 42/)
+			await expect(
+				runAbortChangeWith({
+					storageState: {
+						change: fakeChange({ state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }),
+						slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })],
+					},
+					gitState: { mergedIntoTarget: true },
+				}),
+			).rejects.toThrow(/Run: trowel change ship 42/)
 		})
 
 		test('null abort comment closes PRs silently', async () => {
@@ -502,7 +547,7 @@ if (import.meta.vitest) {
 			const { ghCalls } = await runAbortChangeWith({
 				storageState: { change: fakeChange(), slices: [fakeSlice()] },
 				gh: { listOpenPrs: async () => [{ number: 10, headRefName: sliceBranch, isDraft: true }] },
-				runtime: { usePrs: true, abortComment: null },
+				runtime: { pr: true, abortComment: null },
 			})
 
 			expect(ghCalls).toContainEqual(['closePr', 10])

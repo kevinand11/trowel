@@ -6,5 +6,6 @@ export default defineConfig({
 		includeSource: ['src/**/*.ts'],
 		setupFiles: ['./test/setup-clean-git-env.ts'],
 		maxWorkers: 4,
+		pool: 'threads',
 	},
 })

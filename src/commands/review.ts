@@ -16,7 +16,8 @@ export async function review(sliceId: string, opts: { storage?: StorageKind; har
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps, runSlicePhaseCommand, fakeClassifiedSlice, fakeSliceStorage, collectRunOnePhaseSlices } = await import('../test-utils/slice-phase-command-fixtures.ts')
+	const { recordingGhOps, runSlicePhaseCommand, fakeClassifiedSlice, fakeSliceStorage, collectRunOnePhaseSlices } =
+		await import('../test-utils/slice-phase-command-fixtures.ts')
 
 	describe('runReview', () => {
 		const runReview = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime']) =>
@@ -28,7 +29,10 @@ if (import.meta.vitest) {
 			})
 
 		test('on a needs-revision slice: calls runOnePhase exactly once', async () => {
-			const calls = await collectRunOnePhaseSlices(runReview, fakeClassifiedSlice({ id: 's1', state: 'needs-revision', needsRevision: true, prState: 'ready' }))
+			const calls = await collectRunOnePhaseSlices(
+				runReview,
+				fakeClassifiedSlice({ id: 's1', state: 'needs-revision', needsRevision: true, prState: 'ready' }),
+			)
 			expect(calls).toHaveLength(1)
 		})
 
@@ -36,7 +40,7 @@ if (import.meta.vitest) {
 			const slice = fakeClassifiedSlice({ id: 's1', prState: null })
 			const storage = fakeSliceStorage([slice])
 			const { gh } = recordingGhOps()
-			await expect(runReview('s1', { storage, gh, usePrs: false, runOnePhase: async () => {} })).rejects.toThrow(/state 'open'/)
+			await expect(runReview('s1', { storage, gh, prs: false, runOnePhase: async () => {} })).rejects.toThrow(/state 'open'/)
 		})
 	})
 }

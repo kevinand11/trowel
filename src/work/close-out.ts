@@ -7,14 +7,14 @@ import { withMutationLock } from '../utils/mutation-lock.ts'
 /**
  * Terminal step that ships a closeable Change. Branches on `config.ship.pr`:
  *
- * - `usePrs: true` — opens a PR from the entity branch against the entity's targetBranch (if one
+ * - `pr: true` — opens a PR from the entity branch against the entity's targetBranch (if one
  *   doesn't already exist), then marks it ready. The Change remains unfinalized until Ship later
  *   observes the merged PR as a landed state and runs Finalization.
- * - `usePrs: false` — host-merges the entity branch into the entity's targetBranch from a
+ * - `pr: false` — host-merges the entity branch into the entity's targetBranch from a
  *   reserved detached merge worktree when projectRoot is available, then runs Finalization
  *   immediately.
  *
- * Branch deletion under `usePrs: false` is gated by `config.abort.deleteBranch`. The `'prompt'`
+ * Branch deletion under `pr: false` is gated by `config.abort.deleteBranch`. The `'prompt'`
  * policy coerces to `'never'` in this auto context (runLoop is non-interactive).
  */
 export type CloseOutEntity = {
@@ -26,7 +26,7 @@ export type CloseOutEntity = {
 }
 
 export type CloseOutConfig = {
-	usePrs: boolean
+	pr: boolean
 	deleteBranch: DeleteBranchPolicy
 	mergeNoVerify: boolean
 }
@@ -43,7 +43,7 @@ export type CloseOutDeps = {
 export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
 	const tag = `[close-out ${entity.kind}-${entity.id}]`
 	const targetBranch = entity.targetBranch
-	return deps.config.usePrs ? closeOutViaPr(entity, deps, targetBranch, tag) : closeOutViaMerge(entity, deps, targetBranch, tag)
+	return deps.config.pr ? closeOutViaPr(entity, deps, targetBranch, tag) : closeOutViaMerge(entity, deps, targetBranch, tag)
 }
 
 function closeOutViaPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
@@ -164,9 +164,13 @@ if (import.meta.vitest) {
 			createChange: async () => ({ id: 'x', title: 'x' }),
 			findChange: async () => null,
 			listChanges: async () => [],
-			closeChange: async (id) => { closed.change.push(id) },
+			closeChange: async (id) => {
+				closed.change.push(id)
+			},
 			updateChangeMetadata: async () => {},
-			createSlice: async () => { throw new Error('nyi') },
+			createSlice: async () => {
+				throw new Error('nyi')
+			},
 			findSlices: async () => [],
 			findSlice: async () => null,
 			updateSlice: async () => {},
@@ -181,23 +185,33 @@ if (import.meta.vitest) {
 		const git = noopGitOps({
 			currentBranch: async () => 'work',
 			baseBranch: async () => 'main',
-			checkout: async (b) => { calls.push(`checkout(${b})`) },
-			deleteBranch: async (b) => { calls.push(`deleteBranch(${b})`) },
-			push: async (b) => { calls.push(`push(${b})`) },
-			mergeNoFf: async (b) => { calls.push(`mergeNoFf(${b})`) },
-			mergeAbort: async () => { calls.push('mergeAbort') },
+			checkout: async (b) => {
+				calls.push(`checkout(${b})`)
+			},
+			deleteBranch: async (b) => {
+				calls.push(`deleteBranch(${b})`)
+			},
+			push: async (b) => {
+				calls.push(`push(${b})`)
+			},
+			mergeNoFf: async (b) => {
+				calls.push(`mergeNoFf(${b})`)
+			},
+			mergeAbort: async () => {
+				calls.push('mergeAbort')
+			},
 		})
 		return { git, calls }
 	}
 
 	describe('runCloseOut', () => {
-		test('Change + usePrs:false: host-merges Change branch to targetBranch, finalizes the Change, retains branch on never', async () => {
+		test('Change + pr:false: host-merges Change branch to targetBranch, finalizes the Change, retains branch on never', async () => {
 			const { storage, closed } = fakeStorage()
 			const { git, calls } = fakeGit()
 			const { gh } = recordingGhOps()
 			await runCloseOut(
 				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
-				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'never', mergeNoVerify: false } },
+				{ storage, git, gh, log: () => {}, config: { pr: false, deleteBranch: 'never', mergeNoVerify: false } },
 			)
 			expect(calls).toContain('checkout(release/1.2)')
 			expect(calls).toContain('push(release/1.2)')
@@ -211,12 +225,12 @@ if (import.meta.vitest) {
 			const { gh } = recordingGhOps()
 			await runCloseOut(
 				{ kind: 'change', id: '5', changeBranch: 'change/5-x', targetBranch: 'main', title: 'X' },
-				{ storage, git, gh, log: () => {}, config: { usePrs: false, deleteBranch: 'prompt', mergeNoVerify: false } },
+				{ storage, git, gh, log: () => {}, config: { pr: false, deleteBranch: 'prompt', mergeNoVerify: false } },
 			)
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
-		test('Change + usePrs:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
+		test('Change + pr:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
 			const { storage } = fakeStorage()
 			const { git } = fakeGit()
 			const { gh, calls } = recordingGhOps({
@@ -225,14 +239,17 @@ if (import.meta.vitest) {
 			})
 			await runCloseOut(
 				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
-				{ storage, git, gh, log: () => {}, config: { usePrs: true, deleteBranch: 'never', mergeNoVerify: false } },
+				{ storage, git, gh, log: () => {}, config: { pr: true, deleteBranch: 'never', mergeNoVerify: false } },
 			)
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toEqual(['createDraftPr', {
-				title: 'Feat',
-				head: '3-feat',
-				base: 'release/1.2',
-				body: 'Closes Change 3',
-			}])
+			expect(calls.find((c) => c[0] === 'createDraftPr')).toEqual([
+				'createDraftPr',
+				{
+					title: 'Feat',
+					head: '3-feat',
+					base: 'release/1.2',
+					body: 'Closes Change 3',
+				},
+			])
 			expect(calls).toContainEqual(['markPrReady', 22])
 		})
 	})

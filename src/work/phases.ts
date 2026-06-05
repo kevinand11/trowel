@@ -55,7 +55,7 @@ export async function prepareImplement(deps: PhaseDeps, slice: Slice, ctx: Phase
 }
 
 async function prepareImplementLocked(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = slice.sliceBranch ?? await assignSliceBranch(deps, slice, ctx)
+	const branch = slice.sliceBranch ?? (await assignSliceBranch(deps, slice, ctx))
 	// Preserve the assigned branch for landImplement in this same Turn; durable identity is already
 	// stored through updateSliceMetadata above.
 	slice.sliceBranch = branch
@@ -81,12 +81,16 @@ async function createPerSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx
 
 async function verifyStoredSliceBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<void> {
 	if (await deps.git.remoteBranchExists(branch)) return
-	throw new Error(`stored Slice branch '${branch}' for Slice '${slice.id}' is missing on origin; create or restore the branch before running work for Change '${ctx.changeId}'`)
+	throw new Error(
+		`stored Slice branch '${branch}' for Slice '${slice.id}' is missing on origin; create or restore the branch before running work for Change '${ctx.changeId}'`,
+	)
 }
 
 function assertPrHeadCanTargetChangeBranch(slice: Slice, ctx: PhaseCtx, branch: string): void {
-	if (!ctx.config.usePrs || branch !== ctx.changeBranch) return
-	throw new Error(`Slice '${slice.id}' stores Slice branch '${branch}', which equals Change branch '${ctx.changeBranch}'; config.ship.pr cannot open a Slice PR with the same head and base`)
+	if (!ctx.config.pr || branch !== ctx.changeBranch) return
+	throw new Error(
+		`Slice '${slice.id}' stores Slice branch '${branch}', which equals Change branch '${ctx.changeBranch}'; config.ship.pr cannot open a Slice PR with the same head and base`,
+	)
 }
 
 /**
@@ -165,7 +169,7 @@ async function recoverNoWorkNeededSliceBranch(deps: PhaseDeps, slice: Slice, ctx
 }
 
 function canRecoverNoWorkNeededSliceBranch(ctx: PhaseCtx, slice: Slice): boolean {
-	return !ctx.config.usePrs && sliceBranchFor(slice) !== ctx.changeBranch
+	return !ctx.config.pr && sliceBranchFor(slice) !== ctx.changeBranch
 }
 
 async function landImplementReady(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, commits: number): Promise<PhaseOutcome> {
@@ -191,7 +195,7 @@ export async function integrateSlice(deps: PhaseDeps, slice: Slice, ctx: PhaseCt
 
 async function integrateSliceLocked(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const branch = sliceBranchFor(slice)
-	if (ctx.config.usePrs && branch !== ctx.changeBranch) return openReadySlicePr(deps, slice, ctx, branch)
+	if (ctx.config.pr && branch !== ctx.changeBranch) return openReadySlicePr(deps, slice, ctx, branch)
 	if (branch === ctx.changeBranch) return closeDirectStoredSliceBranch(deps, slice, ctx, branch)
 	await mergeSliceIntoChangeBranch(deps, slice, ctx, branch)
 	return 'done'
@@ -309,17 +313,34 @@ if (import.meta.vitest) {
 
 	type GitCall = { method: string; args: unknown[] }
 
-	function makePhaseDeps(overrides: {
-		mergeNoFfThrows?: Error
-		mergeNoVerify?: boolean
-		remoteBranchExists?: (b: string) => boolean
-		branchExists?: (b: string) => boolean
-		commitsAhead?: number
-	} = {}): { deps: PhaseDeps; calls: GitCall[]; storageState: { closedAt: string | null; implementedAt: string | null; auditedAt: string | null; sliceBranch: string | null }; logs: string[] } {
+	function makePhaseDeps(
+		overrides: {
+			mergeNoFfThrows?: Error
+			mergeNoVerify?: boolean
+			remoteBranchExists?: (b: string) => boolean
+			branchExists?: (b: string) => boolean
+			commitsAhead?: number
+		} = {},
+	): {
+		deps: PhaseDeps
+		calls: GitCall[]
+		storageState: { closedAt: string | null; implementedAt: string | null; auditedAt: string | null; sliceBranch: string | null }
+		logs: string[]
+	} {
 		const calls: GitCall[] = []
 		const logs: string[] = []
-		const storageState = { closedAt: null as string | null, implementedAt: null as string | null, auditedAt: null as string | null, sliceBranch: null as string | null }
-		const recorded = (method: string) => (...args: unknown[]) => { calls.push({ method, args }); return Promise.resolve() }
+		const storageState = {
+			closedAt: null as string | null,
+			implementedAt: null as string | null,
+			auditedAt: null as string | null,
+			sliceBranch: null as string | null,
+		}
+		const recorded =
+			(method: string) =>
+			(...args: unknown[]) => {
+				calls.push({ method, args })
+				return Promise.resolve()
+			}
 		const git: GitOps = {
 			fetch: recorded('fetch'),
 			push: recorded('push'),
@@ -342,13 +363,19 @@ if (import.meta.vitest) {
 			fastForward: recorded('fastForward'),
 			currentBranch: async () => 'change-branch',
 			baseBranch: async () => 'main',
-			branchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
-			localBranchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
+			branchExists: async (b) => (overrides.branchExists ? overrides.branchExists(b) : true),
+			localBranchExists: async (b) => (overrides.branchExists ? overrides.branchExists(b) : true),
 			isMerged: async () => false,
-			commitsAhead: async (branch, base) => { calls.push({ method: 'commitsAhead', args: [branch, base] }); return overrides.commitsAhead ?? 0 },
+			commitsAhead: async (branch, base) => {
+				calls.push({ method: 'commitsAhead', args: [branch, base] })
+				return overrides.commitsAhead ?? 0
+			},
 			listLocalBranches: async () => [],
 			deleteBranch: recorded('deleteBranch'),
-			resolveRef: async (ref, worktreePath) => { calls.push({ method: 'resolveRef', args: [ref, worktreePath] }); return ref === 'HEAD' ? 'pushed-head' : ref },
+			resolveRef: async (ref, worktreePath) => {
+				calls.push({ method: 'resolveRef', args: [ref, worktreePath] })
+				return ref === 'HEAD' ? 'pushed-head' : ref
+			},
 			checkoutDetached: recorded('checkoutDetached'),
 			resetHard: recorded('resetHard'),
 			pushHeadTo: recorded('pushHeadTo'),
@@ -371,7 +398,20 @@ if (import.meta.vitest) {
 			listChanges: async () => [],
 			closeChange: async () => {},
 			updateChangeMetadata: async () => {},
-			createSlice: async () => ({ id: 's', title: '', body: '', state: 'draft', closedAt: null, implementedAt: null, auditedAt: null, readyForAgent: false, needsRevision: false, blockedBy: [], sliceBranch: 'change-p/slice-s', prState: null }),
+			createSlice: async () => ({
+				id: 's',
+				title: '',
+				body: '',
+				state: 'draft',
+				closedAt: null,
+				implementedAt: null,
+				auditedAt: null,
+				readyForAgent: false,
+				needsRevision: false,
+				blockedBy: [],
+				sliceBranch: 'change-p/slice-s',
+				prState: null,
+			}),
 			findSlices: async () => [],
 			findSlice: async () => null,
 			updateSlice: async (_p, _s, patch) => {
@@ -385,29 +425,50 @@ if (import.meta.vitest) {
 			},
 		}
 		const gh: GhOps = {
-			createDraftPr: async (opts) => { calls.push({ method: 'createDraftPr', args: [opts] }) },
-			findPrNumberByHead: async (head) => { calls.push({ method: 'findPrNumberByHead', args: [head] }); return 132 },
-			editIssueLabels: async (id, patch) => { calls.push({ method: 'editIssueLabels', args: [id, patch] }) },
-			markPrReady: async (prNumber) => { calls.push({ method: 'markPrReady', args: [prNumber] }) },
+			createDraftPr: async (opts) => {
+				calls.push({ method: 'createDraftPr', args: [opts] })
+			},
+			findPrNumberByHead: async (head) => {
+				calls.push({ method: 'findPrNumberByHead', args: [head] })
+				return 132
+			},
+			editIssueLabels: async (id, patch) => {
+				calls.push({ method: 'editIssueLabels', args: [id, patch] })
+			},
+			markPrReady: async (prNumber) => {
+				calls.push({ method: 'markPrReady', args: [prNumber] })
+			},
 		} as GhOps
 		const deps: PhaseDeps = {
 			storage,
 			git,
 			gh,
-			log: (m) => { logs.push(m) },
+			log: (m) => {
+				logs.push(m)
+			},
 			mergeNoVerify: overrides.mergeNoVerify ?? false,
 		}
 		return { deps, calls, storageState, logs }
 	}
 
 	const slice: Slice = {
-		id: '42', title: 'A slice', body: 'b', state: 'open', closedAt: null, implementedAt: null, auditedAt: null,
-		readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: 'change-pid/slice-42-a-slice', prState: null,
+		id: '42',
+		title: 'A slice',
+		body: 'b',
+		state: 'open',
+		closedAt: null,
+		implementedAt: null,
+		auditedAt: null,
+		readyForAgent: true,
+		needsRevision: false,
+		blockedBy: [],
+		sliceBranch: 'change-pid/slice-42-a-slice',
+		prState: null,
 	}
 	const ctx: PhaseCtx = {
 		changeId: 'pid',
 		changeBranch: 'change-branch',
-		config: { usePrs: false, audit: false, perSliceBranches: true },
+		config: { pr: false, audit: false, perSliceBranches: true },
 	}
 
 	describe('prepareImplement: stored Slice branch', () => {
@@ -423,7 +484,9 @@ if (import.meta.vitest) {
 
 		test('stored Slice branch missing remotely → fails instead of creating it', async () => {
 			const { deps, calls } = makePhaseDeps({ remoteBranchExists: () => false })
-			await expect(prepareImplement(deps, slice, ctx)).rejects.toThrow(/stored Slice branch 'change-pid\/slice-42-a-slice'.*missing on origin/)
+			await expect(prepareImplement(deps, slice, ctx)).rejects.toThrow(
+				/stored Slice branch 'change-pid\/slice-42-a-slice'.*missing on origin/,
+			)
 			const methods = calls.map((c) => c.method)
 			expect(methods).toContain('remoteBranchExists')
 			expect(methods).not.toContain('createRemoteBranch')
@@ -440,10 +503,10 @@ if (import.meta.vitest) {
 			expect(prep.branch).toBe('change-branch')
 		})
 
-		test('usePrs:true allows a stored Slice branch equal to the Change branch; later Auditing/PR integration is skipped', async () => {
+		test('pr:true allows a stored Slice branch equal to the Change branch; later Auditing/PR integration is skipped', async () => {
 			const { deps } = makePhaseDeps()
 			const shared = { ...slice, sliceBranch: 'change-branch' }
-			const prep = await prepareImplement(deps, shared, { ...ctx, config: { usePrs: true, audit: false, perSliceBranches: true } })
+			const prep = await prepareImplement(deps, shared, { ...ctx, config: { pr: true, audit: false, perSliceBranches: true } })
 			expect(prep.branch).toBe('change-branch')
 		})
 
@@ -462,7 +525,7 @@ if (import.meta.vitest) {
 		test('null Slice branch + perSliceBranches:false stores the Change branch at preparation time', async () => {
 			const { deps, calls, storageState } = makePhaseDeps()
 			const unassigned = { ...slice, sliceBranch: null }
-			const prep = await prepareImplement(deps, unassigned, { ...ctx, config: { usePrs: false, audit: false, perSliceBranches: false } })
+			const prep = await prepareImplement(deps, unassigned, { ...ctx, config: { pr: false, audit: false, perSliceBranches: false } })
 			expect(prep.branch).toBe('change-branch')
 			expect(storageState.sliceBranch).toBe('change-branch')
 			expect(calls.map((c) => c.method)).not.toContain('createRemoteBranch')
@@ -495,7 +558,12 @@ if (import.meta.vitest) {
 		test('no-work-needed + stored Slice branch equals Change branch → just clear readyForAgent regardless of commitsAhead', async () => {
 			const { deps, calls } = makePhaseDeps({ commitsAhead: 5 })
 			const shared = { ...slice, sliceBranch: 'change-branch' }
-			const outcome = await landImplement(deps, shared, { verdict: 'no-work-needed', notes: 'done', commits: 0 }, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
+			const outcome = await landImplement(
+				deps,
+				shared,
+				{ verdict: 'no-work-needed', notes: 'done', commits: 0 },
+				{ ...ctx, config: { ...ctx.config, perSliceBranches: false } },
+			)
 			expect(outcome).toBe('no-work')
 			expect(calls.map((c) => c.method)).not.toContain('mergeNoFf')
 		})
@@ -505,7 +573,12 @@ if (import.meta.vitest) {
 		test('ready records implementedAt without finalizing', async () => {
 			const { deps, calls, storageState } = makePhaseDeps()
 			const shared = { ...slice, sliceBranch: 'change-branch' }
-			const outcome = await landImplement(deps, shared, { verdict: 'ready', commits: 1 }, { ...ctx, config: { ...ctx.config, perSliceBranches: false } })
+			const outcome = await landImplement(
+				deps,
+				shared,
+				{ verdict: 'ready', commits: 1 },
+				{ ...ctx, config: { ...ctx.config, perSliceBranches: false } },
+			)
 			expect(outcome).toBe('progress')
 			expect(calls).toContainEqual({ method: 'push', args: ['change-branch'] })
 			expect(calls.map((c) => c.method)).not.toContain('mergeNoFf')
@@ -513,10 +586,15 @@ if (import.meta.vitest) {
 			expect(storageState.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 
-		test('usePrs:true with stored Slice branch equal to Change branch records implementedAt without same-head PR failure', async () => {
+		test('pr:true with stored Slice branch equal to Change branch records implementedAt without same-head PR failure', async () => {
 			const { deps, storageState } = makePhaseDeps()
 			const shared = { ...slice, sliceBranch: 'change-branch' }
-			const outcome = await landImplement(deps, shared, { verdict: 'ready', commits: 1 }, { ...ctx, config: { usePrs: true, audit: false, perSliceBranches: true } })
+			const outcome = await landImplement(
+				deps,
+				shared,
+				{ verdict: 'ready', commits: 1 },
+				{ ...ctx, config: { pr: true, audit: false, perSliceBranches: true } },
+			)
 			expect(outcome).toBe('progress')
 			expect(storageState.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
@@ -546,16 +624,23 @@ if (import.meta.vitest) {
 	describe('integrateSlice: Slice PR readiness', () => {
 		test('ship.pr true opens a draft Slice PR and marks it ready for a distinct Slice branch', async () => {
 			const { deps, calls, storageState } = makePhaseDeps()
-			const outcome = await integrateSlice(deps, slice, { ...ctx, config: { usePrs: true, audit: false, perSliceBranches: true } })
+			const outcome = await integrateSlice(deps, slice, { ...ctx, config: { pr: true, audit: false, perSliceBranches: true } })
 			expect(outcome).toBe('progress')
-			expect(calls).toContainEqual({ method: 'createDraftPr', args: [{ title: 'A slice', head: 'change-pid/slice-42-a-slice', base: 'change-branch', body: 'Closes #42' }] })
+			expect(calls).toContainEqual({
+				method: 'createDraftPr',
+				args: [{ title: 'A slice', head: 'change-pid/slice-42-a-slice', base: 'change-branch', body: 'Closes #42' }],
+			})
 			expect(calls).toContainEqual({ method: 'markPrReady', args: [132] })
 			expect(storageState.closedAt).toBeNull()
 		})
 
 		test('ship.pr true readies an existing draft Slice PR instead of creating a duplicate', async () => {
 			const { deps, calls, storageState } = makePhaseDeps()
-			const outcome = await integrateSlice(deps, { ...slice, prState: 'draft' }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
+			const outcome = await integrateSlice(
+				deps,
+				{ ...slice, prState: 'draft' },
+				{ ...ctx, config: { pr: true, audit: true, perSliceBranches: true } },
+			)
 			expect(outcome).toBe('progress')
 			expect(calls.map((c) => c.method)).not.toContain('createDraftPr')
 			expect(calls).toContainEqual({ method: 'markPrReady', args: [132] })
@@ -579,11 +664,18 @@ if (import.meta.vitest) {
 				expect(outcome).toBe('done')
 				expect(calls.map((c) => c.method)).not.toContain('checkout')
 				expect(calls).toContainEqual({ method: 'worktreeAdd', args: [mergeWorktreePath, 'origin/change-branch'] })
-				expect(calls).toContainEqual({ method: 'mergeNoFfIn', args: [mergeWorktreePath, 'change-pid/slice-42-a-slice', { noVerify: false }] })
+				expect(calls).toContainEqual({
+					method: 'mergeNoFfIn',
+					args: [mergeWorktreePath, 'change-pid/slice-42-a-slice', { noVerify: false }],
+				})
 				expect(calls).toContainEqual({ method: 'pushHeadTo', args: [mergeWorktreePath, 'change-branch'] })
 				expect(calls).toContainEqual({ method: 'updateLocalBranchRef', args: ['change-branch', 'pushed-head'] })
 				expect(storageState.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
-				expect(logs.some((l) => l.includes('merged change-pid/slice-42-a-slice into change-branch; slice branch retained for Cleanup'))).toBe(true)
+				expect(
+					logs.some((l) =>
+						l.includes('merged change-pid/slice-42-a-slice into change-branch; slice branch retained for Cleanup'),
+					),
+				).toBe(true)
 			} finally {
 				await rm(projectRoot, { recursive: true, force: true })
 			}
@@ -628,9 +720,18 @@ if (import.meta.vitest) {
 	describe('prepareReview: PR feedback response', () => {
 		test('fetches PR feedback for the Reviewer Turn', async () => {
 			const { deps, calls } = makePhaseDeps()
-			deps.gh.fetchPrLineComments = async (prNumber) => { calls.push({ method: 'fetchPrLineComments', args: [prNumber] }); return [] }
-			deps.gh.fetchPrReviews = async (prNumber) => { calls.push({ method: 'fetchPrReviews', args: [prNumber] }); return [] }
-			deps.gh.fetchPrThread = async (prNumber) => { calls.push({ method: 'fetchPrThread', args: [prNumber] }); return [] }
+			deps.gh.fetchPrLineComments = async (prNumber) => {
+				calls.push({ method: 'fetchPrLineComments', args: [prNumber] })
+				return []
+			}
+			deps.gh.fetchPrReviews = async (prNumber) => {
+				calls.push({ method: 'fetchPrReviews', args: [prNumber] })
+				return []
+			}
+			deps.gh.fetchPrThread = async (prNumber) => {
+				calls.push({ method: 'fetchPrThread', args: [prNumber] })
+				return []
+			}
 			const prep = await prepareReview(deps, { ...slice, needsRevision: true }, ctx)
 			expect(prep.turnIn).toMatchObject({ pr: { number: 132, branch: 'change-pid/slice-42-a-slice' }, feedback: [] })
 			expect(calls).toContainEqual({ method: 'fetchPrReviews', args: [132] })
@@ -640,13 +741,23 @@ if (import.meta.vitest) {
 	describe('landReview: clears needs-revision PR signal', () => {
 		test('ready clears matching PR label so enrichment does not requeue review', async () => {
 			const { deps, calls } = makePhaseDeps()
-			await landReview(deps, { ...slice, needsRevision: true }, { verdict: 'ready', commits: 5 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
+			await landReview(
+				deps,
+				{ ...slice, needsRevision: true },
+				{ verdict: 'ready', commits: 5 },
+				{ ...ctx, config: { pr: true, audit: true, perSliceBranches: true } },
+			)
 			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
 		})
 
 		test('no-work-needed clears matching PR label so enrichment does not requeue review', async () => {
 			const { deps, calls } = makePhaseDeps()
-			await landReview(deps, { ...slice, needsRevision: true }, { verdict: 'no-work-needed', commits: 0 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
+			await landReview(
+				deps,
+				{ ...slice, needsRevision: true },
+				{ verdict: 'no-work-needed', commits: 0 },
+				{ ...ctx, config: { pr: true, audit: true, perSliceBranches: true } },
+			)
 			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
 		})
 	})

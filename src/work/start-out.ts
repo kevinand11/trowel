@@ -1,10 +1,9 @@
-import { v } from 'valleyed'
+import { v, type PipeOutput } from 'valleyed'
 
-import { parseJson, validateJson } from './parse-json.ts'
+import { validateJson } from './parse-json.ts'
 
-const createChangePipe = () =>
-	v.object({
-		outcome: v.eq('create-change'),
+const createChangePipe = v.object({
+		outcome: v.is('create-change' as const),
 		change: v.object({
 			title: v.string(),
 			body: v.string(),
@@ -19,33 +18,30 @@ const createChangePipe = () =>
 		),
 	})
 
-const existingChangePipe = () =>
-	v.object({
-		outcome: v.eq('existing-change'),
+const existingChangePipe = v.object({
+		outcome: v.is('existing-change' as const),
 		changeId: v.string(),
 		reason: v.string(),
 	})
 
-const noChangePipe = () =>
-	v.object({
-		outcome: v.eq('no-change'),
+const noChangePipe = v.object({
+		outcome: v.is('no-change' as const),
 		reason: v.string(),
 	})
 
-const startOutPipe = () => v.or([createChangePipe(), existingChangePipe(), noChangePipe()])
+const startOutPipe = v.discriminate((x) => x?.outcome, {
+	['create-change']: createChangePipe,
+	['existing-change']: existingChangePipe,
+	['no-change']: noChangePipe,
+})
 
-export type CreateChangeStartOut = {
-	outcome: 'create-change'
-	change: { title: string; body: string }
-	slices: Array<{ title: string; body: string; blockedBy: number[]; readyForAgent: boolean }>
-}
-export type ExistingChangeStartOut = { outcome: 'existing-change'; changeId: string; reason: string }
-export type NoChangeStartOut = { outcome: 'no-change'; reason: string }
+export type CreateChangeStartOut = PipeOutput<typeof createChangePipe>
+export type ExistingChangeStartOut = PipeOutput<typeof existingChangePipe>
+export type NoChangeStartOut = PipeOutput<typeof noChangePipe>
 export type StartOut = CreateChangeStartOut | ExistingChangeStartOut | NoChangeStartOut
 
 export function parseStartOut(raw: string): StartOut {
-	const parsed = parseJson(raw, 'start-out.json')
-	const value = validateJson<StartOut>(startOutPipe(), parsed, 'Invalid start-out.json')
+	const value = validateJson<StartOut>(startOutPipe, raw, 'Invalid start-out.json')
 	if (value.outcome === 'create-change') checkBlockedBy(value.slices)
 	return value
 }

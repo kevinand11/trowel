@@ -7,7 +7,7 @@ import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt, type Role } from '../prompts/load.ts'
 import type { Config } from '../schema.ts'
 import type { StorageKind } from '../storages/registry.ts'
-import type { PhaseCtx, Storage, Slice } from '../storages/types.ts'
+import type { PhaseCtx, Slice, Storage } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
@@ -37,34 +37,43 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 
 	await ensureTrowelDir(projectRoot)
 
-	const runAgent = async ({ worktree, logPath, role }: { worktree: TurnWorktree; logPath: string; role: Role; branch: string }): Promise<{ commits: number }> => {
-			const rendered = await loadPrompt(role)
-			const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
-			await writeFile(promptFile, rendered)
+	const runAgent = async ({
+		worktree,
+		logPath,
+		role,
+	}: {
+		worktree: TurnWorktree
+		logPath: string
+		role: Role
+		branch: string
+	}): Promise<{ commits: number }> => {
+		const rendered = await loadPrompt(role)
+		const promptFile = path.join(worktree.worktreePath, '.trowel', `prompt-${role}.md`)
+		await writeFile(promptFile, rendered)
 
-			await mkdir(path.dirname(logPath), { recursive: true })
-			const logStream = createWriteStream(logPath, { flags: 'a' })
+		await mkdir(path.dirname(logPath), { recursive: true })
+		const logStream = createWriteStream(logPath, { flags: 'a' })
 
-			const startedAt = new Date().toISOString()
-			logStream.write(`\n=== ${startedAt} · change-${worktree.changeId} · ${role} · harness=${harness.kind} ===\n`)
+		const startedAt = new Date().toISOString()
+		logStream.write(`\n=== ${startedAt} · change-${worktree.changeId} · ${role} · harness=${harness.kind} ===\n`)
 
-			const baseHead = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], '')
-			const { waitForExit } = await harness.spawnPrint({
-				model: config.agent.model,
-				prompt: rendered,
-				cwd: worktree.worktreePath,
-				logStream,
-			})
-			const exitCode = await waitForExit
-			const endedAt = new Date().toISOString()
-			logStream.write(`\n=== ${endedAt} · exit=${exitCode} ===\n`)
-			logStream.end()
-			logHarnessExitIfFailed(exitCode, worktree, harness.kind, logPath, log)
+		const baseHead = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], '')
+		const { waitForExit } = await harness.spawnPrint({
+			model: config.agent.model,
+			prompt: rendered,
+			cwd: worktree.worktreePath,
+			logStream,
+		})
+		const exitCode = await waitForExit
+		const endedAt = new Date().toISOString()
+		logStream.write(`\n=== ${endedAt} · exit=${exitCode} ===\n`)
+		logStream.end()
+		logHarnessExitIfFailed(exitCode, worktree, harness.kind, logPath, log)
 
-			const headAfter = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], baseHead)
-			const commits = await gitCountOrZero(worktree.worktreePath, `${baseHead}..${headAfter}`)
-			return { commits }
-		}
+		const headAfter = await gitStdoutOr(worktree.worktreePath, ['rev-parse', 'HEAD'], baseHead)
+		const commits = await gitCountOrZero(worktree.worktreePath, `${baseHead}..${headAfter}`)
+		return { commits }
+	}
 
 	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice: Slice; branch: string; turnIn: TurnIn }) =>
 		spawnTurn(args, {
@@ -84,8 +93,12 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 
 	const runOnePhase = async (changeId: string, slice: Slice, role: Role): Promise<void> => {
 		const branch = await changeBranch(changeId)
-		const ctx = { changeId, changeBranch: branch, config: { usePrs: config.ship.pr, audit: config.work.audit, perSliceBranches: config.work.perSliceBranches } }
-		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot, needsRevisionLabel: config.labels.needsRevision }
+		const ctx: PhaseCtx = {
+			changeId,
+			changeBranch: branch,
+			config: { pr: config.ship.pr, audit: config.work.audit, perSliceBranches: config.work.perSliceBranches },
+		}
+		const phaseDeps: PhaseDeps = { storage, git, gh, log, mergeNoVerify: config.work.mergeNoVerify, projectRoot }
 		const prep = await prepareOnePhase(role, phaseDeps, slice, ctx)
 		const verdict: TurnOut = await makeSpawnTurnFor(changeId)({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
 		await landOnePhase(role, phaseDeps, slice, verdict, ctx)
@@ -99,7 +112,7 @@ export async function buildLoopWiring(opts: { storage?: StorageKind; harness?: H
 			spawnTurn: makeSpawnTurnFor(entity.id),
 			log,
 			config: {
-				usePrs: config.ship.pr,
+				pr: config.ship.pr,
 				audit: config.work.audit,
 				perSliceBranches: config.work.perSliceBranches,
 				maxConcurrent: config.turn.maxConcurrent,
@@ -124,7 +137,13 @@ async function gitCountOrZero(cwd: string, revRange: string): Promise<number> {
 	return Number.isFinite(count) ? count : 0
 }
 
-function logHarnessExitIfFailed(exitCode: number, worktree: TurnWorktree, harnessKind: string, logPath: string, log: (m: string) => void): void {
+function logHarnessExitIfFailed(
+	exitCode: number,
+	worktree: TurnWorktree,
+	harnessKind: string,
+	logPath: string,
+	log: (m: string) => void,
+): void {
 	if (exitCode !== 0) log(`[work change-${worktree.changeId} slice-${worktree.branch}] ${harnessKind} exited ${exitCode}; see ${logPath}`)
 }
 

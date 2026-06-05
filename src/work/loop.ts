@@ -3,13 +3,13 @@ import { createEffectiveSliceReader } from './effective-slices.ts'
 import { processSlice } from './process-slice.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { ClassifiedSlice, ClassifySliceConfig, Storage, Slice, SlicePatch } from '../storages/types.ts'
+import type { ClassifiedSlice, ClassifySliceConfig, Slice, SlicePatch, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { classifySlices } from '../utils/slice-state.ts'
 
 export type LoopConfig = {
-	usePrs: boolean
+	pr: boolean
 	audit: boolean
 	perSliceBranches: boolean
 	maxConcurrent: number | null
@@ -48,16 +48,18 @@ async function findNextActionableSlice(
 	changeBranch: string,
 ): Promise<ClassifiedSlice | null> {
 	const slices = classifySlices(await fetchEnriched())
-	return slices.find((slice) => {
-		const branchKey = schedulerBranchKey(slice, { perSliceBranches: config.perSliceBranches, changeBranch })
-		if (failed.has(slice.id)) return false
-		if (running.has(slice.id)) return false
-		if (runningBranches.has(branchKey)) return false
-		if (claimedThisFill.has(slice.id)) return false
-		if (claimedBranchesThisFill.has(branchKey)) return false
-		const resume = classify(slice, config, changeBranch)
-		return resume !== 'done' && resume !== 'blocked'
-	}) ?? null
+	return (
+		slices.find((slice) => {
+			const branchKey = schedulerBranchKey(slice, { perSliceBranches: config.perSliceBranches, changeBranch })
+			if (failed.has(slice.id)) return false
+			if (running.has(slice.id)) return false
+			if (runningBranches.has(branchKey)) return false
+			if (claimedThisFill.has(slice.id)) return false
+			if (claimedBranchesThisFill.has(branchKey)) return false
+			const resume = classify(slice, config, changeBranch)
+			return resume !== 'done' && resume !== 'blocked'
+		}) ?? null
+	)
 }
 
 function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>, opts: { perSliceBranches: boolean; changeBranch: string }): string {
@@ -65,7 +67,14 @@ function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>, opts: { perSliceB
 	return opts.perSliceBranches ? '__unassigned-slice-branch__' : opts.changeBranch
 }
 
-function launchClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, running: Map<string, Promise<void>>, runningBranches: Set<string>): void {
+function launchClaim(
+	changeId: string,
+	slice: ClassifiedSlice,
+	deps: LoopDeps,
+	failed: Set<string>,
+	running: Map<string, Promise<void>>,
+	runningBranches: Set<string>,
+): void {
 	const branchKey = schedulerBranchKey(slice, { perSliceBranches: deps.config.perSliceBranches, changeBranch: deps.changeBranch })
 	runningBranches.add(branchKey)
 	const task = processClaim(changeId, slice, deps, failed).finally(() => {
@@ -114,7 +123,12 @@ type WorkerLoopState = {
 
 function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 	const { storage, config } = deps
-	const effectiveSlices = createEffectiveSliceReader({ storage, gh: deps.gh, usePrs: config.usePrs, needsRevisionLabel: config.needsRevisionLabel })
+	const effectiveSlices = createEffectiveSliceReader({
+		storage,
+		gh: deps.gh,
+		pr: config.pr,
+		needsRevisionLabel: config.needsRevisionLabel,
+	})
 	return {
 		changeId,
 		tag: `[work change-${changeId}]`,
@@ -123,7 +137,7 @@ function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 		running: new Map<string, Promise<void>>(),
 		runningBranches: new Set<string>(),
 		fetchEnriched: () => effectiveSlices.findSlices(changeId),
-		config: { usePrs: config.usePrs, audit: config.audit, perSliceBranches: config.perSliceBranches },
+		config: { pr: config.pr, audit: config.audit, perSliceBranches: config.perSliceBranches },
 		limit: effectiveConcurrency(config.maxConcurrent),
 		claims: 0,
 	}
@@ -133,10 +147,21 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 	const claimedThisFill = new Set<string>()
 	const claimedBranchesThisFill = new Set<string>()
 	while (state.running.size < state.limit) {
-		const slice = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, claimedThisFill, claimedBranchesThisFill, state.config, state.deps.changeBranch)
+		const slice = await findNextActionableSlice(
+			state.fetchEnriched,
+			state.failed,
+			state.running,
+			state.runningBranches,
+			claimedThisFill,
+			claimedBranchesThisFill,
+			state.config,
+			state.deps.changeBranch,
+		)
 		if (!slice) return
 		claimedThisFill.add(slice.id)
-		claimedBranchesThisFill.add(schedulerBranchKey(slice, { perSliceBranches: state.config.perSliceBranches, changeBranch: state.deps.changeBranch }))
+		claimedBranchesThisFill.add(
+			schedulerBranchKey(slice, { perSliceBranches: state.config.perSliceBranches, changeBranch: state.deps.changeBranch }),
+		)
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
 		launchClaim(state.changeId, slice, state.deps, state.failed, state.running, state.runningBranches)
@@ -145,7 +170,16 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 
 async function stopIfIdle(state: WorkerLoopState): Promise<boolean> {
 	if (state.running.size > 0) return false
-	const remaining = await findNextActionableSlice(state.fetchEnriched, state.failed, state.running, state.runningBranches, new Set(), new Set(), state.config, state.deps.changeBranch)
+	const remaining = await findNextActionableSlice(
+		state.fetchEnriched,
+		state.failed,
+		state.running,
+		state.runningBranches,
+		new Set(),
+		new Set(),
+		state.config,
+		state.deps.changeBranch,
+	)
 	if (remaining) return false
 	state.deps.log(`${state.tag} no actionable slices; exiting after ${state.claims} claim(s)`)
 	return true
@@ -172,7 +206,10 @@ if (import.meta.vitest) {
 			findSlice: async () => null,
 			updateChangeMetadata: async () => {},
 			updateSlice: async (_p, sliceId, patch) => {
-				applyTestSlicePatch(state.slices.find((x) => x.id === sliceId), patch)
+				applyTestSlicePatch(
+					state.slices.find((x) => x.id === sliceId),
+					patch,
+				)
 			},
 			updateSliceMetadata: async (_changeId, sliceId, patch) => {
 				const slice = state.slices.find((x) => x.id === sliceId)
@@ -244,9 +281,14 @@ if (import.meta.vitest) {
 	}
 
 	function prSummaryForSlice(s: Slice): import('../utils/gh-ops.ts').PrSummary | null {
-		const draftByState = new Map<Slice['prState'], boolean>([['draft', true], ['ready', false]])
+		const draftByState = new Map<Slice['prState'], boolean>([
+			['draft', true],
+			['ready', false],
+		])
 		const isDraft = draftByState.get(s.prState)
-		return isDraft === undefined ? null : { number: prNumberForSlice(s), headRefName: `change-p1/slice-${s.id}-${s.title.toLowerCase()}`, isDraft }
+		return isDraft === undefined
+			? null
+			: { number: prNumberForSlice(s), headRefName: `change-p1/slice-${s.id}-${s.title.toLowerCase()}`, isDraft }
 	}
 
 	function prNumberForSlice(s: Slice): number {
@@ -259,7 +301,7 @@ if (import.meta.vitest) {
 
 	function makeDeps(storage: Storage, overrides: Partial<LoopDeps> = {}): LoopDeps {
 		// Default GhOps: listOpenPrs returns [] so PR-state enrichment is a clean no-op on
-		// usePrs=true tests. Per-test gh overrides handle create / list-with-results cases.
+		// pr=true tests. Per-test gh overrides handle create / list-with-results cases.
 		const { gh } = recordingGhOps()
 		return {
 			storage,
@@ -268,7 +310,7 @@ if (import.meta.vitest) {
 			changeBranch: 'change-branch',
 			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
-			config: { usePrs: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+			config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
 			...overrides,
 		}
 	}
@@ -277,16 +319,19 @@ if (import.meta.vitest) {
 		const storage = makeStorage({ slices })
 		let live = 0
 		let peak = 0
-		await runLoop('p1', makeDeps(storage, {
-			spawnTurn: async () => {
-				live++
-				peak = Math.max(peak, live)
-				await new Promise((r) => setTimeout(r, 5))
-				live--
-				return { verdict: 'partial', commits: 0 }
-			},
-			config: { usePrs: false, audit: false, perSliceBranches, maxConcurrent, mergeNoVerify: false },
-		}))
+		await runLoop(
+			'p1',
+			makeDeps(storage, {
+				spawnTurn: async () => {
+					live++
+					peak = Math.max(peak, live)
+					await new Promise((r) => setTimeout(r, 5))
+					live--
+					return { verdict: 'partial', commits: 0 }
+				},
+				config: { pr: false, audit: false, perSliceBranches, maxConcurrent, mergeNoVerify: false },
+			}),
+		)
 		return peak
 	}
 
@@ -295,24 +340,35 @@ if (import.meta.vitest) {
 			const blocked = makeSlice({ id: 'b1', state: 'blocked', blockedBy: ['a'] })
 			const storage = makeStorage({ slices: [blocked] })
 			let sandboxCalls = 0
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async () => {
-					sandboxCalls++
-					return { verdict: 'ready', commits: 1 }
-				},
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async () => {
+						sandboxCalls++
+						return { verdict: 'ready', commits: 1 }
+					},
+				}),
+			)
 			expect(sandboxCalls).toBe(0)
 		})
 
-		test('fetchEnriched runs gh listOpenPrs whenever config.usePrs is true, regardless of storage capability', async () => {
+		test('fetchEnriched runs gh listOpenPrs whenever config.pr is true, regardless of storage capability', async () => {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
-			const { gh, calls } = recordingGhOps({ createDraftPr: async () => { slice.prState = 'draft' }, listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: true }] })
-			await runLoop('p1', makeDeps(storage, {
-				gh,
-				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
-				config: { usePrs: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			const { gh, calls } = recordingGhOps({
+				createDraftPr: async () => {
+					slice.prState = 'draft'
+				},
+				listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: true }],
+			})
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					gh,
+					spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
+					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeDefined()
 		})
 
@@ -320,38 +376,57 @@ if (import.meta.vitest) {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
 			const roles: Role[] = []
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async ({ role }) => {
-					roles.push(role)
-					return { verdict: 'ready', commits: 1 }
-				},
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async ({ role }) => {
+						roles.push(role)
+						return { verdict: 'ready', commits: 1 }
+					},
+				}),
+			)
 			expect(roles).toEqual(['implement'])
 			const after = await storage.findSlices('p1')
 			expect(after[0]!.state).toBe('done')
 		})
 
 		test('needs-revision PR feedback runs the Reviewer and clears the PR signal', async () => {
-			const slice = makeSlice({ id: 's1', state: 'awaiting-review', readyForAgent: false, implementedAt: '2026-06-04T00:00:00.000Z', auditedAt: '2026-06-04T00:01:00.000Z' })
+			const slice = makeSlice({
+				id: 's1',
+				state: 'awaiting-review',
+				readyForAgent: false,
+				implementedAt: '2026-06-04T00:00:00.000Z',
+				auditedAt: '2026-06-04T00:01:00.000Z',
+			})
 			const storage = makeStorage({ slices: [slice] })
 			let needsRevision = true
 			const { gh, calls } = recordingGhOps({
-				listOpenPrs: async () => [{ number: 5, headRefName: 'change-p1/slice-s1-a', isDraft: false, labels: needsRevision ? [{ name: 'needs-revision' }] : [] }],
+				listOpenPrs: async () => [
+					{
+						number: 5,
+						headRefName: 'change-p1/slice-s1-a',
+						isDraft: false,
+						labels: needsRevision ? [{ name: 'needs-revision' }] : [],
+					},
+				],
 				findPrNumberByHead: async () => 5,
 				editIssueLabels: async (_id, patch) => {
 					if (patch.remove?.includes('needs-revision')) needsRevision = false
 				},
 			})
 			const roles: Role[] = []
-			await runLoop('p1', makeDeps(storage, {
-				gh,
-				spawnTurn: async ({ role, turnIn }) => {
-					roles.push(role)
-					expect(turnIn.feedback).toEqual([])
-					return { verdict: 'no-work-needed', commits: 0 }
-				},
-				config: { usePrs: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					gh,
+					spawnTurn: async ({ role, turnIn }) => {
+						roles.push(role)
+						expect(turnIn.feedback).toEqual([])
+						return { verdict: 'no-work-needed', commits: 0 }
+					},
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			expect(roles).toEqual(['review'])
 			expect(calls).toContainEqual(['editIssueLabels', '5', { remove: ['needs-revision'] }])
 			expect(needsRevision).toBe(false)
@@ -363,15 +438,20 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [stuck, fine] })
 			const logs: string[] = []
 			let spawnCalls = 0
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async ({ slice }) => {
-					spawnCalls++
-					if (slice.id === 'stuck') throw new Error('verdict file missing (.trowel/turn-out.json)')
-					return { verdict: 'ready', commits: 1 }
-				},
-				log: (m) => { logs.push(m) },
-				config: { usePrs: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async ({ slice }) => {
+						spawnCalls++
+						if (slice.id === 'stuck') throw new Error('verdict file missing (.trowel/turn-out.json)')
+						return { verdict: 'ready', commits: 1 }
+					},
+					log: (m) => {
+						logs.push(m)
+					},
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			expect(spawnCalls).toBeGreaterThanOrEqual(2) // both slices were attempted
 			expect(logs.some((m) => /verdict file missing/.test(m))).toBe(true)
 			const after = await storage.findSlices('p1')
@@ -383,13 +463,16 @@ if (import.meta.vitest) {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
 			let claims = 0
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
-				log: (m) => {
-					if (/^\[work change-p1\] claim \d+:/.test(m)) claims++
-				},
-				config: { usePrs: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async () => ({ verdict: 'partial', commits: 0 }),
+					log: (m) => {
+						if (/^\[work change-p1\] claim \d+:/.test(m)) claims++
+					},
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			// One claim: slice tried once, returned partial, added to skip set.
 			expect(claims).toBe(1)
 			const after = await storage.findSlices('p1')
@@ -401,13 +484,16 @@ if (import.meta.vitest) {
 			const fine = makeSlice({ id: 'fine' })
 			const storage = makeStorage({ slices: [stuck, fine] })
 			const calls: string[] = []
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async ({ slice: s }) => {
-					calls.push(s.id)
-					return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
-				},
-				config: { usePrs: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async ({ slice: s }) => {
+						calls.push(s.id)
+						return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
+					},
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			expect(calls).toContain('fine')
 			const after = await storage.findSlices('p1')
 			expect(after.find((s) => s.id === 'fine')!.state).toBe('done')
@@ -424,15 +510,18 @@ if (import.meta.vitest) {
 			}
 			const calls: string[] = []
 			const logs: string[] = []
-			await runLoop('p1', makeDeps(storage, {
-				git,
-				spawnTurn: async ({ slice: s }) => {
-					calls.push(s.id)
-					return { verdict: 'partial', commits: 0 }
-				},
-				log: (m) => logs.push(m),
-				config: { usePrs: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					git,
+					spawnTurn: async ({ slice: s }) => {
+						calls.push(s.id)
+						return { verdict: 'partial', commits: 0 }
+					},
+					log: (m) => logs.push(m),
+					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			// a fails in prepareImplement (no sandbox spawn); b spawns once and is skipped after partial.
 			expect(calls.filter((id) => id === 'a')).toHaveLength(0)
 			expect(calls.filter((id) => id === 'b').length).toBeGreaterThan(0)
@@ -450,16 +539,19 @@ if (import.meta.vitest) {
 			const storage = makeStorage({ slices: [assigned, unassigned] })
 			let live = 0
 			let peak = 0
-			await runLoop('p1', makeDeps(storage, {
-				spawnTurn: async () => {
-					live += 1
-					peak = Math.max(peak, live)
-					await new Promise((resolve) => setTimeout(resolve, 5))
-					live -= 1
-					return { verdict: 'ready', commits: 1 }
-				},
-				config: { usePrs: false, audit: false, perSliceBranches: false, maxConcurrent: 2, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async () => {
+						live += 1
+						peak = Math.max(peak, live)
+						await new Promise((resolve) => setTimeout(resolve, 5))
+						live -= 1
+						return { verdict: 'ready', commits: 1 }
+					},
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: 2, mergeNoVerify: false },
+				}),
+			)
 			expect(peak).toBe(1)
 		})
 
@@ -477,7 +569,9 @@ if (import.meta.vitest) {
 			const storage = makeStorage(state)
 			const events: string[] = []
 			let releaseSlow!: () => void
-			const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve })
+			const slowGate = new Promise<void>((resolve) => {
+				releaseSlow = resolve
+			})
 			const { gh } = recordingGhOps({
 				createDraftPr: async ({ head }) => {
 					const id = head.includes('fast') ? 'fast' : 'slow'
@@ -490,11 +584,14 @@ if (import.meta.vitest) {
 				},
 				listOpenPrs: async () => openPrsForSlices(state.slices),
 			})
-			await runLoop('p1', makeDeps(storage, {
-				gh,
-				spawnTurn: workerPoolSpawnTurn(events, slowGate, releaseSlow),
-				config: { usePrs: true, audit: true, perSliceBranches: true, maxConcurrent: 2, mergeNoVerify: false },
-			}))
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					gh,
+					spawnTurn: workerPoolSpawnTurn(events, slowGate, releaseSlow),
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: 2, mergeNoVerify: false },
+				}),
+			)
 			expect(events.indexOf('audit:fast:start')).toBeGreaterThan(events.indexOf('implement:fast:finish'))
 			expect(events.indexOf('audit:fast:start')).toBeLessThan(events.indexOf('implement:slow:finish'))
 			expect(events).toContain('implement:slow:start')
@@ -509,14 +606,18 @@ if (import.meta.vitest) {
 			const roles: Role[] = []
 			const { gh } = recordingGhOps()
 
-			const outcome = await processSlice('p1', initial, makeDeps(storage, {
-				spawnTurn: async ({ role }) => {
-					roles.push(role)
-					return { verdict: 'ready', commits: 0 }
-				},
-				gh,
-				config: { usePrs: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			const outcome = await processSlice(
+				'p1',
+				initial,
+				makeDeps(storage, {
+					spawnTurn: async ({ role }) => {
+						roles.push(role)
+						return { verdict: 'ready', commits: 0 }
+					},
+					gh,
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 
 			expect(outcome).toBe('done')
 			expect(roles).toEqual([])
@@ -529,11 +630,15 @@ if (import.meta.vitest) {
 			const state = { slices: [slice] }
 			const storage = makeStorage(state)
 			const { gh } = recordingGhOps()
-			const outcome = await processSlice('p1', slice, makeDeps(storage, {
-				spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
-				gh,
-				config: { usePrs: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
-			}))
+			const outcome = await processSlice(
+				'p1',
+				slice,
+				makeDeps(storage, {
+					spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
+					gh,
+					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+				}),
+			)
 			expect(outcome).toBe('no-work')
 			expect(state.slices[0]!.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})

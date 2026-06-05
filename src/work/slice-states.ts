@@ -6,10 +6,15 @@ export async function classifySlicesForChange(args: {
 	storage: Storage
 	gh: GhOps
 	changeId: string
-	usePrs: boolean
+	pr: boolean
 	needsRevisionLabel?: string
 }): Promise<Slice[]> {
-	const reader = createEffectiveSliceReader({ storage: args.storage, gh: args.gh, usePrs: args.usePrs, needsRevisionLabel: args.needsRevisionLabel })
+	const reader = createEffectiveSliceReader({
+		storage: args.storage,
+		gh: args.gh,
+		pr: args.pr,
+		needsRevisionLabel: args.needsRevisionLabel,
+	})
 	return reader.findSlices(args.changeId)
 }
 
@@ -20,27 +25,40 @@ if (import.meta.vitest) {
 
 	describe('classifySlicesForChange', () => {
 		function storageWithSlice(prState: null = null): Storage {
-			return fakeSliceStorage([fakeClassifiedSlice({ id: '124', title: 'Read Query Shape', sliceBranch: 'change-123/slice-124-read-query-shape', prState })])
+			return fakeSliceStorage([
+				fakeClassifiedSlice({
+					id: '124',
+					title: 'Read Query Shape',
+					sliceBranch: 'change-123/slice-124-read-query-shape',
+					prState,
+				}),
+			])
 		}
 
-		test('usePrs:false classifies raw storage slices without gh enrichment', async () => {
+		test('pr:false classifies raw storage slices without gh enrichment', async () => {
 			const { gh, calls } = recordingGhOps()
-			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', usePrs: false })
+			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', pr: false })
 			expect(out[0]!.state).toBe('open')
 			expect(calls).toEqual([])
 		})
 
-		test('usePrs:true classifies a slice with an open non-draft PR as awaiting-review', async () => {
+		test('pr:true classifies a slice with an open non-draft PR as awaiting-review', async () => {
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 130, headRefName: 'change-123/slice-124-read-query-shape', isDraft: false }],
 			})
-			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', usePrs: true })
+			const out = await classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', pr: true })
 			expect(out[0]!.state).toBe('awaiting-review')
 		})
 
-		test('usePrs:true surfaces gh enrichment errors', async () => {
-			const { gh } = recordingGhOps({ listOpenPrs: async () => { throw new Error('gh unavailable') } })
-			await expect(classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', usePrs: true })).rejects.toThrow(/gh unavailable/)
+		test('pr:true surfaces gh enrichment errors', async () => {
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => {
+					throw new Error('gh unavailable')
+				},
+			})
+			await expect(classifySlicesForChange({ storage: storageWithSlice(), gh, changeId: '123', pr: true })).rejects.toThrow(
+				/gh unavailable/,
+			)
 		})
 	})
 }

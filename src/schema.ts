@@ -4,12 +4,6 @@ import { harnessFactories, type HarnessKind } from './harnesses/registry.ts'
 import { storageFactories, type StorageKind } from './storages/registry.ts'
 
 export const partialConfigPipe = () =>
-	v.merge(
-		v.custom<unknown>((input) => !hasRemovedPrConfigFields(input), 'work.usePrs and work.review were removed; use ship.pr and work.audit'),
-		partialConfigObjectPipe(),
-	)
-
-const partialConfigObjectPipe = () =>
 	v.object({
 		// File-only annotation. Editors use it to fetch a JSON Schema for
 		// autocomplete; runtime code never reads it. `trowel init` writes it
@@ -63,20 +57,9 @@ const partialConfigObjectPipe = () =>
 		),
 	})
 
-function hasRemovedPrConfigFields(input: unknown): boolean {
-	if (!isRecord(input)) return false
-	if (!isRecord(input.work)) return false
-	return Object.hasOwn(input.work, 'usePrs') || Object.hasOwn(input.work, 'review')
-}
-
-function isRecord(input: unknown): input is Record<string, unknown> {
-	return typeof input === 'object' && input !== null && !Array.isArray(input)
-}
-
 export type PartialConfig = PipeOutput<ReturnType<typeof partialConfigPipe>>
 
 export type Config = {
-	$schema?: string
 	storage: StorageKind
 	docs: {
 		changesDir: string
@@ -147,33 +130,18 @@ export const defaultConfig: Config = {
 		maxConcurrent: 3,
 	},
 	work: {
-		// Default false: Auditing is opt-in. When enabled, the loop runs the auditor after
-		// implementation and before host-merging a Slice branch or making its PR ready.
 		audit: false,
-		// Default true: every workflow runs each slice on its own branch, then host-merges
-		// or opens a draft PR depending on ship.pr. Set false to keep the old file-style
-		// Change branch direct behavior (one branch per Change, implementers serialize).
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
-		// Host merges slice branches into the Change branch via `git merge --no-ff`.
-		// If the project's commit-msg hook enforces a strict format (e.g. Conventional
-		// Commits) it'll reject git's default "Merge branch 'X' into 'Y'" message and
-		// leave the tree half-merged. Set this to true to pass --no-verify on those
-		// host-owned merges, bypassing pre-merge-commit and commit-msg hooks.
 		mergeNoVerify: false,
 	},
 }
 
-// Emit a JSON Schema for the partial-config shape. Editors fetch this via the
-// `$schema` key in user config files to drive autocomplete and validation.
 export function emitJsonSchema(): Record<string, unknown> {
-	// Valleyed's .schema(context) walks the pipe; we pass an empty context
-	// because there is no enclosing object — the partial-config pipe is the root.
-	const inner = (partialConfigObjectPipe().schema as (ctx: Record<string, unknown>) => Record<string, unknown>)({})
 	return {
 		$schema: 'http://json-schema.org/draft-07/schema#',
 		title: 'Trowel config',
-		...inner,
+		...partialConfigPipe().schema({}),
 	}
 }
 
@@ -333,11 +301,6 @@ if (import.meta.vitest) {
 		test('accepts work.audit as a boolean', () => {
 			expect(v.validate(partialConfigPipe(), { work: { audit: false } }).valid).toBe(true)
 			expect(v.validate(partialConfigPipe(), { work: { audit: true } }).valid).toBe(true)
-		})
-
-		test('rejects removed PR config fields', () => {
-			expect(v.validate(partialConfigPipe(), { work: { usePrs: true } }).valid).toBe(false)
-			expect(v.validate(partialConfigPipe(), { work: { review: true } }).valid).toBe(false)
 		})
 
 		test('accepts work.perSliceBranches as a boolean', () => {

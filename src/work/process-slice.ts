@@ -1,6 +1,15 @@
 import { classify } from './classify.ts'
 import type { LoopDeps } from './loop.ts'
-import { integrateSlice, landAudit, landImplement, landReview, prepareAudit, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
+import {
+	integrateSlice,
+	landAudit,
+	landImplement,
+	landReview,
+	prepareAudit,
+	prepareImplement,
+	prepareReview,
+	type PhaseDeps,
+} from './phases.ts'
 import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
@@ -29,11 +38,11 @@ export async function processSlice(changeId: string, initial: ClassifiedSlice, d
 	return stepResult.outcome === 'progress' ? 'no-work' : stepResult.outcome
 }
 
-function loopPhaseCtx (changeId: string, deps: LoopDeps): LoopPhaseCtx {
+function loopPhaseCtx(changeId: string, deps: LoopDeps): LoopPhaseCtx {
 	return {
 		changeId,
 		changeBranch: deps.changeBranch,
-		config: { usePrs: deps.config.usePrs, audit: deps.config.audit, perSliceBranches: deps.config.perSliceBranches },
+		config: { pr: deps.config.pr, audit: deps.config.audit, perSliceBranches: deps.config.perSliceBranches },
 	}
 }
 
@@ -89,7 +98,15 @@ async function runSlicePhase(role: Role, slice: ClassifiedSlice, ctx: LoopPhaseC
 }
 
 function phaseDepsFor(deps: LoopDeps): PhaseDeps {
-	return { storage: deps.storage, git: deps.git, gh: deps.gh, log: deps.log, mergeNoVerify: deps.config.mergeNoVerify, projectRoot: deps.projectRoot, needsRevisionLabel: deps.config.needsRevisionLabel }
+	return {
+		storage: deps.storage,
+		git: deps.git,
+		gh: deps.gh,
+		log: deps.log,
+		mergeNoVerify: deps.config.mergeNoVerify,
+		projectRoot: deps.projectRoot,
+		needsRevisionLabel: deps.config.needsRevisionLabel,
+	}
 }
 
 function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: LoopPhaseCtx) {

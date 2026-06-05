@@ -45,7 +45,12 @@ type ChangeWorkState = { change: ChangeRecord; slices: ClassifiedSlice[]; state:
 async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeWorkState> {
 	const change = await deps.storage.findChange(entity.id)
 	if (!change) throw new Error(`Change '${entity.id}' not found`)
-	const reader = createEffectiveSliceReader({ storage: deps.storage, gh: deps.gh, usePrs: deps.config.usePrs, needsRevisionLabel: deps.config.needsRevisionLabel })
+	const reader = createEffectiveSliceReader({
+		storage: deps.storage,
+		gh: deps.gh,
+		pr: deps.config.pr,
+		needsRevisionLabel: deps.config.needsRevisionLabel,
+	})
 	const slices = await reader.findSlices(entity.id)
 	const state = await classifyChange(change, slices, { gh: deps.gh, git: deps.git })
 	return { change, slices, state }
@@ -100,15 +105,36 @@ if (import.meta.vitest) {
 	}
 
 	function unmergedGit(overrides: Partial<GitOps> = {}): GitOps {
-		return noopGitOps({ currentBranch: async () => 'main', baseBranch: async () => 'main', remoteBranchExists: async () => false, branchExists: async () => false, ...overrides })
+		return noopGitOps({
+			currentBranch: async () => 'main',
+			baseBranch: async () => 'main',
+			remoteBranchExists: async () => false,
+			branchExists: async () => false,
+			...overrides,
+		})
 	}
 
 	const baseConfig: LoopConfig = {
-		usePrs: false, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
+		pr: false,
+		audit: false,
+		perSliceBranches: true,
+		maxConcurrent: null,
+		mergeNoVerify: false,
 	}
 
 	const doneSlice: ClassifiedSlice = {
-		id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', implementedAt: null, auditedAt: null, readyForAgent: false, needsRevision: false, blockedBy: [], sliceBranch: 'change-3/slice-s1-a', prState: null,
+		id: 's1',
+		title: 'a',
+		body: '',
+		state: 'done',
+		closedAt: '2026-06-04T00:00:00.000Z',
+		implementedAt: null,
+		auditedAt: null,
+		readyForAgent: false,
+		needsRevision: false,
+		blockedBy: [],
+		sliceBranch: 'change-3/slice-s1-a',
+		prState: null,
 	}
 
 	type LoopFixtureOpts = {
@@ -125,13 +151,22 @@ if (import.meta.vitest) {
 		let changeClosed = false
 		let spawned = 0
 		const logs: string[] = []
-		const change = opts.change ?? { id: '3', changeBranch: '3-feat', targetBranch: 'main', title: 'Feat', state: 'OPEN' as const, closedAt: null }
+		const change = opts.change ?? {
+			id: '3',
+			changeBranch: '3-feat',
+			targetBranch: 'main',
+			title: 'Feat',
+			state: 'OPEN' as const,
+			closedAt: null,
+		}
 		const slices = opts.slices ?? []
 		const storage = makeStorage({
 			findChange: async (id) => (id === change.id ? change : null),
 			findSlices: async () => slices,
 			updateSlice: opts.updateSlice ?? (async () => {}),
-			closeChange: async () => { changeClosed = true },
+			closeChange: async () => {
+				changeClosed = true
+			},
 		})
 		const { gh: defaultGh } = recordingGhOps()
 		await runEntityLoop(
@@ -161,15 +196,15 @@ if (import.meta.vitest) {
 		})
 
 		test('in-flight Change → reports awaiting shipping PR merge and runs no Slice work', async () => {
-			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'OPEN' } : null })
-			const result = await runLoopFixture({ slices: [doneSlice], gh, config: { ...baseConfig, usePrs: true } })
+			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => (head === '3-feat' ? { number: 12, state: 'OPEN' } : null) })
+			const result = await runLoopFixture({ slices: [doneSlice], gh, config: { ...baseConfig, pr: true } })
 			expect(result.spawned).toBe(0)
 			expect(result.logs.join('\n')).toContain('state=in-flight')
 			expect(result.logs.join('\n')).toContain('awaiting shipping PR merge')
 		})
 
 		test('landed Change → reports non-work state and does not finalize the Change', async () => {
-			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'MERGED' } : null })
+			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => (head === '3-feat' ? { number: 12, state: 'MERGED' } : null) })
 			const result = await runLoopFixture({ slices: [doneSlice], gh })
 			expect(result.changeClosed).toBe(false)
 			expect(result.spawned).toBe(0)
@@ -178,9 +213,30 @@ if (import.meta.vitest) {
 		})
 
 		test('done and aborted Changes → report non-work states and run no Slice work', async () => {
-			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => head === '3-feat' ? { number: 12, state: 'MERGED' } : null })
-			const done = await runLoopFixture({ change: { id: '3', changeBranch: '3-feat', targetBranch: 'main', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice], gh })
-			const aborted = await runLoopFixture({ change: { id: '3', changeBranch: '3-feat', targetBranch: 'main', title: 'Feat', state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }, slices: [doneSlice] })
+			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => (head === '3-feat' ? { number: 12, state: 'MERGED' } : null) })
+			const done = await runLoopFixture({
+				change: {
+					id: '3',
+					changeBranch: '3-feat',
+					targetBranch: 'main',
+					title: 'Feat',
+					state: 'CLOSED',
+					closedAt: '2026-06-04T00:00:00.000Z',
+				},
+				slices: [doneSlice],
+				gh,
+			})
+			const aborted = await runLoopFixture({
+				change: {
+					id: '3',
+					changeBranch: '3-feat',
+					targetBranch: 'main',
+					title: 'Feat',
+					state: 'CLOSED',
+					closedAt: '2026-06-04T00:00:00.000Z',
+				},
+				slices: [doneSlice],
+			})
 			expect(done.spawned).toBe(0)
 			expect(done.logs.join('\n')).toContain('non-work state=done')
 			expect(aborted.spawned).toBe(0)
@@ -209,14 +265,20 @@ if (import.meta.vitest) {
 			expect(result.logs.join('\n')).toContain('no slices; nothing to ship')
 		})
 
-		test('trowel change work keeps the user\'s main checkout on the starting branch during local slice host merges', async () => {
+		test("trowel change work keeps the user's main checkout on the starting branch during local slice host merges", async () => {
 			const fixture = await setupLocalSliceMergeFixture()
 			try {
 				const { gh } = recordingGhOps()
 				const logs: string[] = []
 
 				await runEntityLoop(
-					{ kind: 'change', id: fixture.state.change.id, changeBranch: fixture.state.change.changeBranch, targetBranch: fixture.state.change.targetBranch, title: fixture.state.change.title },
+					{
+						kind: 'change',
+						id: fixture.state.change.id,
+						changeBranch: fixture.state.change.changeBranch,
+						targetBranch: fixture.state.change.targetBranch,
+						title: fixture.state.change.title,
+					},
 					{
 						storage: fixture.storage,
 						git: fixture.git,

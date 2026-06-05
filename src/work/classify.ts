@@ -18,7 +18,10 @@ const RESUME_RULES: ResumeRule[] = [
 	{ state: 'blocked', matches: (slice) => slice.state === 'blocked' },
 	{ state: 'review', matches: (slice) => slice.state === 'needs-revision' },
 	{ state: 'integrate', matches: (slice) => slice.state === 'audited' },
-	{ state: 'audit', matches: (slice, config, changeBranch) => slice.state === 'implemented' && auditApplies(slice, config, changeBranch) },
+	{
+		state: 'audit',
+		matches: (slice, config, changeBranch) => slice.state === 'implemented' && auditApplies(slice, config, changeBranch),
+	},
 	{ state: 'integrate', matches: (slice) => slice.state === 'implemented' },
 	{ state: 'implement', matches: (slice) => slice.state === 'open' },
 ]
@@ -34,7 +37,7 @@ export function classify(slice: Slice, config: ClassifySliceConfig, changeBranch
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 
-	const config: ClassifySliceConfig = { usePrs: true, audit: true, perSliceBranches: true }
+	const config: ClassifySliceConfig = { pr: true, audit: true, perSliceBranches: true }
 
 	function makeSlice(overrides: Partial<Slice> = {}): Slice {
 		return {
@@ -80,23 +83,50 @@ if (import.meta.vitest) {
 		})
 
 		test('needs-revision with PR review feedback → review', () => {
-			expect(classify(makeSlice({ state: 'needs-revision', needsRevision: true, prState: 'ready' }), config, 'change-branch')).toBe('review')
+			expect(classify(makeSlice({ state: 'needs-revision', needsRevision: true, prState: 'ready' }), config, 'change-branch')).toBe(
+				'review',
+			)
 		})
 
 		test('implemented distinct Slice branch + work.audit → audit', () => {
-			expect(classify(makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z' }), config, 'change-branch')).toBe('audit')
+			expect(classify(makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z' }), config, 'change-branch')).toBe(
+				'audit',
+			)
 		})
 
 		test('implemented shared branch + work.audit → integrate (Auditing silently skipped)', () => {
-			expect(classify(makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z', sliceBranch: 'change-branch' }), config, 'change-branch')).toBe('integrate')
+			expect(
+				classify(
+					makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z', sliceBranch: 'change-branch' }),
+					config,
+					'change-branch',
+				),
+			).toBe('integrate')
 		})
 
 		test('implemented distinct Slice branch + work.audit false → integrate', () => {
-			expect(classify(makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z' }), { ...config, audit: false }, 'change-branch')).toBe('integrate')
+			expect(
+				classify(
+					makeSlice({ state: 'implemented', implementedAt: '2026-06-04T00:00:00.000Z' }),
+					{ ...config, audit: false },
+					'change-branch',
+				),
+			).toBe('integrate')
 		})
 
 		test('audited (including a draft PR) → integrate', () => {
-			expect(classify(makeSlice({ state: 'audited', implementedAt: '2026-06-04T00:00:00.000Z', auditedAt: '2026-06-04T00:01:00.000Z', prState: 'draft' }), config, 'change-branch')).toBe('integrate')
+			expect(
+				classify(
+					makeSlice({
+						state: 'audited',
+						implementedAt: '2026-06-04T00:00:00.000Z',
+						auditedAt: '2026-06-04T00:01:00.000Z',
+						prState: 'draft',
+					}),
+					config,
+					'change-branch',
+				),
+			).toBe('integrate')
 		})
 
 		test('open slice with no PR yet → implement', () => {

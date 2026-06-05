@@ -191,10 +191,5 @@ if (import.meta.vitest) {
 			expect(resolved.config.work.audit).toBe(true)
 			expect(resolved.config.ship.pr).toBe(false)
 		})
-
-		test('rejects removed work.usePrs and work.review fields', async () => {
-			await writeLayer(path.join(project, '.trowel', 'config.json'), { storage: 'issue', work: { usePrs: true, review: true } })
-			await expect(loadConfig(project, home)).rejects.toThrow(/Invalid config at/)
-		})
 	})
 }

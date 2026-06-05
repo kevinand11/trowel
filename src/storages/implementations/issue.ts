@@ -368,12 +368,12 @@ if (import.meta.vitest) {
 			return { ...fixture, storage, phase: phaseDeps(fixture.deps, storage) }
 		}
 
-		function phaseContext(config = { usePrs: true, audit: false, perSliceBranches: true }) {
+		function phaseContext(config = { pr: true, audit: false, perSliceBranches: true }) {
 			return { changeId: '142', changeBranch: 'changes-issue-142', config }
 		}
 
 		function reviewContext() {
-			return phaseContext({ usePrs: true, audit: true, perSliceBranches: true })
+			return phaseContext({ pr: true, audit: true, perSliceBranches: true })
 		}
 
 		function expectNoPhaseSideEffects(outcome: string, gitCalls: GitCall[], calls: Array<[string, ...unknown[]]>): void {
@@ -400,9 +400,9 @@ if (import.meta.vitest) {
 			expect(calls.map((c) => c[0])).not.toContain('createDraftPr')
 		})
 
-		test('landImplement + usePrs=false + ready: records implementedAt without merging; returns progress', async () => {
+		test('landImplement + pr=false + ready: records implementedAt without merging; returns progress', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, audit: false, perSliceBranches: true }))
+			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ pr: false, audit: false, perSliceBranches: true }))
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toEqual([['push', 'change-142/slice-145-session-middleware']])
 			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
@@ -410,7 +410,7 @@ if (import.meta.vitest) {
 
 		test('landImplement + stored Slice branch equals Change branch + ready: pushes Change branch and records implementedAt; returns progress', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, audit: false, perSliceBranches: false }))
+			const outcome = await landImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), { verdict: 'ready', commits: 1 }, phaseContext({ pr: false, audit: false, perSliceBranches: false }))
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toEqual([['push', 'changes-issue-142']])
 			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
@@ -418,7 +418,7 @@ if (import.meta.vitest) {
 
 		test('prepareImplement + stored Slice branch equals Change branch: runs on stored branch and fetches it', async () => {
 			const { phase, gitCalls } = makeIssueFixture()
-			const prep = await prepareImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), phaseContext({ usePrs: false, audit: false, perSliceBranches: false }))
+			const prep = await prepareImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), phaseContext({ pr: false, audit: false, perSliceBranches: false }))
 			expect(prep.branch).toBe('changes-issue-142')
 			expect(gitCalls).toEqual([['fetch', 'changes-issue-142']])
 		})

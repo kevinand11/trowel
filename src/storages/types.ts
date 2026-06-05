@@ -53,7 +53,17 @@ export type ChangeRecord = {
  * Populated by PR-state enrichment after storage reads raw Slice records.
  */
 export type SlicePrState = 'draft' | 'ready' | 'merged' | null
-export type SliceState = 'draft' | 'open' | 'blocked' | 'in-flight' | 'implemented' | 'audited' | 'awaiting-review' | 'needs-revision' | 'landed' | 'done'
+export type SliceState =
+	| 'draft'
+	| 'open'
+	| 'blocked'
+	| 'in-flight'
+	| 'implemented'
+	| 'audited'
+	| 'awaiting-review'
+	| 'needs-revision'
+	| 'landed'
+	| 'done'
 
 export type Slice = {
 	id: string
@@ -120,7 +130,7 @@ export type PreparedPhase = {
  */
 export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'audit' | 'integrate' | 'review'
 
-export type ClassifySliceConfig = { usePrs: boolean; audit: boolean; perSliceBranches: boolean }
+export type ClassifySliceConfig = { pr: boolean; audit: boolean; perSliceBranches: boolean }
 
 /**
  * Per-loop-invocation context passed to storage methods that need to act against a specific Change's
