@@ -331,6 +331,32 @@ if (import.meta.vitest) {
 			expect(after[0]!.state).toBe('done')
 		})
 
+		test('needs-revision PR feedback runs the Reviewer and clears the PR signal', async () => {
+			const slice = makeSlice({ id: 's1', state: 'awaiting-review', readyForAgent: false, implementedAt: '2026-06-04T00:00:00.000Z', auditedAt: '2026-06-04T00:01:00.000Z' })
+			const storage = makeStorage({ slices: [slice] })
+			let needsRevision = true
+			const { gh, calls } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 5, headRefName: 'change-p1/slice-s1-a', isDraft: false, labels: needsRevision ? [{ name: 'needs-revision' }] : [] }],
+				findPrNumberByHead: async () => 5,
+				editIssueLabels: async (_id, patch) => {
+					if (patch.remove?.includes('needs-revision')) needsRevision = false
+				},
+			})
+			const roles: Role[] = []
+			await runLoop('p1', makeDeps(storage, {
+				gh,
+				spawnTurn: async ({ role, turnIn }) => {
+					roles.push(role)
+					expect(turnIn.feedback).toEqual([])
+					return { verdict: 'no-work-needed', commits: 0 }
+				},
+				config: { usePrs: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+			}))
+			expect(roles).toEqual(['review'])
+			expect(calls).toContainEqual(['editIssueLabels', '5', { remove: ['needs-revision'] }])
+			expect(needsRevision).toBe(false)
+		})
+
 		test('spawnTurn throws → loop catches, logs the error, returns partial (one bad slice does not abort the batch)', async () => {
 			const stuck = makeSlice({ id: 'stuck' })
 			const fine = makeSlice({ id: 'fine' })

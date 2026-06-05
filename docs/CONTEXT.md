@@ -110,14 +110,14 @@ _Avoid_: Agent review, PR review, reviewing.
 
 **Implementer / Auditor / Reviewer**:
 The three agent roles inside the **AFK loop**. Implementer writes the first cut, Auditor performs **Auditing**, and Reviewer revises a Slice in response to PR review feedback when the Slice is in `needs-revision`.
-_Avoid_: Worker, Addresser, Reviser.
+_Avoid_: Worker, Reviser, old PR-feedback role names.
 
 **Turn**:
 The bounded execution of one agent role against one Slice. A Turn runs in a trowel-managed git worktree, receives `.trowel/turn-in.json`, and must write `.trowel/turn-out.json`.
 _Avoid_: Sandbox, session, run, container.
 
 **Verdict**:
-The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.json`. One of `ready`, `needs-revision`, `no-work-needed`, `partial`. The host translates verdicts into git/gh/storage operations.
+The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.json`. One of `ready`, `no-work-needed`, `partial`. The host translates verdicts into git/gh/storage operations; `needs-revision` is a Slice state derived from PR review surfaces, not an agent Verdict.
 _Avoid_: Result, status, outcome.
 
 **Slice branch**:

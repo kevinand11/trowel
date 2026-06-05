@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export type Role = 'implement' | 'audit' | 'review' | 'address'
+export type Role = 'implement' | 'audit' | 'review'
 
 const PROMPTS_DIR = path.dirname(fileURLToPath(import.meta.url))
 
@@ -25,7 +25,7 @@ if (import.meta.vitest) {
 			expect(out).not.toMatch(/\{\{.+?\}\}/)
 		})
 
-		test('audit, review, and address prompts load verbatim', async () => {
+		test('audit and review prompts load verbatim', async () => {
 			const audit = await loadPrompt('audit')
 			expect(audit.length).toBeGreaterThan(0)
 			expect(audit).not.toMatch(/\{\{.+?\}\}/)
@@ -33,10 +33,6 @@ if (import.meta.vitest) {
 			const review = await loadPrompt('review')
 			expect(review.length).toBeGreaterThan(0)
 			expect(review).not.toMatch(/\{\{.+?\}\}/)
-
-			const address = await loadPrompt('address')
-			expect(address.length).toBeGreaterThan(0)
-			expect(address).not.toMatch(/\{\{.+?\}\}/)
 		})
 
 		test('start prompt loads', async () => {

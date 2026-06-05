@@ -12,7 +12,7 @@ export async function implement(sliceId: string, opts: { storage?: StorageKind; 
 		harness: opts.harness,
 		role: 'implement',
 		requiredState: 'open',
-		reason: (changeId) => `Run \`trowel work ${changeId}\` to drive it through the loop, or address it manually.`,
+		reason: (changeId) => `Run \`trowel work ${changeId}\` to drive it through the loop, or implement it manually.`,
 	})
 }
 
@@ -28,7 +28,7 @@ if (import.meta.vitest) {
 				sliceId,
 				runtime,
 				requiredState: 'open',
-				reason: (changeId) => `Run \`trowel work ${changeId}\` to drive it through the loop, or address it manually.`,
+				reason: (changeId) => `Run \`trowel work ${changeId}\` to drive it through the loop, or implement it manually.`,
 			})
 
 		test('on a ready slice: calls runOnePhase exactly once with that slice', async () => {

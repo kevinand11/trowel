@@ -6,10 +6,8 @@ import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import {
-	landAddress,
 	landImplement,
 	landReview,
-	prepareAddress,
 	prepareImplement,
 	prepareReview,
 	type PhaseDeps,
@@ -819,7 +817,7 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('review and address phases on file storage reach the PR-lookup layer (capability gate retired)', async () => {
+		test('review phase on file storage reaches the PR-lookup layer for feedback', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
@@ -834,10 +832,8 @@ if (import.meta.vitest) {
 				// No PR exists, so findPrNumberByHead throws "no PR found".
 				// The point: that's now the failure mode, not "requires capability 'prFlow'".
 				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/no PR found/)
-				await expect(prepareAddress(deps, slice, ctx)).rejects.toThrow(/no PR found/)
-				// landReview/landAddress with verdict 'partial' short-circuit before any gh call.
+				// landReview with verdict 'partial' short-circuits before any gh call.
 				expect(await landReview(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
-				expect(await landAddress(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
 			} finally {
 				await teardown(f)
 			}

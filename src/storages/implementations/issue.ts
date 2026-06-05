@@ -1,6 +1,6 @@
 import { parseGhIssueNumber } from '../../utils/gh-ops.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
-import { landAddress, landImplement, landReview, prepareAddress, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
+import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice, Storage, StorageDeps, StorageFactory, ChangeMetadataPatch, ChangeRecord, ChangeSpec, ChangeSummary, CreatedChange, CreatedSlice, Slice, SliceMetadataPatch, SlicePatch, SliceSpec } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean }
@@ -436,73 +436,36 @@ if (import.meta.vitest) {
 			expectNoPhaseSideEffects(outcome, gitCalls, calls)
 		})
 
-		test('prepareReview: looks up PR number for the slice branch, builds turnIn with {pr, slice}', async () => {
+		test('prepareReview: finds PR, fetches feedback, and packs both into turnIn', async () => {
 			const { phase, calls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
-			const prep = await prepareReview(phase, makeOpenSlice(), reviewContext())
+			const prep = await prepareReview(phase, makeOpenSlice({ prState: 'ready', needsRevision: true }), reviewContext())
 			expect(prep.branch).toBe('change-142/slice-145-session-middleware')
 			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'change-142/slice-145-session-middleware' })
 			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
+			expect(prep.turnIn.feedback).toEqual([])
 			expect(calls).toContainEqual(['findPrNumberByHead', 'change-142/slice-145-session-middleware'])
 		})
 
-		test('landReview + ready (commits > 0): pushes slice branch, then runs markPrReady; returns progress', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
-			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'ready', commits: 2 }, reviewContext())
-			expect(outcome).toBe('progress')
-			expect(gitCalls).toContainEqual(['push', 'change-142/slice-145-session-middleware'])
-			expect(calls).toContainEqual(['markPrReady', 168])
-		})
-
-		test('landReview + ready (commits === 0): skips push, runs markPrReady', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
-			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'ready', commits: 0 }, reviewContext())
-			expect(outcome).toBe('progress')
-			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
-			expect(calls).toContainEqual(['markPrReady', 168])
-		})
-
-		test('landReview + needs-revision: applies PR label; does NOT mark PR ready', async () => {
+		test('landReview + ready (commits > 0): pushes slice branch, clears needsRevision, returns progress', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 145 })
-			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'needs-revision', commits: 0 }, reviewContext())
-			expect(outcome).toBe('progress')
-			expect(calls).toContainEqual(['editIssueLabels', '145', { add: ['needs-revision'] }])
-			expect(calls.find((c) => c[0] === 'markPrReady')).toBeUndefined()
-			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
-		})
-
-		test('landReview + partial: returns partial, no side effects', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landReview(phase, makeOpenSlice({ prState: 'draft' }), { verdict: 'partial', commits: 0 }, reviewContext())
-			expectNoPhaseSideEffects(outcome, gitCalls, calls)
-		})
-
-		test('prepareAddress: finds PR, fetches feedback, packs both into turnIn', async () => {
-			const { phase } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
-			const prep = await prepareAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), reviewContext())
-			expect(prep.branch).toBe('change-142/slice-145-session-middleware')
-			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'change-142/slice-145-session-middleware' })
-			expect(prep.turnIn.feedback).toEqual([])
-		})
-
-		test('landAddress + ready (commits > 0): pushes slice branch, clears needsRevision, returns progress', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 145 })
-			const outcome = await landAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), { verdict: 'ready', commits: 3 }, reviewContext())
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'ready', needsRevision: true }), { verdict: 'ready', commits: 3 }, reviewContext())
 			expect(outcome).toBe('progress')
 			expect(gitCalls).toContainEqual(['push', 'change-142/slice-145-session-middleware'])
 			expect(calls).toContainEqual(['editIssueLabels', '145', { remove: ['needs-revision'] }])
+			expect(calls.find((c) => c[0] === 'markPrReady')).toBeUndefined()
 		})
 
-		test('landAddress + no-work-needed: clears needsRevision, returns no-work, no push', async () => {
+		test('landReview + no-work-needed: clears needsRevision, returns no-work, no push', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 145 })
-			const outcome = await landAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), { verdict: 'no-work-needed', commits: 0 }, reviewContext())
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'ready', needsRevision: true }), { verdict: 'no-work-needed', commits: 0 }, reviewContext())
 			expect(outcome).toBe('no-work')
 			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
 			expect(calls).toContainEqual(['editIssueLabels', '145', { remove: ['needs-revision'] }])
 		})
 
-		test('landAddress + partial: returns partial, no side effects', async () => {
+		test('landReview + partial: returns partial, no side effects', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landAddress(phase, makeOpenSlice({ prState: 'draft', needsRevision: true }), { verdict: 'partial', commits: 0 }, reviewContext())
+			const outcome = await landReview(phase, makeOpenSlice({ prState: 'ready', needsRevision: true }), { verdict: 'partial', commits: 0 }, reviewContext())
 			expectNoPhaseSideEffects(outcome, gitCalls, calls)
 		})
 	})

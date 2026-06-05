@@ -16,7 +16,7 @@ const RESUME_RULES: ResumeRule[] = [
 	{ state: 'done', matches: (slice) => slice.state === 'awaiting-review' },
 	{ state: 'finalize', matches: (slice) => slice.state === 'landed' },
 	{ state: 'blocked', matches: (slice) => slice.state === 'blocked' },
-	{ state: 'address', matches: (slice) => slice.state === 'needs-revision' },
+	{ state: 'review', matches: (slice) => slice.state === 'needs-revision' },
 	{ state: 'integrate', matches: (slice) => slice.state === 'audited' },
 	{ state: 'audit', matches: (slice, config, changeBranch) => slice.state === 'implemented' && auditApplies(slice, config, changeBranch) },
 	{ state: 'integrate', matches: (slice) => slice.state === 'implemented' },
@@ -71,7 +71,7 @@ if (import.meta.vitest) {
 			expect(classify(makeSlice({ state: 'awaiting-review', prState: 'ready' }), config, 'change-branch')).toBe('done')
 		})
 
-		test('draft PR without milestones → done (legacy reviewer no longer auto-runs)', () => {
+		test('draft PR without milestones → done (waits for process milestones)', () => {
 			expect(classify(makeSlice({ state: 'in-flight', prState: 'draft' }), config, 'change-branch')).toBe('done')
 		})
 
@@ -79,8 +79,8 @@ if (import.meta.vitest) {
 			expect(classify(makeSlice({ state: 'blocked', blockedBy: ['s0'] }), config, 'change-branch')).toBe('blocked')
 		})
 
-		test('needs-revision with a draft PR → address', () => {
-			expect(classify(makeSlice({ state: 'needs-revision', needsRevision: true, prState: 'draft' }), config, 'change-branch')).toBe('address')
+		test('needs-revision with PR review feedback → review', () => {
+			expect(classify(makeSlice({ state: 'needs-revision', needsRevision: true, prState: 'ready' }), config, 'change-branch')).toBe('review')
 		})
 
 		test('implemented distinct Slice branch + work.audit → audit', () => {

@@ -1,6 +1,6 @@
 import { classify } from './classify.ts'
 import type { LoopDeps } from './loop.ts'
-import { integrateSlice, landAddress, landAudit, landImplement, landReview, prepareAddress, prepareAudit, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
+import { integrateSlice, landAudit, landImplement, landReview, prepareAudit, prepareImplement, prepareReview, type PhaseDeps } from './phases.ts'
 import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { ClassifiedSlice, ClassifySliceConfig, PhaseOutcome, ResumeState, Slice } from '../storages/types.ts'
@@ -10,7 +10,7 @@ export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 type LoopPhaseCtx = { changeId: string; changeBranch: string; config: ClassifySliceConfig }
 type SliceStepResult = { outcome: ProcessOutcome } | { outcome: 'progress' }
 
-const SANDBOX_ROLES = new Set<ResumeState>(['implement', 'audit', 'review', 'address'])
+const TURN_ROLES = new Set<ResumeState>(['implement', 'audit', 'review'])
 
 const PROCESS_OUTCOME_BY_PHASE: Record<PhaseOutcome, ProcessOutcome | null> = {
 	done: 'done',
@@ -49,7 +49,7 @@ async function processSliceStep(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: 
 	if (terminal) return { outcome: terminal }
 	if (state === 'finalize') return finalizeLandedSlice(slice, ctx, tag, deps)
 	if (state === 'integrate') return integrateImplementedSlice(slice, ctx, tag, deps)
-	if (!SANDBOX_ROLES.has(state)) return unexpectedStateOutcome(state, tag, deps)
+	if (!TURN_ROLES.has(state)) return unexpectedStateOutcome(state, tag, deps)
 	const outcome = await runSlicePhase(state as Role, slice, ctx, tag, deps)
 	const processOutcome = PROCESS_OUTCOME_BY_PHASE[outcome]
 	return { outcome: processOutcome ?? 'progress' }
@@ -79,12 +79,12 @@ function unexpectedStateOutcome(state: ResumeState, tag: string, deps: LoopDeps)
 }
 
 async function runSlicePhase(role: Role, slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<PhaseOutcome> {
-	deps.log(`${tag} state=${slice.state} action=${role}: "${slice.title}"`)
+	deps.log(`${tag} state=${slice.state} action=${phaseActionLabel(role)}: "${slice.title}"`)
 	const phaseDeps = phaseDepsFor(deps)
 	const prep = await callPrepare(phaseDeps, role, slice, ctx)
-	deps.log(`${tag} spawning ${role} sandbox on ${prep.branch}`)
+	deps.log(`${tag} spawning ${phaseActorLabel(role)} Turn on ${prep.branch}`)
 	const verdict = await deps.spawnTurn({ role, slice, branch: prep.branch, turnIn: prep.turnIn })
-	deps.log(`${tag} ${role} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
+	deps.log(`${tag} ${phaseActorLabel(role)} verdict: ${verdict.verdict}, ${verdict.commits} commit(s)`)
 	return callLand(phaseDeps, role, slice, verdict, ctx)
 }
 
@@ -95,13 +95,23 @@ function phaseDepsFor(deps: LoopDeps): PhaseDeps {
 function callPrepare(phaseDeps: PhaseDeps, role: Role, slice: Slice, ctx: LoopPhaseCtx) {
 	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
 	if (role === 'audit') return prepareAudit(phaseDeps, slice, ctx)
-	if (role === 'review') return prepareReview(phaseDeps, slice, ctx)
-	return prepareAddress(phaseDeps, slice, ctx)
+	return prepareReview(phaseDeps, slice, ctx)
 }
 
 function callLand(phaseDeps: PhaseDeps, role: Role, slice: Slice, verdict: TurnOut, ctx: LoopPhaseCtx) {
 	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
 	if (role === 'audit') return landAudit(phaseDeps, slice, verdict, ctx)
-	if (role === 'review') return landReview(phaseDeps, slice, verdict, ctx)
-	return landAddress(phaseDeps, slice, verdict, ctx)
+	return landReview(phaseDeps, slice, verdict, ctx)
+}
+
+function phaseActionLabel(role: Role): string {
+	if (role === 'audit') return 'Auditing'
+	if (role === 'review') return 'Reviewer'
+	return 'Implementer'
+}
+
+function phaseActorLabel(role: Role): string {
+	if (role === 'audit') return 'Auditor'
+	if (role === 'review') return 'Reviewer'
+	return 'Implementer'
 }

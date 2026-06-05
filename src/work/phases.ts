@@ -13,7 +13,7 @@ import { slug as slugify } from '../utils/slug.ts'
  *
  * See ADR `storage-behavior-separation` and the post-pivot ADR `decouple-pr-flow-from-storage`:
  * phase logic lives in the loop, not on `Storage`. PR-flow behavior branches on the user's
- * `config.work.*` flags (`usePrs`, `review`, `perSliceBranches`), not on a storage capability.
+ * workflow flags (`ship.pr`, `work.audit`, `work.perSliceBranches`), not on a storage capability.
  */
 export type PhaseDeps = {
 	storage: Storage
@@ -247,46 +247,13 @@ async function landAuditLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, 
 }
 
 /**
- * Prepare the reviewer Turn. Requires an open PR (looked up via `findPrNumber`); the loop only
- * dispatches `'review'` when `prState` is `'draft'`, which presupposes `config.ship.pr: true`.
- * Per-phase commands (`trowel review`) bypass the classifier; if no PR exists `findPrNumber` throws.
+ * Prepare the Reviewer Turn. Requires an open PR (calls `findPrNumber` + `fetchPrFeedback`;
+ * both throw if no PR exists for the Slice branch).
  *
- * Looks up the slice branch's PR number so the reviewer prompt has `{pr.number, pr.branch}` to
- * fetch the diff and post comments against.
+ * Reviewer work is tied to PR review feedback: the loop dispatches `review` when PR enrichment
+ * computes the Slice state as `needs-revision`.
  */
 export async function prepareReview(deps: PhaseDeps, slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
-	const branch = sliceBranchFor(slice)
-	const prNumber = await deps.gh.findPrNumberByHead(branch)
-	const turnIn: TurnIn = {
-		slice: { id: slice.id, title: slice.title, body: slice.body },
-		pr: { number: prNumber, branch },
-	}
-	return { branch, turnIn }
-}
-
-/**
- * Apply the reviewer's verdict. Requires an open PR (the `ready` and `needs-revision` paths call
- * `findPrNumber` / `gh pr edit`; both throw if no PR exists for the slice branch).
- *
- * - `ready` → push review commits (if any), then `gh pr ready` to flip the PR out of draft. The
- *   slice's `prState` becomes 'ready' on next `findSlices`; classify routes to 'done'. Returns
- *   `'progress'` so the inner step-cap loop refetches.
- * - `needs-revision` → push review commits and apply the PR needs-revision label. Next iteration
- *   classifies to 'address' from the PR review surface. Returns `'progress'`.
- * - `partial` → return `'partial'`, no side effects.
- */
-export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	return withPhaseLock(deps, async () => landReviewOrAddress('review', deps, slice, verdict, ctx))
-}
-
-/**
- * Prepare the addresser Turn. Requires an open PR (calls `findPrNumber` + `fetchPrFeedback`;
- * both throw if no PR exists for the slice branch).
- *
- * Same PR-discovery as the reviewer plus a `fetchPrFeedback` call so the addresser prompt has the
- * reviewer's comments in `turnIn.feedback`.
- */
-export async function prepareAddress(deps: PhaseDeps, slice: Slice, _ctx: PhaseCtx): Promise<PreparedPhase> {
 	const branch = sliceBranchFor(slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const feedback = await fetchPrFeedback(deps.gh, prNumber)
@@ -299,72 +266,42 @@ export async function prepareAddress(deps: PhaseDeps, slice: Slice, _ctx: PhaseC
 }
 
 /**
- * Apply the addresser's verdict. Requires an open PR for the slice branch.
+ * Apply the Reviewer's verdict. Requires an open PR for the Slice branch.
  *
- * - `ready` → push fixup commits (if any), clear the PR needs-revision label. Returns `'progress'`.
+ * - `ready` → push feedback-response commits (if any), clear the PR needs-revision label. Returns `'progress'`.
  * - `no-work-needed` → clear the PR needs-revision label without pushing. Returns `'no-work'`; loop drops the
- *   slice for this run.
+ *   Slice for this run.
  * - `partial` → return `'partial'`, no side effects.
  */
-export async function landAddress(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
-	return withPhaseLock(deps, async () => landReviewOrAddress('address', deps, slice, verdict, ctx))
+export async function landReview(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+	return withPhaseLock(deps, async () => landReviewLocked(deps, slice, verdict, ctx))
 }
 
-type ReviewAddressKind = 'review' | 'address'
-type ReviewAddressLandRule = {
-	matches: (kind: ReviewAddressKind, verdict: TurnOut) => boolean
-	land: (kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx, branch: string, tag: string) => Promise<PhaseOutcome>
-}
-
-const REVIEW_ADDRESS_LAND_RULES: ReviewAddressLandRule[] = [
-	{ matches: (_kind, verdict) => verdict.verdict === 'partial', land: async () => 'partial' },
-	{ matches: (_kind, verdict) => verdict.verdict === 'ready', land: landReadyReviewOrAddress },
-	{ matches: (kind, verdict) => kind === 'review' && verdict.verdict === 'needs-revision', land: landReviewNeedsRevision },
-	{ matches: (kind, verdict) => kind === 'address' && verdict.verdict === 'no-work-needed', land: landAddressNoWorkNeeded },
-]
-
-async function landReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
+async function landReviewLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	const branch = sliceBranchFor(slice)
-	const rule = REVIEW_ADDRESS_LAND_RULES.find((r) => r.matches(kind, verdict))
-	return rule?.land(kind, deps, slice, verdict, ctx, branch, tag) ?? 'partial'
+	if (verdict.verdict === 'partial') return 'partial'
+	if (verdict.verdict === 'ready') return landReviewReady(deps, verdict, branch, tag)
+	if (verdict.verdict === 'no-work-needed') return landReviewNoWorkNeeded(deps, branch, tag)
+	return 'partial'
 }
 
-async function landReadyReviewOrAddress(kind: ReviewAddressKind, deps: PhaseDeps, _slice: Slice, verdict: TurnOut, _ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+async function landReviewReady(deps: PhaseDeps, verdict: TurnOut, branch: string, tag: string): Promise<PhaseOutcome> {
 	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-	if (kind === 'review') return markSlicePrReady(deps, branch, tag)
 	await clearSliceNeedsRevision(deps, branch, tag)
 	return 'progress'
 }
 
-async function markSlicePrReady(deps: PhaseDeps, branch: string, tag: string): Promise<PhaseOutcome> {
-	const prNumber = await deps.gh.findPrNumberByHead(branch)
-	await deps.gh.markPrReady(prNumber)
-	deps.log(`${tag} marked PR #${prNumber} ready for merge`)
-	return 'progress'
-}
-
-async function landReviewNeedsRevision(_kind: ReviewAddressKind, deps: PhaseDeps, _slice: Slice, verdict: TurnOut, _ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
-	await pushSliceBranchIfNeeded(deps, branch, verdict.commits, tag)
-	await updatePrNeedsRevisionLabel(deps, branch, true)
-	deps.log(`${tag} flagged PR needs-revision`)
-	return 'progress'
-}
-
-async function landAddressNoWorkNeeded(_kind: ReviewAddressKind, deps: PhaseDeps, _slice: Slice, _verdict: TurnOut, _ctx: PhaseCtx, branch: string, tag: string): Promise<PhaseOutcome> {
+async function landReviewNoWorkNeeded(deps: PhaseDeps, branch: string, tag: string): Promise<PhaseOutcome> {
 	await clearSliceNeedsRevision(deps, branch, tag, 'no-work-needed: ')
 	return 'no-work'
 }
 
 async function clearSliceNeedsRevision(deps: PhaseDeps, branch: string, tag: string, prefix = ''): Promise<void> {
-	await updatePrNeedsRevisionLabel(deps, branch, false)
-	deps.log(`${tag} ${prefix}cleared PR needs-revision`)
-}
-
-async function updatePrNeedsRevisionLabel(deps: PhaseDeps, branch: string, present: boolean): Promise<void> {
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const label = deps.needsRevisionLabel ?? 'needs-revision'
-	await deps.gh.editIssueLabels(String(prNumber), present ? { add: [label] } : { remove: [label] })
+	await deps.gh.editIssueLabels(String(prNumber), { remove: [label] })
+	deps.log(`${tag} ${prefix}cleared PR needs-revision`)
 }
 
 if (import.meta.vitest) {
@@ -688,25 +625,29 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('landAddress: clears needs-revision PR signal', () => {
-		test('ready clears matching PR label so enrichment does not requeue address', async () => {
+	describe('prepareReview: PR feedback response', () => {
+		test('fetches PR feedback for the Reviewer Turn', async () => {
 			const { deps, calls } = makePhaseDeps()
-			await landAddress(deps, { ...slice, needsRevision: true }, { verdict: 'ready', commits: 5 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
-			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
-		})
-
-		test('no-work-needed clears matching PR label so enrichment does not requeue address', async () => {
-			const { deps, calls } = makePhaseDeps()
-			await landAddress(deps, { ...slice, needsRevision: true }, { verdict: 'no-work-needed', commits: 0 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
-			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
+			deps.gh.fetchPrLineComments = async (prNumber) => { calls.push({ method: 'fetchPrLineComments', args: [prNumber] }); return [] }
+			deps.gh.fetchPrReviews = async (prNumber) => { calls.push({ method: 'fetchPrReviews', args: [prNumber] }); return [] }
+			deps.gh.fetchPrThread = async (prNumber) => { calls.push({ method: 'fetchPrThread', args: [prNumber] }); return [] }
+			const prep = await prepareReview(deps, { ...slice, needsRevision: true }, ctx)
+			expect(prep.turnIn).toMatchObject({ pr: { number: 132, branch: 'change-pid/slice-42-a-slice' }, feedback: [] })
+			expect(calls).toContainEqual({ method: 'fetchPrReviews', args: [132] })
 		})
 	})
 
-	describe('landReview: flags needs-revision PR signal', () => {
-		test('needs-revision sets matching PR label', async () => {
+	describe('landReview: clears needs-revision PR signal', () => {
+		test('ready clears matching PR label so enrichment does not requeue review', async () => {
 			const { deps, calls } = makePhaseDeps()
-			await landReview(deps, slice, { verdict: 'needs-revision', commits: 0 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
-			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { add: ['needs-revision'] }] })
+			await landReview(deps, { ...slice, needsRevision: true }, { verdict: 'ready', commits: 5 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
+		})
+
+		test('no-work-needed clears matching PR label so enrichment does not requeue review', async () => {
+			const { deps, calls } = makePhaseDeps()
+			await landReview(deps, { ...slice, needsRevision: true }, { verdict: 'no-work-needed', commits: 0 }, { ...ctx, config: { usePrs: true, audit: true, perSliceBranches: true } })
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
 		})
 	})
 

@@ -75,13 +75,13 @@ Open questions to grill:
 - `src/storages/types.ts`, `src/utils/change-state.ts` — Change state vocabulary and computation.
 - `src/work/entity-loop.ts` and any future project-level loop — dispatch for Change-level PR work.
 - `src/work/pr-flow.ts`, `src/utils/gh-ops.ts` — Close-out PR feedback/label enrichment.
-- `src/prompts/` — possible Change-level address/review prompt.
+- `src/prompts/` — possible Change-level review-feedback prompt.
 - Tests for state computation and loop/Ship guidance.
 
 Open questions to grill:
 
 - What is the state name: `needs-revision`, `blocked`, `in-review`, or something else?
-- Is the agent role the same as Slice addresser, or a distinct Change-level role?
+- Is the agent role the same as Slice Reviewer, or a distinct Change-level role?
 - Does this run from `trowel change work`, `trowel change ship`, or only the future project-level loop?
 - What feedback payload should the Turn receive, and how does it avoid mutating Slice state?
 

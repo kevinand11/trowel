@@ -90,7 +90,7 @@ export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
 export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
 
 /**
- * Outcome of a single per-slice phase invocation (one `prepare<Role>` + sandbox + `land<Role>`).
+ * Outcome of a single per-slice phase invocation (one `prepare<Role>` + Turn + `land<Role>`).
  *
  * - `'done'` — slice has reached terminal state in this run; loop drops it.
  * - `'progress'` — phase moved forward; loop refetches and continues the inner step-cap loop.
@@ -100,7 +100,7 @@ export type ShipMergeMethod = 'merge' | 'squash' | 'rebase'
 export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work'
 
 /**
- * Returned by `prepare<Role>` — the branch the sandbox should run on, and the `TurnIn` payload.
+ * Returned by `prepare<Role>` — the branch the Turn should run on, and the `TurnIn` payload.
  */
 export type PreparedPhase = {
 	branch: string
@@ -116,10 +116,9 @@ export type PreparedPhase = {
  * - `'implement'` — run the Implementer Turn next.
  * - `'audit'` — run the Auditor Turn next for an implemented distinct Slice branch.
  * - `'integrate'` — host-integrate an implemented/audited Slice.
- * - `'review'` — legacy explicit draft-PR reviewer path.
- * - `'address'` — run the addresser sandbox next for PR review feedback.
+ * - `'review'` — run the Reviewer Turn next for PR review feedback on a `needs-revision` Slice.
  */
-export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'audit' | 'integrate' | 'review' | 'address'
+export type ResumeState = 'done' | 'blocked' | 'finalize' | 'implement' | 'audit' | 'integrate' | 'review'
 
 export type ClassifySliceConfig = { usePrs: boolean; audit: boolean; perSliceBranches: boolean }
 
@@ -166,7 +165,7 @@ export interface Storage {
 	/**
 	 * Look up a slice by its global id without knowing the parent Change. Returns the slice plus its
 	 * parent Change id, or null if no slice with that id exists. Powers `trowel status slice <id>`
-	 * and the slice phase commands (`slice implement`/`slice address`/`slice review`).
+	 * and the slice phase commands (`slice implement`/`slice audit`/`slice review`).
 	 */
 	findSlice(sliceId: string): Promise<{ changeId: string; slice: Slice } | null>
 	updateSlice(changeId: string, sliceId: string, patch: SlicePatch): Promise<void>
