@@ -1,9 +1,10 @@
 import { runManualSliceCommand } from './manual-slice-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 
-export async function audit(sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
+export async function audit(changeId: string, sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
 	await runManualSliceCommand({
 		commandName: 'audit',
+		changeId,
 		sliceId,
 		storage: opts.storage,
 		harness: opts.harness,

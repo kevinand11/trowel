@@ -412,7 +412,6 @@ if (import.meta.vitest) {
 				prState: null,
 			}),
 			findSlices: async () => [],
-			findSlice: async () => null,
 			updateSlice: async (_p, _s, patch) => {
 				if (patch.closedAt !== undefined) storageState.closedAt = patch.closedAt
 				if (patch.implementedAt !== undefined) storageState.implementedAt = patch.implementedAt

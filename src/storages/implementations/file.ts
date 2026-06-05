@@ -50,7 +50,6 @@ type MutableStore = {
 	auditedAt: string | null
 }
 type StateFilter = { state: 'open' | 'closed' | 'all' }
-type SliceHit = { changeId: string; slice: Slice }
 
 function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
 	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
@@ -317,32 +316,6 @@ export const createFileStorage: StorageFactory = (deps) => {
 		}
 	}
 
-	async function findSlice(sliceId: string): Promise<SliceHit | null> {
-		for (const changeEntry of await readdirOrEmpty(deps.changesDir)) {
-			const hit = await findSliceInChangeEntry(sliceId, changeEntry)
-			if (hit !== undefined) return hit
-		}
-		return null
-	}
-
-	async function findSliceInChangeEntry(sliceId: string, changeEntry: string): Promise<SliceHit | null | undefined> {
-		const changeId = changeIdFromDirName(changeEntry)
-		if (!changeId) return undefined
-		const slicesPath = path.join(deps.changesDir, changeEntry, 'slices')
-		const match = (await readdirOrEmpty(slicesPath)).find((e) => e.startsWith(`${sliceId}-`))
-		if (!match) return undefined
-		return readSliceHit(changeId, path.join(slicesPath, match))
-	}
-
-	function changeIdFromDirName(changeEntry: string): string | null {
-		return /^([^-]+)-/.exec(changeEntry)?.[1] ?? null
-	}
-
-	async function readSliceHit(changeId: string, dir: string): Promise<SliceHit | null> {
-		const slice = await readSliceFromDir(dir)
-		return slice ? { changeId, slice } : null
-	}
-
 	async function findChange(id: string): Promise<ChangeRecord | null> {
 		try {
 			const store = await readChangeStore(id)
@@ -368,7 +341,6 @@ export const createFileStorage: StorageFactory = (deps) => {
 		updateChangeMetadata,
 		createSlice,
 		findSlices,
-		findSlice,
 		updateSlice,
 		updateSliceMetadata,
 	}
@@ -1248,118 +1220,6 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file storage: findSlice', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('returns null when changesDir does not exist', async () => {
-			const storage = createFileStorage(f.deps)
-			expect(await storage.findSlice('1')).toBeNull()
-		})
-
-		test('returns null when no slice with that id exists', async () => {
-			const storage = createFileStorage(f.deps)
-			await storage.createChange({ title: 'P', body: 'b' })
-			expect(await storage.findSlice('zzz')).toBeNull()
-		})
-
-		test('returns { changeId, slice } when the slice is found under a Change', async () => {
-			const storage = createFileStorage(f.deps)
-			const { id: changeId } = await createMaterialisedChange(storage)
-			const slice = await createMaterialisedSlice(storage, changeId, { title: 'Foo', body: 'spec', blockedBy: [] })
-			const hit = await storage.findSlice(slice.id)
-			expect(hit).not.toBeNull()
-			expect(hit!.changeId).toBe(changeId)
-			expect(hit!.slice.id).toBe(slice.id)
-			expect(hit!.slice.title).toBe('Foo')
-		})
-
-		test('finds a slice under a non-first Change (walks all Change dirs)', async () => {
-			const storage = createFileStorage(f.deps)
-			await createMaterialisedChange(storage, { title: 'First', body: 'a' })
-			const { id: changeId } = await createMaterialisedChange(storage, { title: 'Second', body: 'b' })
-			const slice = await createMaterialisedSlice(storage, changeId, { title: 'Bar', body: 'spec', blockedBy: [] })
-			const hit = await storage.findSlice(slice.id)
-			expect(hit!.changeId).toBe(changeId)
-		})
-
-		test('integer ids are not confused by prefix match (id "1" must not match dir "10-...")', async () => {
-			// allocateNextId returns sequential integers; this test simulates two Changes and a slice
-			// in a way that would trip a naive startsWith.
-			const storage = createFileStorage(f.deps)
-			// Manually craft two Change dirs whose numeric prefixes share a leading digit.
-			const { mkdir, writeFile } = await import('node:fs/promises')
-			await mkdir(path.join(f.changesDir, '1-one', 'slices', '2-a'), { recursive: true })
-			await writeFile(
-				path.join(f.changesDir, '1-one', 'store.json'),
-				JSON.stringify({
-					id: '1',
-					slug: 'one',
-					title: 'One',
-					createdAt: '2026-05-17T00:00:00.000Z',
-					closedAt: null,
-					targetBranch: 'main',
-					changeBranch: 'change-1-one',
-				}),
-			)
-			await writeFile(
-				path.join(f.changesDir, '1-one', 'slices', '2-a', 'store.json'),
-				JSON.stringify({
-					id: '2',
-					slug: 'a',
-					title: 'A',
-					createdAt: '2026-05-17T00:00:00.000Z',
-					closedAt: null,
-					sliceBranch: 'change-1/slice-2-a',
-					readyForAgent: false,
-					needsRevision: false,
-					blockedBy: [],
-				}),
-			)
-			await writeFile(path.join(f.changesDir, '1-one', 'slices', '2-a', 'README.md'), 'body')
-			await mkdir(path.join(f.changesDir, '10-ten', 'slices', '20-b'), { recursive: true })
-			await writeFile(
-				path.join(f.changesDir, '10-ten', 'store.json'),
-				JSON.stringify({
-					id: '10',
-					slug: 'ten',
-					title: 'Ten',
-					createdAt: '2026-05-17T00:00:00.000Z',
-					closedAt: null,
-					targetBranch: 'main',
-					changeBranch: 'change-10-ten',
-				}),
-			)
-			await writeFile(
-				path.join(f.changesDir, '10-ten', 'slices', '20-b', 'store.json'),
-				JSON.stringify({
-					id: '20',
-					slug: 'b',
-					title: 'B',
-					createdAt: '2026-05-17T00:00:00.000Z',
-					closedAt: null,
-					sliceBranch: 'change-10/slice-20-b',
-					readyForAgent: false,
-					needsRevision: false,
-					blockedBy: [],
-				}),
-			)
-			await writeFile(path.join(f.changesDir, '10-ten', 'slices', '20-b', 'README.md'), 'body')
-
-			const hit2 = await storage.findSlice('2')
-			expect(hit2!.changeId).toBe('1')
-			expect(hit2!.slice.id).toBe('2')
-
-			const hit20 = await storage.findSlice('20')
-			expect(hit20!.changeId).toBe('10')
-			expect(hit20!.slice.id).toBe('20')
-		})
-	})
 
 	describe('file storage: allocateNextId via createChange/createSlice', () => {
 		let f: Fixture

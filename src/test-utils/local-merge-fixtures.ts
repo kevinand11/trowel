@@ -93,7 +93,6 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 		},
 		createSlice: async () => { throw new Error('not used') },
 		findSlices: async (changeId) => changeId === state.change.id ? [{ ...state.slice }] : [],
-		findSlice: async (sliceId) => sliceId === state.slice.id ? { changeId: state.change.id, slice: { ...state.slice } } : null,
 		updateSlice: async (changeId, sliceId, patch) => {
 			if (changeId !== state.change.id || sliceId !== state.slice.id) return
 			applySlicePatch(state.slice, patch)

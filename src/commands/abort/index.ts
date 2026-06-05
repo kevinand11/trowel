@@ -266,7 +266,6 @@ if (import.meta.vitest) {
 				calls.push('findSlices')
 				return state.slices.map((slice) => ({ ...slice }))
 			},
-			findSlice: async () => null,
 			updateSliceMetadata: async () => {},
 			updateSlice: async (_changeId, sliceId, patch) => {
 				calls.push(`updateSlice(${sliceId},${JSON.stringify(patch)})`)

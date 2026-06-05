@@ -70,7 +70,7 @@ The housekeeping step run by Abort and Ship that removes all trowel-managed Work
 _Avoid_: Close-out, reconciliation, garbage collection.
 
 **Entity read command**:
-A command that displays Change or Slice state without acquiring the **Mutation lock**, writing storage, or switching the main working tree branch. Entity read commands are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <slice-id>`.
+A command that displays Change or Slice state without acquiring the **Mutation lock**, writing storage, or switching the main working tree branch. Entity read commands are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <change-id> <slice-id>`.
 _Avoid_: Refresh, reconcile, sync.
 
 **Finalization**:
@@ -140,7 +140,7 @@ _Avoid_: Checkout, sandbox directory.
 - Slice finalization runs in the work loop when it encounters a landed Slice; after finalization the loop refetches and may report the parent Change as ready in the same invocation. Status/list may report `landed` but do not finalize Slices.
 - For a Slice with a non-null **Slice branch**, a missing remote Slice branch is not a lifecycle signal; a merged Slice PR proves `landed`, and without merged-PR proof the missing branch is stale infrastructure rather than evidence of `landed` or `done`.
 - Only **Ship** runs **Finalization** for a landed **Change** after a merged Close-out PR; **Entity read commands** may report `landed` but never finalize.
-- **Entity read commands** are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <slice-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
+- **Entity read commands** are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <change-id> <slice-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
 - A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages, but that value may be `null` until first implementation preparation. `prepareImplement` fills null Slice branch metadata using current config: when per-slice branches are enabled it fetches the latest remote Change branch, creates and pushes a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, then stores it; when per-slice branches are disabled it stores the parent Change's Change branch.
 - When per-slice branches are enabled the Slice branch value is a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, and when per-slice branches are disabled the value is the parent Change's Change branch.

@@ -22,8 +22,7 @@ const noop = async (): Promise<void> => {}
 const defaultCreatedEntity = async (): Promise<{ id: string; title: string }> => ({ id: 'x', title: 'x' })
 const emptyChangeSummaries = async (): Promise<Awaited<ReturnType<Storage['listChanges']>>> => []
 
-export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1', overrides: Partial<Storage> = {}): Storage {
-	const sliceById = new Map(slices.map((s) => [s.id, s]))
+export function fakeSliceStorage(slices: Slice[], _changeId: string | null = 'p1', overrides: Partial<Storage> = {}): Storage {
 	return {
 		createChange: defaultCreatedEntity,
 		findChange: defaultFindChange,
@@ -31,7 +30,6 @@ export function fakeSliceStorage(slices: Slice[], changeId: string | null = 'p1'
 		closeChange: noop,
 		createSlice: unusedCreateSlice,
 		findSlices: async () => slices,
-		findSlice: async (sliceId) => findFakeSlice(changeId, sliceById, sliceId),
 		updateChangeMetadata: noop,
 		updateSlice: noop,
 		updateSliceMetadata: noop,
@@ -47,8 +45,3 @@ async function unusedCreateSlice(): Promise<Slice> {
 	throw new Error('not used')
 }
 
-function findFakeSlice(changeId: string | null, sliceById: Map<string, Slice>, sliceId: string): { changeId: string; slice: Slice } | null {
-	if (changeId === null) return null
-	const slice = sliceById.get(sliceId)
-	return slice ? { changeId, slice } : null
-}

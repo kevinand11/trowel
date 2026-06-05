@@ -203,7 +203,6 @@ if (import.meta.vitest) {
 				throw new Error('unused')
 			},
 			findSlices: async () => state.slices.map((s) => ({ ...s })),
-			findSlice: async () => null,
 			updateChangeMetadata: async () => {},
 			updateSlice: async (_p, sliceId, patch) => {
 				applyTestSlicePatch(

@@ -22,10 +22,10 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel change work <change-id> [--storage <kind>] [--harness <kind>]` | Run the AFK loop for a Change. |
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
-| `trowel slice status <slice-id> [--storage <kind>]` | Show one Slice. |
-| `trowel slice implement <slice-id> [--storage <kind>] [--harness <kind>]` | Run the Implementer for one open Slice. |
-| `trowel slice audit <slice-id> [--storage <kind>] [--harness <kind>]` | Run the Auditor for one implemented Slice. |
-| `trowel slice review <slice-id> [--storage <kind>] [--harness <kind>]` | Run the Reviewer for one `needs-revision` Slice with PR feedback. |
+| `trowel slice status <change-id> <slice-id> [--storage <kind>]` | Show one Slice. |
+| `trowel slice implement <change-id> <slice-id> [--storage <kind>] [--harness <kind>]` | Run the Implementer for one open Slice. |
+| `trowel slice audit <change-id> <slice-id> [--storage <kind>] [--harness <kind>]` | Run the Auditor for one implemented Slice. |
+| `trowel slice review <change-id> <slice-id> [--storage <kind>] [--harness <kind>]` | Run the Reviewer for one `needs-revision` Slice with PR feedback. |
 | `trowel doctor` | Check local tool/config health. |
 | `trowel repair branch-metadata [--dry-run\|--apply]` | Patch legacy issue-storage records with required Target, Change, and Slice branch metadata. |
 | `trowel config` | Print resolved config. |

@@ -100,40 +100,44 @@ export function run(): void {
 	sliceCmd
 		.command('status')
 		.description("Show a single slice's state (parent Change, state, blockers)")
+		.argument('<change-id>')
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
-		.action(async (sliceId: string, opts) => {
-			await statusSlice(sliceId, opts)
+		.action(async (changeId: string, sliceId: string, opts) => {
+			await statusSlice(changeId, sliceId, opts)
 		})
 
 	sliceCmd
 		.command('implement')
 		.description('Run implementer on one slice')
+		.argument('<change-id>')
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (sliceId: string, opts) => {
-			await implement(sliceId, opts)
+		.action(async (changeId: string, sliceId: string, opts) => {
+			await implement(changeId, sliceId, opts)
 		})
 
 	sliceCmd
 		.command('audit')
 		.description('Run auditor on one implemented slice')
+		.argument('<change-id>')
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (sliceId: string, opts) => {
-			await audit(sliceId, opts)
+		.action(async (changeId: string, sliceId: string, opts) => {
+			await audit(changeId, sliceId, opts)
 		})
 
 	sliceCmd
 		.command('review')
 		.description("Run Reviewer on a slice with PR feedback marked needs-revision")
+		.argument('<change-id>')
 		.argument('<slice-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (sliceId: string, opts) => {
-			await review(sliceId, opts)
+		.action(async (changeId: string, sliceId: string, opts) => {
+			await review(changeId, sliceId, opts)
 		})
 
 	program

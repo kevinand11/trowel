@@ -1,9 +1,10 @@
 import { runManualSliceCommand } from './manual-slice-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 
-export async function review(sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
+export async function review(changeId: string, sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
 	await runManualSliceCommand({
 		commandName: 'review',
+		changeId,
 		sliceId,
 		storage: opts.storage,
 		harness: opts.harness,
@@ -19,8 +20,9 @@ if (import.meta.vitest) {
 		await import('../test-utils/slice-phase-command-fixtures.ts')
 
 	describe('runReview', () => {
-		const runReview = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime']) =>
+		const runReview = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime'], changeId = 'p1') =>
 			runSlicePhaseCommand({
+				changeId,
 				sliceId,
 				runtime,
 				requiredState: 'needs-revision',

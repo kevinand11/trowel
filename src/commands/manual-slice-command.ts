@@ -6,6 +6,7 @@ import type { SliceState } from '../storages/types.ts'
 
 export async function runManualSliceCommand(opts: {
 	commandName: string
+	changeId: string
 	sliceId: string
 	storage?: string
 	harness?: HarnessKind
@@ -16,6 +17,7 @@ export async function runManualSliceCommand(opts: {
 	try {
 		const wiring = await buildLoopWiring({ storage: opts.storage, harness: opts.harness })
 		await runSlicePhaseCommand({
+			changeId: opts.changeId,
 			sliceId: opts.sliceId,
 			runtime: {
 				storage: wiring.storage,

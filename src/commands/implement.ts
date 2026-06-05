@@ -3,9 +3,10 @@ import type { HarnessKind } from '../harnesses/registry.ts'
 import type { PhaseCtx, Slice } from '../storages/types.ts'
 import type { PhaseDeps } from '../work/phases.ts'
 
-export async function implement(sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
+export async function implement(changeId: string, sliceId: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
 	await runManualSliceCommand({
 		commandName: 'implement',
+		changeId,
 		sliceId,
 		storage: opts.storage,
 		harness: opts.harness,
@@ -23,8 +24,9 @@ if (import.meta.vitest) {
 	const { landImplement, prepareImplement } = await import('../work/phases.ts')
 
 	describe('runImplement', () => {
-		const runImplement = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime']) =>
+		const runImplement = (sliceId: string, runtime: Parameters<typeof runSlicePhaseCommand>[0]['runtime'], changeId = 'p1') =>
 			runSlicePhaseCommand({
+				changeId,
 				sliceId,
 				runtime,
 				requiredState: 'open',

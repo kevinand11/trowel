@@ -100,9 +100,9 @@ export async function statusChange(changeId: string, opts: { storage?: string },
 	await exitOnStatusError(() => runStatus(changeId, statusRuntime(storage, gh, git, pr, deps.stdout, needsRevisionLabel)))
 }
 
-export async function statusSlice(sliceId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
+export async function statusSlice(changeId: string, sliceId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
 	const { storage, gh, git, pr, needsRevisionLabel } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
-	await exitOnStatusError(() => runStatusSlice(sliceId, statusRuntime(storage, gh, git, pr, deps.stdout, needsRevisionLabel)))
+	await exitOnStatusError(() => runStatusSlice(changeId, sliceId, statusRuntime(storage, gh, git, pr, deps.stdout, needsRevisionLabel)))
 }
 
 type StatusSliceRuntime = {
@@ -116,28 +116,21 @@ type StatusSliceRuntime = {
 
 type StatusSliceContext = { change: ChangeRecord; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
 
-async function runStatusSlice(sliceId: string, rt: StatusSliceRuntime): Promise<void> {
-	const context = await statusSliceContext(sliceId, rt)
+async function runStatusSlice(changeId: string, sliceId: string, rt: StatusSliceRuntime): Promise<void> {
+	const context = await statusSliceContext(changeId, sliceId, rt)
 	writeStatusText(rt.stdout, renderStatusSlice(context.change, context.target, context.siblings))
 }
 
-async function statusSliceContext(sliceId: string, rt: StatusSliceRuntime): Promise<StatusSliceContext> {
-	const hit = await findSliceForStatus(sliceId, rt)
-	const change = await findChangeForStatusSlice(sliceId, hit.changeId, rt)
+async function statusSliceContext(changeId: string, sliceId: string, rt: StatusSliceRuntime): Promise<StatusSliceContext> {
+	const change = await findChangeForStatusSlice(sliceId, changeId, rt)
 	const siblings = await classifySlicesForChange({
 		storage: rt.storage,
 		gh: rt.gh,
-		changeId: hit.changeId,
+		changeId,
 		pr: rt.pr,
 		needsRevisionLabel: rt.needsRevisionLabel,
 	})
-	return { change, target: targetStatusSlice(sliceId, siblings), siblings }
-}
-
-async function findSliceForStatus(sliceId: string, rt: StatusSliceRuntime): Promise<{ changeId: string; slice: Slice }> {
-	const hit = await rt.storage.findSlice(sliceId)
-	if (!hit) throw new Error(`slice '${sliceId}' not found`)
-	return hit
+	return { change, target: targetStatusSlice(changeId, sliceId, siblings), siblings }
 }
 
 async function findChangeForStatusSlice(sliceId: string, changeId: string, rt: StatusSliceRuntime): Promise<ChangeRecord> {
@@ -146,9 +139,9 @@ async function findChangeForStatusSlice(sliceId: string, changeId: string, rt: S
 	return change
 }
 
-function targetStatusSlice(sliceId: string, siblings: ClassifiedSlice[]): ClassifiedSlice {
+function targetStatusSlice(changeId: string, sliceId: string, siblings: ClassifiedSlice[]): ClassifiedSlice {
 	const target = siblings.find((s) => s.id === sliceId)
-	if (!target) throw new Error(`slice '${sliceId}' disappeared between findSlice and findSlices`)
+	if (!target) throw new Error(`slice '${sliceId}' not found in Change '${changeId}'`)
 	return target
 }
 
@@ -185,7 +178,6 @@ if (import.meta.vitest) {
 				throw new Error('nyi')
 			},
 			findSlices: async () => state.rawSlices,
-			findSlice: async () => null,
 			updateSlice: async () => {},
 			updateSliceMetadata: async () => {},
 		}
@@ -329,7 +321,6 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => [rawSlice],
-				findSlice: async (sliceId) => (sliceId === rawSlice.id ? { changeId: change.id, slice: rawSlice } : null),
 				updateSlice: async () => {},
 				updateSliceMetadata: async () => {},
 			}
@@ -337,6 +328,7 @@ if (import.meta.vitest) {
 			let buf = ''
 			await expectCompletesWhileMutationLockHeld(async (projectRoot) => {
 				await statusSlice(
+					change.id,
 					rawSlice.id,
 					{},
 					{
@@ -392,7 +384,6 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => [rawSlice],
-				findSlice: async (sliceId) => (sliceId === rawSlice.id ? { changeId: change.id, slice: rawSlice } : null),
 				updateSlice: async () => {},
 				updateSliceMetadata: async () => {},
 			}
@@ -401,6 +392,7 @@ if (import.meta.vitest) {
 			let buf = ''
 
 			await statusSlice(
+				change.id,
 				rawSlice.id,
 				{},
 				{
@@ -586,7 +578,6 @@ if (import.meta.vitest) {
 
 	describe('runStatusSlice', () => {
 		function sliceStorage(change: ChangeRecord, rawSlices: Slice[]): Storage {
-			const byId = new Map(rawSlices.map((s) => [s.id, s]))
 			return {
 				createChange: async () => ({ id: 'x', title: 'x' }),
 				findChange: async (id) => (id === change.id ? change : null),
@@ -597,10 +588,6 @@ if (import.meta.vitest) {
 					throw new Error('nyi')
 				},
 				findSlices: async () => rawSlices,
-				findSlice: async (sliceId) => {
-					const s = byId.get(sliceId)
-					return s ? { changeId: change.id, slice: s } : null
-				},
 				updateSlice: async () => {},
 				updateSliceMetadata: async () => {},
 			}
@@ -626,7 +613,7 @@ if (import.meta.vitest) {
 			const storage = sliceStorage(change, slices)
 			const { gh } = recordingGhOps()
 			let buf = ''
-			await runStatusSlice('42', { storage, gh, git: unmergedGit(), pr: false, stdout: (s) => (buf += s) })
+			await runStatusSlice(change.id, '42', { storage, gh, git: unmergedGit(), pr: false, stdout: (s) => (buf += s) })
 			return buf
 		}
 
@@ -651,8 +638,8 @@ if (import.meta.vitest) {
 		test('errors when slice id not found', async () => {
 			const storage = sliceStorage(change, [])
 			const { gh } = recordingGhOps()
-			await expect(runStatusSlice('999', { storage, gh, git: unmergedGit(), pr: false, stdout: () => {} })).rejects.toThrow(
-				/slice '999' not found/,
+			await expect(runStatusSlice(change.id, '999', { storage, gh, git: unmergedGit(), pr: false, stdout: () => {} })).rejects.toThrow(
+				/slice '999' not found in Change 'ab12cd'/,
 			)
 		})
 	})

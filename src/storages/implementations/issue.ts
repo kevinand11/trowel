@@ -1,13 +1,6 @@
 import { classifySlices } from '../../utils/slice-state.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type {
-	ClassifiedSlice,
-	Slice,
-	SlicePatch,
-	Storage,
-	StorageDeps,
-	StorageFactory,
-} from '../types.ts'
+import type { ClassifiedSlice, Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
@@ -28,16 +21,6 @@ export const createIssueStorage: StorageFactory = (deps) => {
 
 	function labelPatchOptions(label: string, value: boolean): { add: string[] } | { remove: string[] } {
 		return value ? { add: [label] } : { remove: [label] }
-	}
-
-	async function fetchBlockedBy(sliceNumber: number): Promise<string[]> {
-		const blockers = await deps.gh.listBlockedBy(sliceNumber)
-		return blockers.map((b) => String(b.number))
-	}
-
-	async function findSlices(changeId: string): Promise<Slice[]> {
-		const rawIssues = await deps.gh.listSubIssues(entityIdToGhNumber(changeId))
-		return classifySlices(await Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue))))
 	}
 
 	async function sliceFromSubIssue(issue: GhSubIssue): Promise<Slice> {
@@ -67,8 +50,11 @@ export const createIssueStorage: StorageFactory = (deps) => {
 		return issue.labels.some((l) => l.name === label)
 	}
 
-	async function blockedByForIssue(issue: GhSubIssue): Promise<string[]> {
-		return (issue.issue_dependencies_summary?.total_blocked_by ?? 0) > 0 ? fetchBlockedBy(issue.number) : []
+	async function blockedByForIssue (issue: GhSubIssue): Promise<string[]> {
+		const totalBlockedBy = issue.issue_dependencies_summary?.total_blocked_by ?? 0
+		if (totalBlockedBy === 0) return []
+		const blockers = await deps.gh.listBlockedBy(issue.number)
+		return blockers.map((b) => String(b.number))
 	}
 
 	function processMilestones(body: string | null | undefined, source: string): ProcessMilestones {
@@ -102,7 +88,7 @@ export const createIssueStorage: StorageFactory = (deps) => {
 		return value
 	}
 
-	function metadataFromBody (body: string | null | undefined): TrowelMetadata {
+	function metadataFromBody(body: string | null | undefined): TrowelMetadata {
 		const match = /<!--\s*trowel:(.*?)-->/s.exec(body ?? '')
 		const raw = match?.[1]?.trim() ?? null
 		if (!raw) return {}
@@ -229,16 +215,9 @@ export const createIssueStorage: StorageFactory = (deps) => {
 
 			return { id: String(issue.number), title: issue.title }
 		},
-		findSlices,
-		findSlice: async (sliceId) => {
-			const changes = await deps.gh.listIssues({ label: deps.labels.change, state: 'all' })
-			for (const change of changes) {
-				const changeId = String(change.number)
-				const slices = await findSlices(changeId)
-				const match = slices.find((s) => s.id === sliceId)
-				if (match) return { changeId, slice: match }
-			}
-			return null
+		findSlices: async (changeId) => {
+			const rawIssues = await deps.gh.listSubIssues(entityIdToGhNumber(changeId))
+			return classifySlices(await Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue))))
 		},
 		updateSlice: async (_changeId, sliceId, patch) => {
 			await applyLabelPatch(sliceId, patch)
