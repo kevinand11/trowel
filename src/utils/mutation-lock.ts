@@ -1,41 +1,29 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import lockfile from 'proper-lockfile'
 
 /**
- * Async-context store of project roots whose lock the current async stack holds. Inner calls to
- * `withMutationLock` consult this store: if the root is already in our context's set, the call is
- * reentrant and skips `proper-lockfile`. Different concurrent async contexts have their own sets,
- * so a `Promise.all` of two independent `withMutationLock` calls correctly serialises (only one
- * acquires the OS lock; the other waits and retries).
- */
-const heldRoots = new AsyncLocalStorage<Set<string>>()
-
-/**
  * Run `fn` while holding trowel's project-wide mutation lock at
- * `<projectRoot>/.trowel/lock`. Any command that mutates state (Change/slice CRUD, branch ops,
- * `finalizeChange`) wraps its entry function in this; read-only commands (`status`, `list`, `config`,
+ * `<projectRoot>/.trowel/lock`. Mutating orchestrators acquire this around the smallest coherent
+ * operation that mutates trowel-managed state; read-only commands (`status`, `list`, `config`,
  * `doctor`) do not.
  *
- * Reentrant per async context — nested `withMutationLock` calls on the same project root, in the
- * same async stack, are bookkeeping only, so command-layer wrappers and inner storage-method
- * wrappers compose without deadlocking. Cross-process and cross-async-context contention still
- * uses `proper-lockfile`: on contention, retries with backoff for ~5 s and then throws
- * `Error('trowel busy: another command holds the lock')`. Stale locks (no mtime refresh for 30 s)
- * are reclaimed transparently. See ADR `2026-05-17-file-storage-deterministic-shared-ids.md`.
+ * The lock is not reentrant. Storage implementations do not acquire it; callers must avoid nested
+ * lock acquisition by placing the lock at the coherent operation boundary. Cross-process and
+ * cross-async-context contention uses `proper-lockfile`: on contention, retries with backoff for
+ * ~5 s and then throws `Error('trowel busy: another command holds the lock')`. Stale locks (no
+ * mtime refresh for 30 s) are reclaimed transparently. See ADR
+ * `2026-05-17-file-storage-deterministic-shared-ids.md` and later amendments.
  */
 export async function withMutationLock<T>(projectRoot: string, fn: () => Promise<T>): Promise<T> {
 	const key = path.resolve(projectRoot)
-	const heldHere = heldRoots.getStore()
-	if (lockAlreadyHeld(heldHere, key)) return fn()
 	const release = await acquireMutationLock(key)
-	return runWithHeldMutationLock(key, heldHere, release, fn)
-}
-
-function lockAlreadyHeld(heldHere: Set<string> | undefined, key: string): boolean {
-	return heldHere?.has(key) ?? false
+	try {
+		return await fn()
+	} finally {
+		await release()
+	}
 }
 
 async function acquireMutationLock(key: string): Promise<() => Promise<void>> {
@@ -58,16 +46,6 @@ async function acquireMutationLock(key: string): Promise<() => Promise<void>> {
 function mutationLockError(err: unknown): Error {
 	if ((err as { code?: string }).code === 'ELOCKED') return new Error('trowel busy: another command holds the lock')
 	return err as Error
-}
-
-async function runWithHeldMutationLock<T>(key: string, heldHere: Set<string> | undefined, release: () => Promise<void>, fn: () => Promise<T>): Promise<T> {
-	const nextSet = new Set(heldHere ?? [])
-	nextSet.add(key)
-	try {
-		return await heldRoots.run(nextSet, fn)
-	} finally {
-		await release()
-	}
 }
 
 async function ensureFile(p: string): Promise<void> {
@@ -120,38 +98,6 @@ if (import.meta.vitest) {
 			// A second acquisition succeeds → release ran in finally.
 			const result = await withMutationLock(root, async () => 'ok')
 			expect(result).toBe('ok')
-		})
-
-		test('reentrant within the same process — nested calls do not deadlock', async () => {
-			const root = await makeProjectRoot()
-			const result = await withMutationLock(root, async () => withMutationLock(root, async () => withMutationLock(root, async () => 'nested-ok')))
-			expect(result).toBe('nested-ok')
-			// Lock is fully released after the outermost call exits.
-			const after = await withMutationLock(root, async () => 'still-acquirable')
-			expect(after).toBe('still-acquirable')
-		})
-
-		test('reentry releases the outer lock only when the outermost call exits', async () => {
-			const root = await makeProjectRoot()
-			let innerThrew = false
-			await expect(
-				withMutationLock(root, async () => {
-					try {
-						await withMutationLock(root, async () => {
-							throw new Error('inner-fail')
-						})
-					} catch {
-						innerThrew = true
-					}
-					// Outer is still held; we can still nest a sibling call.
-					await withMutationLock(root, async () => undefined)
-					throw new Error('outer-fail')
-				}),
-			).rejects.toThrow(/outer-fail/)
-			expect(innerThrew).toBe(true)
-			// Lock fully released after outer throw.
-			const after = await withMutationLock(root, async () => 'fresh')
-			expect(after).toBe('fresh')
 		})
 
 		test('serialises overlapping invocations against the same project root', async () => {

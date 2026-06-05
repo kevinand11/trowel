@@ -2,7 +2,6 @@ import { MERGE_CHANGE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from '.
 import type { DeleteBranchPolicy, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
-import { withMutationLock } from '../utils/mutation-lock.ts'
 
 /**
  * Terminal step that ships a closeable Change. Branches on `config.ship.pr`:
@@ -46,11 +45,7 @@ export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): P
 	return deps.config.pr ? closeOutViaPr(entity, deps, targetBranch, tag) : closeOutViaMerge(entity, deps, targetBranch, tag)
 }
 
-function closeOutViaPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
-	return withLock(deps, () => closeOutViaPrLocked(entity, deps, targetBranch, tag))
-}
-
-async function closeOutViaPrLocked(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
+async function closeOutViaPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
 	const prNumber = await ensureCloseOutPr(entity, deps, targetBranch, tag)
 	if (prNumber === null) return
 	await markCloseOutPrReady(prNumber, deps, tag)
@@ -79,11 +74,7 @@ async function markCloseOutPrReady(prNumber: number, deps: CloseOutDeps, tag: st
 	})
 }
 
-function closeOutViaMerge(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
-	return withLock(deps, () => closeOutViaMergeLocked(entity, deps, targetBranch, tag))
-}
-
-async function closeOutViaMergeLocked(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
+async function closeOutViaMerge(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
 	await mergeCloseOutBranch(entity, deps, targetBranch)
 	deps.log(`${tag} host-merged ${entity.changeBranch} into ${targetBranch}`)
 	await finalizeEntity(entity, deps)
@@ -145,11 +136,6 @@ function bodyFor(entity: CloseOutEntity): string {
  */
 function autoDeletePolicy(p: DeleteBranchPolicy): DeleteBranchPolicy {
 	return p === 'prompt' ? 'never' : p
-}
-
-function withLock<T>(deps: CloseOutDeps, fn: () => Promise<T>): Promise<T> {
-	if (!deps.projectRoot) return fn()
-	return withMutationLock(deps.projectRoot, fn)
 }
 
 if (import.meta.vitest) {

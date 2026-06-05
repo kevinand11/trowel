@@ -36,7 +36,15 @@ if (import.meta.vitest) {
 	function makeStorage(state: { change?: { id: string; changeBranch: string; targetBranch: string; title: string } }): Storage {
 		return fakeSliceStorage([], null, {
 			findChange: async (id) => state.change && state.change.id === id
-				? { id, changeBranch: state.change.changeBranch, targetBranch: state.change.targetBranch, title: state.change.title, closedAt: null }
+				? {
+					id,
+					title: state.change.title,
+					body: '',
+					createdAt: '2026-01-01T00:00:00.000Z',
+					closedAt: null,
+					targetBranch: state.change.targetBranch,
+					changeBranch: state.change.changeBranch,
+				}
 				: null,
 		})
 	}

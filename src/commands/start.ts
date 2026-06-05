@@ -4,6 +4,7 @@ import { resolveGrillSpec, type GrillSpecResult } from './grill-flow.ts'
 import { buildGrillCommandRuntime, exitOnCommandError } from './runtime.ts'
 import type { ChangeMetadataPatch, Storage } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
+import { withMutationLock } from '../utils/mutation-lock.ts'
 import { slug as slugify } from '../utils/slug.ts'
 import { parseStartOut, type CreateChangeStartOut, type StartOut } from '../work/start-out.ts'
 
@@ -67,18 +68,20 @@ async function handleStartOutcome(rt: StartRuntime, result: StartGrillResult): P
 }
 
 async function materialiseStartChange(rt: StartRuntime, result: StartGrillResult, spec: StartSpec): Promise<CreatedStartChange> {
-	const created = await rt.storage.createChange(spec.change)
-	const changeId = created.id
-	const changeBranch = changeBranchName(changeId, created.title)
-	await rt.git.createRemoteBranch(changeBranch, result.targetBranch)
-	await updateChangeMetadataOrThrow(rt, changeId, { targetBranch: result.targetBranch, changeBranch })
-	result.markMaterialised()
-	await rt.git.fetch(changeBranch)
-	await rt.git.checkout(changeBranch)
-	if (result.stashed) await rt.git.stashPop()
-	const realIds = await createStartSlices(rt, changeId, spec)
-	await updateStartSliceLinks(rt, changeId, spec, realIds)
-	return { changeId, changeBranch, realIds, spec }
+	return withMutationLock(rt.projectRoot, async () => {
+		const created = await rt.storage.createChange(spec.change)
+		const changeId = created.id
+		const changeBranch = changeBranchName(changeId, created.title)
+		await rt.git.createRemoteBranch(changeBranch, result.targetBranch)
+		await updateChangeMetadataOrThrow(rt, changeId, { targetBranch: result.targetBranch, changeBranch })
+		result.markMaterialised()
+		await rt.git.fetch(changeBranch)
+		await rt.git.checkout(changeBranch)
+		if (result.stashed) await rt.git.stashPop()
+		const realIds = await createStartSlices(rt, changeId, spec)
+		await updateStartSliceLinks(rt, changeId, spec, realIds)
+		return { changeId, changeBranch, realIds, spec }
+	})
 }
 
 function changeBranchName(changeId: string, title: string): string {

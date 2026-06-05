@@ -18,6 +18,8 @@ export type IssueSummary = {
 	title: string
 	createdAt: string
 	body: string
+	state: IssueState
+	closedAt: string | null
 }
 
 export type IssueRecord = {
@@ -26,6 +28,7 @@ export type IssueRecord = {
 	title: string
 	state: IssueState
 	body: string
+	createdAt: string
 	closedAt?: string | null
 }
 
@@ -217,6 +220,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 				title: issue.title,
 				state: issue.state,
 				body: issue.body ?? '',
+				createdAt: issue.created_at ?? '',
 				closedAt: issue.closed_at ?? null,
 			}
 		},
@@ -240,6 +244,8 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 				title: issue.title,
 				createdAt: issue.created_at ?? '',
 				body: issue.body ?? '',
+				state: issue.state,
+				closedAt: issue.closed_at ?? null,
 			}))
 		},
 		async closeIssue(id, opts) {
@@ -490,10 +496,10 @@ if (import.meta.vitest) {
 			const { runner, calls } = makeRunner([
 				{
 					match: () => true,
-					respond: ok(JSON.stringify({ id: 4200, number: 42, title: 'X', state: 'open', body: null, closed_at: null })),
+					respond: ok(JSON.stringify({ id: 4200, number: 42, title: 'X', state: 'open', body: null, created_at: '2026-01-01T00:00:00Z', closed_at: null })),
 				},
 			])
-			expect(await createGh(runner).viewIssue(42)).toEqual({ number: 42, internalId: 4200, title: 'X', state: 'open', body: '', closedAt: null })
+			expect(await createGh(runner).viewIssue(42)).toEqual({ number: 42, internalId: 4200, title: 'X', state: 'open', body: '', createdAt: '2026-01-01T00:00:00Z', closedAt: null })
 			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/issues/42'])
 		})
 
@@ -545,7 +551,7 @@ if (import.meta.vitest) {
 				},
 			])
 			const out = await createGh(runner).listIssues({ label: 'change', state: 'open' })
-			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z', body: '' }])
+			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z', body: '', state: 'open', closedAt: null }])
 			expect(calls[0]).toEqual([
 				'api',
 				'--paginate',

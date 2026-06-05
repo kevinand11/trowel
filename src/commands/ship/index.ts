@@ -1,4 +1,4 @@
-import type { ChangeRecord, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
+import type { Change, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
@@ -27,7 +27,7 @@ type ShipRuntime = {
 }
 
 type ShipContext = {
-	change: ChangeRecord
+	change: Change
 	slices: ClassifiedSlice[]
 	state: ChangeState
 	targetBranch: string
@@ -110,15 +110,15 @@ function nonDoneSlices(slices: ClassifiedSlice[]): ClassifiedSlice[] {
 	return slices.filter((slice) => slice.state !== 'done')
 }
 
-async function shipReadyChange(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
+async function shipReadyChange(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	return rt.pr ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
-async function shipInFlightChange(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
+async function shipInFlightChange(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	return rt.pr ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
-async function finalizeLandedChange(change: ChangeRecord, rt: ShipRuntime): Promise<void> {
+async function finalizeLandedChange(change: Change, rt: ShipRuntime): Promise<void> {
 	await rt.storage.finalizeChange(change.id)
 	rt.stdout(`Change ${change.id} has landed; finalized before cleanup.\n`)
 }
@@ -146,7 +146,7 @@ function abortedChangeError(changeId: string): Error {
 	)
 }
 
-async function shipViaMerge(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
+async function shipViaMerge(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await runCloseOut(
 		{ kind: 'change', id: change.id, changeBranch: change.changeBranch, targetBranch, title: change.title },
 		{
@@ -161,7 +161,7 @@ async function shipViaMerge(change: ChangeRecord, targetBranch: string, rt: Ship
 	return true
 }
 
-async function shipViaPr(change: ChangeRecord, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
+async function shipViaPr(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	await ensureRemoteChangeBranch(change.changeBranch, rt)
 	await runCloseOut(
 		{ kind: 'change', id: change.id, changeBranch: change.changeBranch, targetBranch, title: change.title },
@@ -188,7 +188,7 @@ async function branchCleanupAllowedAfterCloseOut(changeId: string, rt: ShipRunti
 	return context.state === 'done'
 }
 
-async function cleanupAfterShip(change: ChangeRecord, targetBranch: string, rt: ShipRuntime, branchCleanupAllowed: boolean): Promise<void> {
+async function cleanupAfterShip(change: Change, targetBranch: string, rt: ShipRuntime, branchCleanupAllowed: boolean): Promise<void> {
 	const slices = await rt.storage.findSlices(change.id)
 	await cleanupChange({
 		change,
@@ -280,6 +280,19 @@ if (import.meta.vitest) {
 	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 	const { fakeClassifiedSlice, fakeSliceStorage } = await import('../../test-utils/storage-fixtures.ts')
 
+	function fakeChange(id: string, overrides: Partial<Change> = {}): Change {
+		return {
+			id,
+			title: 'X',
+			body: '',
+			createdAt: '2026-01-01T00:00:00.000Z',
+			closedAt: null,
+			targetBranch: 'main',
+			changeBranch: 'change-3-x',
+			...overrides,
+		}
+	}
+
 	function makeRt(args: Partial<ShipRuntime> & { storage?: Storage } = {}): {
 		rt: ShipRuntime
 		gitCalls: string[]
@@ -305,13 +318,7 @@ if (import.meta.vitest) {
 				],
 				'3',
 				{
-					findChange: async (id) => ({
-						id,
-						changeBranch: 'change-3-x',
-						targetBranch: 'main',
-						title: 'X',
-						closedAt: changeClosed ? '2026-06-04T00:00:00.000Z' : null,
-					}),
+					findChange: async (id) => fakeChange(id, { closedAt: changeClosed ? '2026-06-04T00:00:00.000Z' : null }),
 					finalizeChange: async (id) => {
 						closed.push(id)
 						changeClosed = true
@@ -391,7 +398,7 @@ if (import.meta.vitest) {
 
 		test('done Change exits successfully through cleanup', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', closedAt: '2026-06-04T00:00:00.000Z' }),
+				findChange: async (id) => fakeChange(id, { closedAt: '2026-06-04T00:00:00.000Z' }),
 			})
 			const { rt, out } = makeRt({
 				storage,
@@ -403,7 +410,7 @@ if (import.meta.vitest) {
 
 		test('PR mode fails loudly when the Change branch equals the Target branch', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'main', targetBranch: 'main', title: 'X', closedAt: null }),
+				findChange: async (id) => fakeChange(id, { changeBranch: 'main', targetBranch: 'main' }),
 			})
 			const { rt, ghCalls } = makeRt({
 				storage,
@@ -426,13 +433,7 @@ if (import.meta.vitest) {
 				[fakeClassifiedSlice({ id: 's2', title: 'Needs work', state: 'open', readyForAgent: true })],
 				'3',
 				{
-					findChange: async (id) => ({
-						id,
-						changeBranch: 'change-3-x',
-						targetBranch: 'main',
-						title: 'X',
-						closedAt: null,
-					}),
+					findChange: async (id) => fakeChange(id),
 				},
 			)
 			const { rt, gitCalls, closed } = makeRt({ storage, deleteBranchPolicy: 'always' })
@@ -446,13 +447,7 @@ if (import.meta.vitest) {
 				[fakeClassifiedSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })],
 				'3',
 				{
-					findChange: async (id) => ({
-						id,
-						changeBranch: 'change-3-x',
-						targetBranch: 'main',
-						title: 'X',
-						closedAt: '2026-06-04T00:00:00.000Z',
-					}),
+					findChange: async (id) => fakeChange(id, { closedAt: '2026-06-04T00:00:00.000Z' }),
 				},
 			)
 			const { rt, gitCalls } = makeRt({ storage, deleteBranchPolicy: 'always' })
@@ -685,7 +680,7 @@ if (import.meta.vitest) {
 		test('already done Change still best-effort syncs the local Target branch after cleanup', async () => {
 			const gitCalls: string[] = []
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', closedAt: '2026-06-04T00:00:00.000Z' }),
+				findChange: async (id) => fakeChange(id, { closedAt: '2026-06-04T00:00:00.000Z' }),
 			})
 			const { rt } = makeRt({
 				storage,
@@ -710,7 +705,7 @@ if (import.meta.vitest) {
 
 		test('Target sync failures warn and do not fail Ship', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', closedAt: '2026-06-04T00:00:00.000Z' }),
+				findChange: async (id) => fakeChange(id, { closedAt: '2026-06-04T00:00:00.000Z' }),
 			})
 			const { rt, out } = makeRt({
 				storage,

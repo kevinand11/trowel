@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { setupTestRepoWithBare } from './git-repo.ts'
-import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
+import type { Change, Slice, Storage } from '../storages/types.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
 import { exec } from '../utils/shell.ts'
 
@@ -11,7 +11,7 @@ export type LocalSliceMergeFixture = {
 	projectRoot: string
 	git: GitOps
 	storage: Storage
-	state: { change: ChangeRecord; slice: Slice }
+	state: { change: Change; slice: Slice }
 	commitOnBranch: (branch: string, file: string, content: string) => Promise<void>
 	currentBranch: () => Promise<string>
 	cleanup: () => Promise<void>
@@ -32,7 +32,15 @@ export async function setupLocalSliceMergeFixture(opts: {
 	if (currentBranch !== 'main') await exec('git', ['-C', fixture.work, 'checkout', '-q', '-b', currentBranch, 'origin/main'])
 
 	const state = {
-		change: { id: changeId, changeBranch, targetBranch: 'main', title: 'Feature', closedAt: null },
+		change: {
+			id: changeId,
+			title: 'Feature',
+			body: '',
+			createdAt: '2026-01-01T00:00:00.000Z',
+			closedAt: null,
+			targetBranch: 'main',
+			changeBranch,
+		},
 		slice: testSlice(changeId, opts.slice),
 	}
 	if (state.slice.sliceBranch !== null && state.slice.sliceBranch !== changeBranch) await createRemoteSliceBranch(fixture.work, state.slice.sliceBranch, changeBranch)
@@ -74,7 +82,7 @@ function testSlice(changeId: string, overrides: Partial<Slice> = {}): Slice {
 	}
 }
 
-function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): Storage {
+function localSliceMergeStorage(state: { change: Change; slice: Slice }): Storage {
 	return {
 		createChange: async () => ({ id: state.change.id, title: state.change.title }),
 		findChange: async (id) => id === state.change.id ? { ...state.change } : null,

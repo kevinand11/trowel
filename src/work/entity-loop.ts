@@ -4,7 +4,7 @@ import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
 import type { ClassifiedSlice } from './slice-types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
+import type { Change, Slice, Storage } from '../storages/types.ts'
 import { classifyChange } from '../utils/change-state.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
@@ -42,7 +42,7 @@ async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, 
 	if (after.slices.length === 0) deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
 }
 
-type ChangeWorkState = { change: ChangeRecord; slices: ClassifiedSlice[]; state: ChangeState }
+type ChangeWorkState = { change: Change; slices: ClassifiedSlice[]; state: ChangeState }
 
 async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeWorkState> {
 	const change = await deps.storage.findChange(entity.id)
@@ -140,7 +140,7 @@ if (import.meta.vitest) {
 	}
 
 	type LoopFixtureOpts = {
-		change?: ChangeRecord
+		change?: Change
 		slices?: Slice[]
 		config?: LoopConfig
 		git?: GitOps
@@ -155,10 +155,12 @@ if (import.meta.vitest) {
 		const logs: string[] = []
 		const change = opts.change ?? {
 			id: '3',
-			changeBranch: '3-feat',
-			targetBranch: 'main',
 			title: 'Feat',
+			body: '',
+			createdAt: '2026-01-01T00:00:00.000Z',
 			closedAt: null,
+			targetBranch: 'main',
+			changeBranch: '3-feat',
 		}
 		const slices = opts.slices ?? []
 		const storage = makeStorage({
@@ -218,10 +220,12 @@ if (import.meta.vitest) {
 			const done = await runLoopFixture({
 				change: {
 					id: '3',
-					changeBranch: '3-feat',
-					targetBranch: 'main',
 					title: 'Feat',
+					body: '',
+					createdAt: '2026-01-01T00:00:00.000Z',
 					closedAt: '2026-06-04T00:00:00.000Z',
+					targetBranch: 'main',
+					changeBranch: '3-feat',
 				},
 				slices: [doneSlice],
 				gh,
@@ -229,10 +233,12 @@ if (import.meta.vitest) {
 			const aborted = await runLoopFixture({
 				change: {
 					id: '3',
-					changeBranch: '3-feat',
-					targetBranch: 'main',
 					title: 'Feat',
+					body: '',
+					createdAt: '2026-01-01T00:00:00.000Z',
 					closedAt: '2026-06-04T00:00:00.000Z',
+					targetBranch: 'main',
+					changeBranch: '3-feat',
 				},
 				slices: [doneSlice],
 			})

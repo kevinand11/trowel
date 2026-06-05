@@ -1,7 +1,7 @@
 import { confirm as inqConfirm, input as inqInput } from '@inquirer/prompts'
 
 import { restoreStartingBranch, type OpenPr } from './branch.ts'
-import type { ChangeRecord, DeleteBranchPolicy, Storage } from '../../storages/types.ts'
+import type { Change, DeleteBranchPolicy, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
@@ -28,7 +28,7 @@ type AbortRuntime = {
 }
 
 type ClassifiedChange = {
-	change: ChangeRecord
+	change: Change
 	slices: ClassifiedSlice[]
 	state: ChangeState
 }
@@ -56,7 +56,7 @@ async function classifiedChangeOrThrow(changeId: string, rt: AbortRuntime): Prom
 	return { change, slices, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) }
 }
 
-async function changeTargetBranch(change: ChangeRecord, _rt: AbortRuntime): Promise<string> {
+async function changeTargetBranch(change: Change, _rt: AbortRuntime): Promise<string> {
 	return change.targetBranch
 }
 
@@ -82,7 +82,7 @@ async function abortChangeByState(target: ClassifiedChange, targetBranch: string
 }
 
 async function abortOpenOrReadyChange(
-	change: ChangeRecord,
+	change: Change,
 	slices: ClassifiedSlice[],
 	targetBranch: string,
 	rt: AbortRuntime,
@@ -93,7 +93,7 @@ async function abortOpenOrReadyChange(
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
-async function abortInFlightChange(change: ChangeRecord, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
+async function abortInFlightChange(change: Change, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
 	if (!(await confirmAbortInFlightChange(change.id, rt))) return
 	await closeOpenCloseOutPr(change, rt)
 	await closeOpenSlicePrs(slices, rt)
@@ -122,7 +122,7 @@ async function closeOpenSlicePrs(slices: ClassifiedSlice[], rt: AbortRuntime): P
 	}
 }
 
-async function closeOpenCloseOutPr(change: ChangeRecord, rt: AbortRuntime): Promise<void> {
+async function closeOpenCloseOutPr(change: Change, rt: AbortRuntime): Promise<void> {
 	const pr = await rt.gh.findAnyPrByHead(change.changeBranch)
 	if (pr?.state === 'OPEN') await closePrWithoutMerging(pr.number, rt)
 }
@@ -138,7 +138,7 @@ async function closeOpenSliceRecords(changeId: string, slices: ClassifiedSlice[]
 	}
 }
 
-async function cleanupAfterAbort(change: ChangeRecord, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
+async function cleanupAfterAbort(change: Change, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
 	await cleanupChange({
 		change,
 		slices,
@@ -199,7 +199,7 @@ if (import.meta.vitest) {
 	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 
 	type FakeStorageState = {
-		change: ChangeRecord | null
+		change: Change | null
 		slices: ClassifiedSlice[]
 	}
 
@@ -211,13 +211,15 @@ if (import.meta.vitest) {
 		mergedIntoTarget: boolean
 	}
 
-	function fakeChange(overrides: Partial<ChangeRecord> = {}): ChangeRecord {
+	function fakeChange(overrides: Partial<Change> = {}): Change {
 		return {
 			id: '42',
-			changeBranch: 'change-42-feature',
-			targetBranch: 'main',
 			title: 'Feature',
+			body: '',
+			createdAt: '2026-01-01T00:00:00.000Z',
 			closedAt: null,
+			targetBranch: 'main',
+			changeBranch: 'change-42-feature',
 			...overrides,
 		}
 	}

@@ -1,4 +1,4 @@
-import type { ChangeSummary, Storage } from '../../storages/types.ts'
+import type { Change, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
@@ -9,7 +9,7 @@ import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 import { buildStorage, loadCommandBase } from '../runtime.ts'
 
 type ListRuntime = { storage: Storage; pr: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts }
-type ChangeListRow = ChangeSummary & { state: ChangeState; slices: ClassifiedSlice[] }
+type ChangeListRow = Change & { state: ChangeState; slices: ClassifiedSlice[] }
 
 export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
@@ -37,15 +37,14 @@ function stateCounts(slices: ClassifiedSlice[]): Record<SliceState, number> {
 }
 
 async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
-	const summaries = await rt.storage.listChanges()
-	const rows = await Promise.all(summaries.map((summary) => listChangeRow(rt, summary)))
+	const changes = await rt.storage.listChanges()
+	const rows = await Promise.all(changes.map((change) => listChangeRow(rt, change)))
 	return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
-async function listChangeRow(rt: ListRuntime, summary: ChangeSummary): Promise<ChangeListRow> {
-	const change = await rt.storage.findChange(summary.id)
-	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: summary.id, pr: rt.pr })
-	return { ...summary, state: change ? await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) : 'open', slices }
+async function listChangeRow(rt: ListRuntime, change: Change): Promise<ChangeListRow> {
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: change.id, pr: rt.pr })
+	return { ...change, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }), slices }
 }
 
 if (import.meta.vitest) {
@@ -76,9 +75,12 @@ if (import.meta.vitest) {
 		test('renders one open Change with state counts', () => {
 			const out = formatChangeRow({
 				id: '1',
-				title: 'Add parser',
-				changeBranch: 'change-1-add-parser',
+					title: 'Add parser',
+				body: '',
 				createdAt: '2026-05-12T00:00:00Z',
+				closedAt: null,
+				targetBranch: 'main',
+				changeBranch: 'change-1-add-parser',
 				state: 'open',
 				slices: [fakeSlice({ id: 's1', state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })],
 			})
@@ -106,20 +108,25 @@ if (import.meta.vitest) {
 	})
 
 	describe('listChangeRows', () => {
-		function storageWith(summaries: ChangeSummary[], slices: ClassifiedSlice[], listCalls: string[]): Storage {
+		function change(overrides: Partial<Change>): Change {
+			return {
+				id: '1',
+				title: 'Change',
+				body: '',
+				createdAt: '2026-01-01T00:00:00.000Z',
+				closedAt: null,
+				targetBranch: 'main',
+				changeBranch: 'change-1',
+				...overrides,
+			}
+		}
+
+		function storageWith(summaries: Change[], slices: ClassifiedSlice[], listCalls: string[]): Storage {
 			return fakeSliceStorage(slices, null, {
 				listChanges: async () => {
 					listCalls.push('listChanges')
 					return summaries
 				},
-				findChange: async (id) => ({
-					id,
-					changeBranch: `change-${id}`,
-					targetBranch: 'fake-base',
-					title: id,
-					state: 'OPEN',
-					closedAt: null,
-				}),
 			})
 		}
 
@@ -163,8 +170,8 @@ if (import.meta.vitest) {
 			const rows = await listChangeRows({
 				storage: storageWith(
 					[
-						{ id: 'old', title: 'Old', changeBranch: 'change-old', createdAt: '2026-05-01T00:00:00Z' },
-						{ id: 'new', title: 'New', changeBranch: 'change-new', createdAt: '2026-05-02T00:00:00Z' },
+						change({ id: 'old', title: 'Old', changeBranch: 'change-old', createdAt: '2026-05-01T00:00:00Z' }),
+						change({ id: 'new', title: 'New', changeBranch: 'change-new', createdAt: '2026-05-02T00:00:00Z' }),
 					],
 					[],
 					listCalls,
@@ -185,7 +192,7 @@ if (import.meta.vitest) {
 
 			const rows = await listChangeRows({
 				storage: storageWith(
-					[{ id: '1', title: 'Done', changeBranch: 'change-1', createdAt: '2026-05-01T00:00:00Z' }],
+					[change({ id: '1', title: 'Done', changeBranch: 'change-1', targetBranch: 'fake-base', createdAt: '2026-05-01T00:00:00Z' })],
 					slices,
 					listCalls,
 				),

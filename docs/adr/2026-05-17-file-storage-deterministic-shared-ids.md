@@ -3,6 +3,8 @@
 > **Note:** the read-lock posture in this ADR is historical. It was amended by `2026-05-17-reads-acquire-mutation-lock.md`, and that amendment is now superseded by [2026-06-04-read-commands-do-not-finalize.md](./2026-06-04-read-commands-do-not-finalize.md): entity read commands do not acquire the Mutation lock and never run Finalization.
 >
 > **Amended by:** [2026-06-05-slice-commands-require-change-id.md](./2026-06-05-slice-commands-require-change-id.md). Shared integer id allocation remains, but slice-id-only commands and `Storage.findSlice` were reversed.
+>
+> **Amended by:** [2026-06-05-mutation-lock-owned-by-orchestrators.md](./2026-06-05-mutation-lock-owned-by-orchestrators.md). Shared integer id allocation remains, but the layered-lock design is replaced: orchestrators acquire the Mutation lock around coherent state-mutating operations, Storage implementations do not acquire it, and `withMutationLock` is no longer reentrant.
 
 The `file` storage today mints **PRD ids** as 10-character base-36 random strings via `src/utils/id.ts:generateId`, with slice ids drawn from the same generator. Slice ids are namespaced under their PRD directory (`<prdsDir>/<prdId>-<slug>/slices/<sliceId>-<slug>/`) — two different PRDs can in principle hold slices that share the same id without conflict, because the lookup path always carries the PRD context. Random ids carry no information beyond uniqueness, are awkward to type, and force every slice-addressed command (`status`, `close`, `implement`, `address`, `review`) to also name the PRD.
 
@@ -15,7 +17,7 @@ Two consequences follow:
 
 Compute-on-demand is race-prone if two trowel invocations run concurrently. To make it safe, this ADR introduces the **Mutation lock**: a project-wide advisory lock at `<projectRoot>/.trowel/lock`, acquired by any state-mutating command. Read-only commands (`status`, `list`, `config`, `doctor`) do not acquire it. The lock is modelled after git's `.git/index.lock` and implemented via the `proper-lockfile` npm package — mtime-refreshed, with stale-lock detection at a conservative threshold. On contention, the caller retries with backoff for up to ~5 seconds, then fails with `trowel busy: another command holds the lock`.
 
-The `issue` storage is **unchanged** by this ADR. GitHub already allocates auto-incrementing issue numbers from a single repo-wide pool (sub-issues share the issue-number sequence), so the shared-pool invariant holds there by construction. The mutation lock is also a `file`-only concern in practice: `issue` storage's writes go through `gh`, which serializes against GitHub's own state, not local disk. The lock module is generic and could wrap issue-storage commands too, but doing so today buys nothing.
+The `issue` storage is **unchanged** by this ADR. GitHub already allocates auto-incrementing issue numbers from a single repo-wide pool (sub-issues share the issue-number sequence), so the shared-pool invariant holds there by construction. Later amendments make the Mutation lock storage-agnostic at the orchestrator layer: it protects coherent trowel operations uniformly, while Storage implementations themselves remain pure persistence and do not acquire it.
 
 ## Considered options
 
@@ -99,17 +101,9 @@ export async function withMutationLock<T>(
 
 ### Where the lock is acquired
 
-The lock is layered — both at the command-layer entry for short-running mutation commands AND inside `Storage` write methods for the bare-bones single-mutation guarantee. To make the layering safe, `withMutationLock` is **reentrant per async context** via `AsyncLocalStorage`: nested calls on the same project root, in the same async stack, skip `proper-lockfile` and just run the inner function. Concurrent async contexts in the same process still serialise correctly because each gets its own copy of the held-roots set.
+This section is superseded by [2026-06-05-mutation-lock-owned-by-orchestrators.md](./2026-06-05-mutation-lock-owned-by-orchestrators.md).
 
-Acquisition points:
-
-- `close prd <id>` / `close slice <id>` — wrapped at command entry. The whole `runClose{Prd,Slice}` body runs in the critical section. Confirms (delete-branch policy, slice-not-done) hold the lock; they're brief user-attention prompts and another concurrent command will fail with `trowel busy` after 5 s — acceptable feedback for a user actively at a prompt.
-- `start` — **not** wrapped at command entry. The interactive grilling session can run for many minutes; locking the whole thing would freeze the rest of trowel. Storage methods (`createPrd`, `createSlice`, `updateSlice`) acquire the lock individually for the final write phase. Since IDs are allocated inside `createPrd`/`createSlice` (under the lock), the race-critical step is still atomic.
-- `implement` / `address` / `review` / `work` — the **per-Turn land step** acquires the lock, not the whole command. Each `landImplement`/`landReview`/`landAddress` body in `src/work/phases.ts` runs inside `withPhaseLock(deps, …)`, which calls `withMutationLock(deps.projectRoot, …)`. The Turn itself (`prepare<Role>` → spawn agent → wait) runs unlocked — agent mutations live in its worktree, and `prepare` reads-mostly. This means a multi-hour `trowel work` run only blocks other commands during the brief landX windows, not during agent execution.
-- Read-only commands (`status`, `list`, `config`, `doctor`) — never acquire the lock.
-- `Storage` write methods on `file` — `createPrd`, `createSlice`, `closePrd`, `updateSlice` each wrap their body in `withMutationLock(deps.projectRoot, …)`. These are the innermost guarantee; when called from `landX` or `runClose{Prd,Slice}` the reentry check skips the OS lock since the outer call already holds it.
-
-`PhaseDeps` carries an optional `projectRoot: string`. `_loop-wiring.ts` always supplies it. `LoopDeps` likewise carries an optional `projectRoot` so `runLoop` can build the per-Turn `PhaseDeps`. Test fixtures that don't construct a real `projectRoot` get the no-op pass-through (`fn()`); production wiring always gets the locking path.
+The current rule is coherent-operation locking: command/work orchestrators acquire the Mutation lock around the smallest complete operation that mutates trowel-managed state. Storage implementations do not acquire the lock internally, and `withMutationLock` is not reentrant. Long-running Grill and Turn execution stay outside the lock; materialization, phase preparation/landing, integration, Ship, and Abort hold it while they perform their tightly-coupled storage/git/GitHub state transition. Read-only commands (`status`, `list`, `config`, `doctor`) never acquire the lock.
 
 ### Storage interface
 

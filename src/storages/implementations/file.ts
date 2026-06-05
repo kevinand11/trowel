@@ -2,27 +2,12 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { allocateNextId } from '../../utils/id.ts'
-import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import type { PhaseCtx } from '../../work/types.ts'
-import type {
-	ChangeMetadataPatch,
-	ChangeRecord,
-	ChangeSpec,
-	ChangeSummary,
-	CreatedChange,
-	CreatedSlice,
-	Slice,
-	SliceMetadataPatch,
-	SlicePatch,
-	SliceSpec,
-	Storage,
-	StorageDeps,
-	StorageFactory,
-} from '../types.ts'
+import type { Change, CreateChange, CreateSlice, Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
 
 type ChangeStore = {
 	id: string
@@ -42,38 +27,7 @@ type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & {
 	blockedBy: string[]
 }
 type SliceStoreDraft = SliceStore
-type TestSliceSpec = SliceSpec & { blockedBy?: string[] }
-
-type MutableStore = {
-	readyForAgent: boolean
-	blockedBy: string[]
-	closedAt: string | null
-	implementedAt: string | null
-	auditedAt: string | null
-}
-function applyMutablePatch(store: MutableStore, patch: SlicePatch): void {
-	applyOptionalPatchValue(store, 'readyForAgent', patch.readyForAgent)
-	applyBlockedByPatch(store, patch.blockedBy)
-	applyTimestampPatch(store, 'closedAt', patch.closedAt)
-	applyTimestampPatch(store, 'implementedAt', patch.implementedAt)
-	applyTimestampPatch(store, 'auditedAt', patch.auditedAt)
-}
-
-function applyOptionalPatchValue<K extends 'readyForAgent'>(store: MutableStore, key: K, value: MutableStore[K] | undefined): void {
-	if (value !== undefined) store[key] = value
-}
-
-function applyBlockedByPatch(store: MutableStore, blockedBy: string[] | undefined): void {
-	if (blockedBy !== undefined) store.blockedBy = [...blockedBy]
-}
-
-function applyTimestampPatch<K extends 'closedAt' | 'implementedAt' | 'auditedAt'>(
-	store: MutableStore,
-	key: K,
-	value: MutableStore[K] | undefined,
-): void {
-	if (value !== undefined) store[key] = value
-}
+type TestSliceSpec = CreateSlice & { blockedBy?: string[] }
 
 function applyValuePatch<T, K extends keyof T>(store: T, key: K, value: T[K] | undefined): void {
 	if (value !== undefined) store[key] = value
@@ -81,21 +35,6 @@ function applyValuePatch<T, K extends keyof T>(store: T, key: K, value: T[K] | u
 
 function jsonWithNewline(value: unknown): string {
 	return `${JSON.stringify(value, null, 2)}\n`
-}
-
-function baseStore(id: string, slug: string, title: string): Omit<ChangeStore, 'targetBranch' | 'changeBranch'> {
-	return { id, slug, title, createdAt: new Date().toISOString(), closedAt: null }
-}
-
-async function listStoreSummaries(root: string): Promise<ChangeSummary[]> {
-	const summaries: ChangeSummary[] = []
-	for (const entry of await readdirOrEmpty(root)) summaries.push(await readStoreSummary(path.join(root, entry, 'store.json')))
-	return summaries
-}
-
-async function readStoreSummary(storePath: string): Promise<ChangeSummary> {
-	const store = validateChangeStore(JSON.parse(await readFile(storePath, 'utf8')), storePath)
-	return { id: store.id, title: store.title, changeBranch: store.changeBranch, createdAt: store.createdAt }
 }
 
 async function readdirOrEmpty(dir: string): Promise<string[]> {
@@ -108,51 +47,28 @@ async function readdirOrEmpty(dir: string): Promise<string[]> {
 
 function validateChangeStore(value: unknown, source: string): ChangeStore {
 	const store = value as Partial<ChangeStore>
-	const missing = requiredStringKeys(store, ['targetBranch', 'changeBranch'])
+	const missing = ['targetBranch', 'changeBranch'].filter(
+		(key) => typeof store[key as keyof ChangeStore] !== 'string' || store[key as keyof ChangeStore] === '',
+	)
 	if (missing.length > 0) throw new Error(`${source} is missing required Change branch metadata: ${missing.join(', ')}`)
 	return store as ChangeStore
 }
 
-function validateSliceStore(value: unknown, source: string): SliceStore {
-	const store = value as Partial<SliceStore>
-	if (!validSliceBranchValue(store.sliceBranch)) throw new Error(`${source} is missing required Slice branch metadata: sliceBranch`)
-	return store as SliceStore
-}
-
-function validSliceBranchValue(value: unknown): value is string | null {
-	return value === null || (typeof value === 'string' && value.length > 0)
-}
-
-function requiredStringKeys(value: Record<string, unknown>, keys: string[]): string[] {
-	return keys.filter((key) => typeof value[key] !== 'string' || value[key] === '')
-}
-
 export const createFileStorage: StorageFactory = (deps) => {
-	async function findEntityDir(root: string, kind: 'Change', id: string): Promise<string> {
+	async function findChangeDir(id: string): Promise<string> {
 		let entries: string[]
 		try {
-			entries = await readdir(root)
+			entries = await readdir(deps.changesDir)
 		} catch {
-			throw new Error(`no ${kind} directory found for id '${id}' (changesDir does not exist)`)
+			throw new Error(`no Change directory found for id '${id}' (changesDir does not exist)`)
 		}
 		const match = entries.find((e) => e.startsWith(`${id}-`))
-		if (!match) throw new Error(`no ${kind} directory found for id '${id}'`)
-		return path.join(root, match)
-	}
-
-	async function findChangeDir(id: string): Promise<string> {
-		return findEntityDir(deps.changesDir, 'Change', id)
-	}
-
-	async function readChangeStore(id: string): Promise<ChangeStore> {
-		const dir = await findChangeDir(id)
-		const storePath = path.join(dir, 'store.json')
-		return validateChangeStore(JSON.parse(await readFile(storePath, 'utf8')), storePath)
+		if (!match) throw new Error(`no Change directory found for id '${id}'`)
+		return path.join(deps.changesDir, match)
 	}
 
 	async function slicesDir(changeId: string): Promise<string> {
-		const dir = await findChangeDir(changeId)
-		return path.join(dir, 'slices')
+		return path.join(await findChangeDir(changeId), 'slices')
 	}
 
 	async function findSliceDir(changeId: string, sliceId: string): Promise<string> {
@@ -168,28 +84,6 @@ export const createFileStorage: StorageFactory = (deps) => {
 		return path.join(dir, match)
 	}
 
-	async function allocateEntity(title: string, root: string): Promise<{ id: string; slug: string; dir: string }> {
-		const slug = slugify(title)
-		const id = await allocateNextId(deps.changesDir)
-		return { id, slug, dir: path.join(root, `${id}-${slug}`) }
-	}
-
-	async function createChange(spec: ChangeSpec): Promise<CreatedChange> {
-		return withMutationLock(deps.projectRoot, async () => {
-			const { id, slug, dir } = await allocateEntity(spec.title, deps.changesDir)
-
-			await mkdir(dir, { recursive: true })
-			await writeFile(path.join(dir, 'README.md'), spec.body)
-			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(baseStore(id, slug, spec.title)))
-
-			return { id, title: spec.title }
-		})
-	}
-
-	async function listChanges(): Promise<ChangeSummary[]> {
-		return listStoreSummaries(deps.changesDir)
-	}
-
 	async function closeStore(dir: string): Promise<void> {
 		const storePath = path.join(dir, 'store.json')
 		const store = validateChangeStore(JSON.parse(await readFile(storePath, 'utf8')), storePath)
@@ -198,30 +92,98 @@ export const createFileStorage: StorageFactory = (deps) => {
 		await writeFile(storePath, jsonWithNewline(store))
 	}
 
-	async function finalizeChange(id: string): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => closeStore(await findChangeDir(id)))
+	async function updateSliceStore(changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
+		const storePath = path.join(await findSliceDir(changeId, sliceId), 'store.json')
+		const store = JSON.parse(await readFile(storePath, 'utf8')) as SliceStore
+		if (patch.readyForAgent !== undefined) store.readyForAgent = patch.readyForAgent
+		if (patch.blockedBy !== undefined) store.blockedBy = [...patch.blockedBy]
+		if (patch.closedAt !== undefined) store.closedAt = patch.closedAt
+		if (patch.implementedAt !== undefined) store.implementedAt = patch.implementedAt
+		if (patch.auditedAt !== undefined) store.auditedAt = patch.auditedAt
+		await writeFile(storePath, jsonWithNewline(store))
 	}
 
-	async function abortChange(id: string): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => closeStore(await findChangeDir(id)))
+	async function changeFromDir(dir: string): Promise<Change> {
+		const storePath = path.join(dir, 'store.json')
+		const store = validateChangeStore(JSON.parse(await readFile(storePath, 'utf8')), storePath)
+		const body = await readFile(path.join(dir, 'README.md'), 'utf8')
+		return {
+			id: store.id,
+			title: store.title,
+			body,
+			createdAt: store.createdAt,
+			closedAt: store.closedAt,
+			targetBranch: store.targetBranch,
+			changeBranch: store.changeBranch,
+		}
 	}
 
-	async function updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => {
+	async function sliceFromDir(dir: string): Promise<Slice> {
+		const storePath = path.join(dir, 'store.json')
+		const store = JSON.parse(await readFile(storePath, 'utf8')) as SliceStore
+		if (store.sliceBranch !== null && (typeof store.sliceBranch !== 'string' || store.sliceBranch.length === 0))
+			throw new Error(`${storePath} is missing required Slice branch metadata: sliceBranch`)
+		const body = await readFile(path.join(dir, 'README.md'), 'utf8')
+		return {
+			id: store.id,
+			title: store.title,
+			body,
+			closedAt: store.closedAt,
+			implementedAt: store.implementedAt ?? null,
+			auditedAt: store.auditedAt ?? null,
+			readyForAgent: store.readyForAgent,
+			blockedBy: store.blockedBy ?? [],
+			sliceBranch: store.sliceBranch,
+		}
+	}
+
+	return {
+		createChange: async (spec) => {
+			const slug = slugify(spec.title)
+			const id = await allocateNextId(deps.changesDir)
+			const dir = path.join(deps.changesDir, `${id}-${slug}`)
+
+			await mkdir(dir, { recursive: true })
+			await writeFile(path.join(dir, 'README.md'), spec.body)
+			await writeFile(
+				path.join(dir, 'store.json'),
+				jsonWithNewline({
+					id,
+					slug,
+					title: spec.title,
+					createdAt: new Date().toISOString(),
+					closedAt: null,
+				}),
+			)
+
+			return { id, title: spec.title }
+		},
+		findChange: async (id) => {
+			try {
+				return await changeFromDir(await findChangeDir(id))
+			} catch (error) {
+				if (error instanceof Error && /no Change directory found/.test(error.message)) return null
+				throw error
+			}
+		},
+		listChanges: async () => {
+			const changes: Change[] = []
+			for (const entry of await readdirOrEmpty(deps.changesDir)) changes.push(await changeFromDir(path.join(deps.changesDir, entry)))
+			return changes
+		},
+		finalizeChange: async (id) => closeStore(await findChangeDir(id)),
+		abortChange: async (id) => closeStore(await findChangeDir(id)),
+		updateChangeMetadata: async (changeId, patch) => {
 			const storePath = path.join(await findChangeDir(changeId), 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8')) as ChangeStoreDraft
 			applyValuePatch(store, 'targetBranch', patch.targetBranch)
 			applyValuePatch(store, 'changeBranch', patch.changeBranch)
 			await writeFile(storePath, jsonWithNewline(store))
-		})
-	}
-
-	async function createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice> {
-		return withMutationLock(deps.projectRoot, async () => {
+		},
+		createSlice: async (changeId, spec) => {
 			const slug = slugify(spec.title)
 			const id = await allocateNextId(deps.changesDir)
-			const slicesPath = await slicesDir(changeId)
-			const dir = path.join(slicesPath, `${id}-${slug}`)
+			const dir = path.join(await slicesDir(changeId), `${id}-${slug}`)
 
 			await mkdir(dir, { recursive: true })
 			await writeFile(path.join(dir, 'README.md'), spec.body)
@@ -240,125 +202,31 @@ export const createFileStorage: StorageFactory = (deps) => {
 			await writeFile(path.join(dir, 'store.json'), jsonWithNewline(store))
 
 			return { id, title: spec.title }
-		})
-	}
+		},
+		findSlices: async (changeId) => {
+			let slicesPath: string
+			try {
+				slicesPath = await slicesDir(changeId)
+			} catch {
+				return []
+			}
 
-	async function findSlices(changeId: string): Promise<Slice[]> {
-		const slicesPath = await slicesDirOrNull(changeId)
-		if (!slicesPath) return []
-		const result: Slice[] = []
-		for (const entry of await readdirOrEmpty(slicesPath)) {
-			const slice = await readSliceFromDir(path.join(slicesPath, entry))
-			if (slice) result.push(slice)
-		}
-		return result
-	}
-
-	async function slicesDirOrNull(changeId: string): Promise<string | null> {
-		try {
-			return await slicesDir(changeId)
-		} catch {
-			return null
-		}
-	}
-
-	async function readSliceFromDir(dir: string): Promise<Slice | null> {
-		const storePath = path.join(dir, 'store.json')
-		const store = validateSliceStore(JSON.parse(await readFile(storePath, 'utf8')), storePath)
-		const body = await readFile(path.join(dir, 'README.md'), 'utf8')
-		return sliceFromStore(store, body)
-	}
-
-	async function updateStore<T extends MutableStore>(dir: string, patch: SlicePatch): Promise<void> {
-		const storePath = path.join(dir, 'store.json')
-		const store: T = JSON.parse(await readFile(storePath, 'utf8'))
-		applyMutablePatch(store, patch)
-		await writeFile(storePath, jsonWithNewline(store))
-	}
-
-	async function updateSliceMetadata(changeId: string, sliceId: string, patch: SliceMetadataPatch): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => {
+			const result: Slice[] = []
+			for (const entry of await readdirOrEmpty(slicesPath)) result.push(await sliceFromDir(path.join(slicesPath, entry)))
+			return result
+		},
+		setSliceReadyForAgent: async (changeId, sliceId, ready) => updateSliceStore(changeId, sliceId, { readyForAgent: ready }),
+		setSliceBlockers: async (changeId, sliceId, blockedBy) => updateSliceStore(changeId, sliceId, { blockedBy }),
+		markSliceImplemented: async (changeId, sliceId, at) => updateSliceStore(changeId, sliceId, { implementedAt: at }),
+		markSliceAudited: async (changeId, sliceId, at) => updateSliceStore(changeId, sliceId, { auditedAt: at }),
+		finalizeSlice: async (changeId, sliceId) => updateSliceStore(changeId, sliceId, { closedAt: new Date().toISOString() }),
+		abortSlice: async (changeId, sliceId) => updateSliceStore(changeId, sliceId, { closedAt: new Date().toISOString() }),
+		updateSliceMetadata: async (changeId, sliceId, patch) => {
 			const storePath = path.join(await findSliceDir(changeId, sliceId), 'store.json')
 			const store = JSON.parse(await readFile(storePath, 'utf8')) as SliceStoreDraft
 			applyValuePatch(store, 'sliceBranch', patch.sliceBranch)
 			await writeFile(storePath, jsonWithNewline(store))
-		})
-	}
-
-	async function updateSliceStore(changeId: string, sliceId: string, patch: SlicePatch): Promise<void> {
-		return withMutationLock(deps.projectRoot, async () => updateStore<SliceStore>(await findSliceDir(changeId, sliceId), patch))
-	}
-
-	async function setSliceReadyForAgent(changeId: string, sliceId: string, ready: boolean): Promise<void> {
-		return updateSliceStore(changeId, sliceId, { readyForAgent: ready })
-	}
-
-	async function setSliceBlockers(changeId: string, sliceId: string, blockedBy: string[]): Promise<void> {
-		return updateSliceStore(changeId, sliceId, { blockedBy })
-	}
-
-	async function markSliceImplemented(changeId: string, sliceId: string, at: string): Promise<void> {
-		return updateSliceStore(changeId, sliceId, { implementedAt: at })
-	}
-
-	async function markSliceAudited(changeId: string, sliceId: string, at: string): Promise<void> {
-		return updateSliceStore(changeId, sliceId, { auditedAt: at })
-	}
-
-	async function finalizeSlice(changeId: string, sliceId: string): Promise<void> {
-		return updateSliceStore(changeId, sliceId, { closedAt: new Date().toISOString() })
-	}
-
-	async function abortSlice(changeId: string, sliceId: string): Promise<void> {
-		return updateSliceStore(changeId, sliceId, { closedAt: new Date().toISOString() })
-	}
-
-	function sliceFromStore(store: SliceStore, body: string): Slice {
-		return {
-			id: store.id,
-			title: store.title,
-			body,
-			closedAt: store.closedAt,
-			implementedAt: store.implementedAt ?? null,
-			auditedAt: store.auditedAt ?? null,
-			readyForAgent: store.readyForAgent,
-			blockedBy: store.blockedBy ?? [],
-			sliceBranch: store.sliceBranch,
-		}
-	}
-
-	async function findChange(id: string): Promise<ChangeRecord | null> {
-		try {
-			const store = await readChangeStore(id)
-			return {
-				id: store.id,
-				changeBranch: store.changeBranch,
-				targetBranch: store.targetBranch,
-				title: store.title,
-				closedAt: store.closedAt,
-			}
-		} catch (error) {
-			if (error instanceof Error && /no Change directory found/.test(error.message)) return null
-			throw error
-		}
-	}
-
-	return {
-		createChange,
-		findChange,
-		listChanges,
-		finalizeChange,
-		abortChange,
-		updateChangeMetadata,
-		createSlice,
-		findSlices,
-		setSliceReadyForAgent,
-		setSliceBlockers,
-		markSliceImplemented,
-		markSliceAudited,
-		finalizeSlice,
-		abortSlice,
-		updateSliceMetadata,
+		},
 	}
 }
 
@@ -544,44 +412,20 @@ if (import.meta.vitest) {
 	): Promise<void> {
 		const dir = path.join(f.changesDir, `${entry.id}-${entry.slug}`)
 		await mkdir(dir, { recursive: true })
+		await writeFile(path.join(dir, 'README.md'), `${entry.title} body`)
 		await writeFile(
 			path.join(dir, 'store.json'),
 			JSON.stringify({ ...entry, targetBranch: 'main', changeBranch: `change-${entry.id}-${entry.slug}` }),
 		)
 	}
 
-	async function writeAlphaBetaChangeFixtures(f: Fixture): Promise<void> {
-		await writeChangeStoreFixture(f, {
-			id: 'aaaaaa',
-			slug: 'alpha',
-			title: 'Alpha',
-			createdAt: '2026-05-11T00:00:00.000Z',
-			closedAt: '2026-05-11T01:00:00.000Z',
-		})
-		await writeChangeStoreFixture(f, {
-			id: 'bbbbbb',
-			slug: 'beta',
-			title: 'Beta',
-			createdAt: '2026-05-11T00:00:00.000Z',
-			closedAt: null,
-		})
-	}
-
-	function testChangeBranch(id: string, title: string): string {
-		return `${id}-${slugify(title)}`
-	}
-
-	function testSliceBranch(changeId: string, sliceId: string, title: string): string {
-		return `${changeId}/${sliceId}-${slugify(title)}`
-	}
-
 	async function createMaterialisedChange(
 		storage: Storage,
-		spec: ChangeSpec = { title: 'P', body: 'b' },
+		spec: CreateChange = { title: 'P', body: 'b' },
 		targetBranch = 'main',
 	): Promise<{ id: string; title: string; changeBranch: string }> {
 		const created = await storage.createChange(spec)
-		const changeBranch = testChangeBranch(created.id, created.title)
+		const changeBranch = `${created.id}-${slugify(created.title)}`
 		await storage.updateChangeMetadata(created.id, { targetBranch, changeBranch })
 		return { ...created, changeBranch }
 	}
@@ -594,7 +438,7 @@ if (import.meta.vitest) {
 	): Promise<Slice> {
 		const created = await storage.createSlice(changeId, { title: spec.title, body: spec.body })
 		await storage.updateSliceMetadata(changeId, created.id, {
-			sliceBranch: sliceBranch ?? testSliceBranch(changeId, created.id, created.title),
+			sliceBranch: sliceBranch ?? `${changeId}/${created.id}-${slugify(created.title)}`,
 		})
 		if (spec.blockedBy !== undefined) await storage.setSliceBlockers(changeId, created.id, spec.blockedBy)
 		return (await storage.findSlices(changeId)).find((s) => s.id === created.id)!
@@ -721,12 +565,7 @@ if (import.meta.vitest) {
 				const { id: changeId, changeBranch } = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
 				await f.deps.git.createLocalBranch(changeBranch, 'main')
 				await f.deps.git.pushSetUpstream(changeBranch)
-				const slice = await createMaterialisedSlice(
-					storage,
-					changeId,
-					{ title: 'Implement A', body: 'spec' },
-					changeBranch,
-				)
+				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec' }, changeBranch)
 				f.calls.git.length = 0
 
 				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
@@ -881,7 +720,11 @@ if (import.meta.vitest) {
 			try {
 				const storage = createFileStorage(f.deps)
 				const slice = makeOpenSlice()
-				const ctx: PhaseCtx = { changeId: 'p1', changeBranch: 'change/p1-x', config: { pr: true, audit: true, perSliceBranches: true } }
+				const ctx: PhaseCtx = {
+					changeId: 'p1',
+					changeBranch: 'change/p1-x',
+					config: { pr: true, audit: true, perSliceBranches: true },
+				}
 				const { gh } = recordingGhOps({
 					findPrNumberByHead: async (head) => {
 						throw new Error(`no PR found for head '${head}'`)
@@ -961,7 +804,20 @@ if (import.meta.vitest) {
 		})
 
 		test('returns both open and closed Changes', async () => {
-			await writeAlphaBetaChangeFixtures(f)
+			await writeChangeStoreFixture(f, {
+				id: 'aaaaaa',
+				slug: 'alpha',
+				title: 'Alpha',
+				createdAt: '2026-05-11T00:00:00.000Z',
+				closedAt: '2026-05-11T01:00:00.000Z',
+			})
+			await writeChangeStoreFixture(f, {
+				id: 'bbbbbb',
+				slug: 'beta',
+				title: 'Beta',
+				createdAt: '2026-05-11T00:00:00.000Z',
+				closedAt: null,
+			})
 
 			const storage = createFileStorage(f.deps)
 			const all = await storage.listChanges()
@@ -977,6 +833,7 @@ if (import.meta.vitest) {
 			for (const d of dirs) {
 				const dir = path.join(f.changesDir, d.name)
 				await mkdir(dir, { recursive: true })
+				await writeFile(path.join(dir, 'README.md'), `${d.id} body`)
 				await writeFile(
 					path.join(dir, 'store.json'),
 					JSON.stringify({
@@ -996,7 +853,6 @@ if (import.meta.vitest) {
 			expect(out.find((p) => p.id === 'aaaaaa')!.createdAt).toBe('2026-05-01T00:00:00.000Z')
 			expect(out.find((p) => p.id === 'bbbbbb')!.createdAt).toBe('2026-05-12T00:00:00.000Z')
 		})
-
 	})
 
 	describe('file storage: close', () => {
@@ -1187,19 +1043,20 @@ if (import.meta.vitest) {
 			expect(await storage.findChange('zzzzzz')).toBeNull()
 		})
 
-		test('returns ChangeRecord with closedAt=null for an open Change', async () => {
+		test('returns Change with closedAt=null for an open Change', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
-			expect(await storage.findChange(id)).toEqual({
+			expect(await storage.findChange(id)).toMatchObject({
 				id,
-				changeBranch,
-				targetBranch: 'main',
 				title: 'Alpha',
+				body: 'a',
 				closedAt: null,
+				targetBranch: 'main',
+				changeBranch,
 			})
 		})
 
-		test('returns ChangeRecord with closedAt set after close', async () => {
+		test('returns Change with closedAt set after close', async () => {
 			const deps: StorageDeps = { ...f.deps, abortOptions: { comment: null, deleteBranch: 'never' } }
 			const storage = createFileStorage(deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Beta', body: 'b' })
@@ -1208,7 +1065,6 @@ if (import.meta.vitest) {
 			expect((await storage.findChange(id))!.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 	})
-
 
 	describe('file storage: allocateNextId via createChange/createSlice', () => {
 		let f: Fixture
@@ -1341,7 +1197,6 @@ if (import.meta.vitest) {
 				await readFile(path.join(f.changesDir, `${changeId}-p`, 'slices', `${slice.id}-foo`, 'store.json'), 'utf8'),
 			)
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
-
 		})
 
 		test('updates blockedBy as a full-array replace', async () => {

@@ -1,9 +1,9 @@
-import type { ChangeRecord } from '../../storages/types.ts'
+import type { Change } from '../../storages/types.ts'
 import { emptySliceStateCounts, formatSliceStateCounts, SLICE_STATE_ORDER } from '../../utils/slice-state-format.ts'
 import type { ChangeState } from '../../work/change-types.ts'
 import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 
-export type StatusChange = ChangeRecord & { state: ChangeState }
+export type StatusChange = Change & { state: ChangeState }
 
 export function renderStatus(change: StatusChange, slices: ClassifiedSlice[]): string {
 	const counts = stateCountsFor(slices)
@@ -38,7 +38,7 @@ function stateGuidance(change: StatusChange): string {
 	}
 }
 
-export function renderStatusSlice(change: ChangeRecord, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
+export function renderStatusSlice(change: Change, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
 	const lines: string[] = []
 	lines.push(`Slice ${slice.id}  ${slice.title}`)
 	lines.push(`Change:  ${change.id}  ${change.title}`)

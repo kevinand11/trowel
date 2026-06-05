@@ -1,38 +1,31 @@
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
-export type { GitOps }
-
-export type ChangeSpec = {
+export type CreateChange = {
 	title: string
 	body: string
 	targetBranch?: string
 }
 
-export type SliceSpec = {
+export type CreateSlice = {
 	title: string
 	body: string
 }
 
-export type ChangeSummary = {
+export type Change = {
 	id: string
 	title: string
-	changeBranch: string
+	body: string
 	/**
 	 * ISO 8601 creation timestamp. Issue storage uses the underlying GitHub issue's `createdAt`;
 	 * file storage uses the Change's `store.json:createdAt`. Consumers sort by this (e.g. `trowel
 	 * list` shows newest first); storages return unsorted.
 	 */
 	createdAt: string
-}
-
-export type ChangeRecord = {
-	id: string
-	changeBranch: string
-	targetBranch: string
-	title: string
 	/** Raw terminal timestamp. `null` means the Change has not been finalized/aborted. */
 	closedAt: string | null
+	targetBranch: string
+	changeBranch: string
 }
 
 /**
@@ -63,9 +56,9 @@ export type Slice = {
 }
 
 export type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'closedAt' | 'implementedAt' | 'auditedAt' | 'blockedBy'>>
-export type CreatedChange = Pick<ChangeRecord, 'id' | 'title'>
+export type CreatedChange = Pick<Change, 'id' | 'title'>
 export type CreatedSlice = Pick<Slice, 'id' | 'title'>
-export type ChangeMetadataPatch = Partial<Pick<ChangeRecord, 'targetBranch' | 'changeBranch'>>
+export type ChangeMetadataPatch = Partial<Pick<Change, 'targetBranch' | 'changeBranch'>>
 export type SliceMetadataPatch = Partial<Pick<Slice, 'sliceBranch'>>
 
 export type DeleteBranchPolicy = 'always' | 'never' | 'prompt'
@@ -79,9 +72,8 @@ export type StorageDeps = {
 	labels: { change: string; readyForAgent: string; needsRevision: string }
 	abortOptions: { comment: string | null; deleteBranch: DeleteBranchPolicy }
 	/**
-	 * Optional runtime channels. Read-only call paths (status, list) construct a storage
-	 * without these wired; phase methods and `Storage.close` (which prompts) throw at
-	 * the top if invoked without their channel. See ADR `unified-gitops-via-module-factory`.
+	 * Optional runtime channel retained for command/runtime wiring. Storage implementations should
+	 * remain pure persistence; orchestration owns prompts, git side effects, and Mutation locking.
 	 */
 	confirm?: (msg: string) => Promise<boolean>
 	git: GitOps
@@ -92,15 +84,15 @@ export type StorageFactory = (deps: StorageDeps) => Storage
 
 export interface Storage {
 	// Change lifecycle
-	createChange(spec: ChangeSpec): Promise<CreatedChange>
-	findChange(id: string): Promise<ChangeRecord | null>
-	listChanges(): Promise<ChangeSummary[]>
+	createChange(spec: CreateChange): Promise<CreatedChange>
+	findChange(id: string): Promise<Change | null>
+	listChanges(): Promise<Change[]>
 	finalizeChange(changeId: string): Promise<void>
 	abortChange(changeId: string): Promise<void>
 	updateChangeMetadata(changeId: string, patch: ChangeMetadataPatch): Promise<void>
 
 	// Slice lifecycle
-	createSlice(changeId: string, spec: SliceSpec): Promise<CreatedSlice>
+	createSlice(changeId: string, spec: CreateSlice): Promise<CreatedSlice>
 	findSlices(changeId: string): Promise<Slice[]>
 	setSliceReadyForAgent(changeId: string, sliceId: string, ready: boolean): Promise<void>
 	setSliceBlockers(changeId: string, sliceId: string, blockedBy: string[]): Promise<void>

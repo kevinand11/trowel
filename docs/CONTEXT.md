@@ -91,8 +91,8 @@ The branch the user was on when they invoked a command that switches branches. C
 _Avoid_: Original branch, prior branch.
 
 **Mutation lock**:
-A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by state-mutating Change/Slice commands. Entity read commands do not acquire it.
-_Avoid_: Read lock, status lock, Git lock.
+A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by orchestrators around the smallest coherent operation that mutates Change/Slice state. Storage does not acquire the Mutation lock; it assumes callers have already locked when a mutation must be serialized. Entity read commands do not acquire it.
+_Avoid_: Read lock, status lock, Git lock, Storage lock, per-write lock.
 
 ### AFK loop
 

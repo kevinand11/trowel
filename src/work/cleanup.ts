@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises'
 import path from 'node:path'
 
-import type { ChangeRecord, DeleteBranchPolicy, Slice } from '../storages/types.ts'
+import type { Change, DeleteBranchPolicy, Slice } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
 export type CleanupRuntime = {
@@ -14,7 +14,7 @@ export type CleanupRuntime = {
 }
 
 export type CleanupChangeArgs = {
-	change: Pick<ChangeRecord, 'id' | 'changeBranch'>
+	change: Pick<Change, 'id' | 'changeBranch'>
 	slices: Pick<Slice, 'id' | 'sliceBranch'>[]
 	targetBranch: string
 	rt: CleanupRuntime
@@ -73,7 +73,7 @@ async function cleanupLocalBranches(args: CleanupChangeArgs): Promise<void> {
 	for (const branch of deletable) await args.rt.git.deleteBranch(branch)
 }
 
-export async function cleanupLocalBranchCandidates(change: Pick<ChangeRecord, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], targetBranch: string, git: GitOps): Promise<string[]> {
+export async function cleanupLocalBranchCandidates(change: Pick<Change, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], targetBranch: string, git: GitOps): Promise<string[]> {
 	const local = new Set(await git.listLocalBranches())
 	const candidates = new Set<string>([change.changeBranch])
 	for (const slice of slices) if (slice.sliceBranch !== null) candidates.add(slice.sliceBranch)

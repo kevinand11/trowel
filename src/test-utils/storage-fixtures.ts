@@ -1,4 +1,4 @@
-import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
+import type { Change, Slice, Storage } from '../storages/types.ts'
 import type { ClassifiedSlice } from '../work/slice-types.ts'
 
 export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
@@ -50,8 +50,8 @@ export function fakeSliceStorage(slices: Slice[], _changeId: string | null = 'p1
 	}
 }
 
-async function defaultFindChange(id: string): Promise<ChangeRecord> {
-	return { id, changeBranch: 'b', targetBranch: 'main', title: 't', closedAt: null }
+async function defaultFindChange(id: string): Promise<Change> {
+	return { id, title: 't', body: '', createdAt: '2026-01-01T00:00:00.000Z', closedAt: null, targetBranch: 'main', changeBranch: 'b' }
 }
 
 async function unusedCreateSlice(): Promise<Slice> {

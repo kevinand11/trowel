@@ -14,6 +14,7 @@ import type { ClassifiedSlice } from './slice-types.ts'
 import type { ClassifySliceConfig, PhaseOutcome, ResumeState } from './types.ts'
 import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
+import { withMutationLock } from '../utils/mutation-lock.ts'
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 
@@ -72,9 +73,14 @@ function terminalOutcomeForState(state: ResumeState): ProcessOutcome | null {
 }
 
 async function finalizeLandedSlice(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<SliceStepResult> {
-	await deps.storage.finalizeSlice(ctx.changeId, slice.id)
+	await withLoopMutationLock(deps, () => deps.storage.finalizeSlice(ctx.changeId, slice.id))
 	deps.log(`${tag} finalized landed slice`)
 	return { outcome: 'progress' }
+}
+
+function withLoopMutationLock<T>(deps: LoopDeps, fn: () => Promise<T>): Promise<T> {
+	if (!deps.projectRoot) return fn()
+	return withMutationLock(deps.projectRoot, fn)
 }
 
 async function integrateImplementedSlice(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: string, deps: LoopDeps): Promise<SliceStepResult> {

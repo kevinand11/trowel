@@ -1,67 +1,21 @@
 import { classifySlices } from '../../utils/slice-state.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
 import type { ClassifiedSlice } from '../../work/slice-types.ts'
-import type { Slice, Storage, StorageDeps, StorageFactory } from '../types.ts'
+import type { Change, Slice, Storage, StorageDeps, StorageFactory } from '../types.ts'
 
-type LabelPatch = { readyForAgent?: boolean }
-type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
 type TrowelMetadata = Record<string, unknown>
-type ProcessMilestones = { implementedAt: string | null; auditedAt: string | null }
+type IssueChangeArtifact = {
+	number: number
+	title: string
+	body: string
+	createdAt: string
+	closedAt?: string | null
+}
+type SubIssueArtifact = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
 
 const entityIdToGhNumber = (id: string): number => Number(id)
 
 export const createIssueStorage: StorageFactory = (deps) => {
-	async function applyLabelPatch(id: string, patch: LabelPatch): Promise<void> {
-		await applyBooleanLabelPatch(id, deps.labels.readyForAgent, patch.readyForAgent)
-	}
-
-	async function applyBooleanLabelPatch(id: string, label: string, value: boolean | undefined): Promise<void> {
-		if (value === undefined) return
-		await deps.gh.editIssueLabels(entityIdToGhNumber(id), labelPatchOptions(label, value))
-	}
-
-	function labelPatchOptions(label: string, value: boolean): { add: string[] } | { remove: string[] } {
-		return value ? { add: [label] } : { remove: [label] }
-	}
-
-	async function sliceFromSubIssue(issue: GhSubIssue): Promise<Slice> {
-		const closedAt = issueClosedAt(issue)
-		const milestones = processMilestones(issue.body, `issue #${issue.number}`)
-		return {
-			id: String(issue.number),
-			title: issue.title,
-			body: bodyWithoutMetadata(issue.body),
-			closedAt,
-			implementedAt: milestones.implementedAt,
-			auditedAt: milestones.auditedAt,
-			readyForAgent: hasIssueLabel(issue, deps.labels.readyForAgent),
-			blockedBy: await blockedByForIssue(issue),
-			sliceBranch: requiredMetadataStringOrNull(issue.body, `issue #${issue.number}`, 'sliceBranch'),
-		}
-	}
-
-	function issueClosedAt(issue: GhSubIssue): string | null {
-		return issue.closed_at ?? issue.closedAt ?? null
-	}
-
-	function hasIssueLabel(issue: GhSubIssue, label: string): boolean {
-		return issue.labels.some((l) => l.name === label)
-	}
-
-	async function blockedByForIssue (issue: GhSubIssue): Promise<string[]> {
-		const totalBlockedBy = issue.issue_dependencies_summary?.total_blocked_by ?? 0
-		if (totalBlockedBy === 0) return []
-		const blockers = await deps.gh.listBlockedBy(issue.number)
-		return blockers.map((b) => String(b.number))
-	}
-
-	function processMilestones(body: string | null | undefined, source: string): ProcessMilestones {
-		return {
-			implementedAt: optionalMetadataStringOrNull(body, source, 'implementedAt'),
-			auditedAt: optionalMetadataStringOrNull(body, source, 'auditedAt'),
-		}
-	}
-
 	function optionalMetadataStringOrNull(body: string | null | undefined, source: string, key: string): string | null {
 		const metadata = metadataFromBody(body)
 		if (metadata[key] === undefined || metadata[key] === null) return null
@@ -113,48 +67,37 @@ export const createIssueStorage: StorageFactory = (deps) => {
 	async function updateIssueMetadata(issueId: string, patch: TrowelMetadata): Promise<void> {
 		const no = entityIdToGhNumber(issueId)
 		const issue = await deps.gh.viewIssue(no)
-		await deps.gh.editIssueBody(no, bodyWithMetadata(issue.body, withoutUndefined(patch)))
+		await deps.gh.editIssueBody(no, bodyWithMetadata(issue.body, patch))
 	}
 
-	function withoutUndefined(patch: TrowelMetadata): TrowelMetadata {
-		return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
-	}
-
-	async function replaceBlockedBy(sliceId: string, blockedBy: string[]): Promise<void> {
-		const currentByNumber = await currentBlockersByNumber(sliceId)
-		const target = new Set(blockedBy)
-		await removeStaleBlockers(sliceId, currentByNumber, target)
-		await addNewBlockers(sliceId, blockedBy, currentByNumber)
-	}
-
-	async function currentBlockersByNumber(sliceId: string): Promise<Map<string, number>> {
-		const current = await deps.gh.listBlockedBy(entityIdToGhNumber(sliceId))
-		return new Map(current.map((b) => [String(b.number), b.id]))
-	}
-
-	async function removeStaleBlockers(sliceId: string, currentByNumber: Map<string, number>, target: Set<string>): Promise<void> {
-		for (const [number, internalId] of currentByNumber) {
-			if (!target.has(number)) await deps.gh.removeBlockedBy(entityIdToGhNumber(sliceId), internalId)
+	function changeFromIssue(issue: IssueChangeArtifact): Change {
+		const source = `issue #${issue.number}`
+		return {
+			id: String(issue.number),
+			title: issue.title,
+			body: bodyWithoutMetadata(issue.body),
+			createdAt: issue.createdAt,
+			closedAt: issue.closedAt ?? null,
+			targetBranch: requiredMetadataString(issue.body, source, 'targetBranch'),
+			changeBranch: requiredMetadataString(issue.body, source, 'changeBranch'),
 		}
 	}
 
-	async function addNewBlockers(sliceId: string, blockedBy: string[], currentByNumber: Map<string, string | number>): Promise<void> {
-		for (const blockerId of blockedBy) {
-			const number = entityIdToGhNumber(blockerId)
-			if (currentByNumber.has(blockerId)) continue
-			const blocker = await deps.gh.viewIssue(number)
-			await deps.gh.addBlockedBy(entityIdToGhNumber(sliceId), blocker.internalId)
+	async function sliceFromSubIssue(issue: SubIssueArtifact): Promise<Slice> {
+		const totalBlockedBy = issue.issue_dependencies_summary?.total_blocked_by ?? 0
+		const blockedBy = totalBlockedBy === 0 ? [] : (await deps.gh.listBlockedBy(issue.number)).map((b) => String(b.number))
+		const source = `issue #${issue.number}`
+		return {
+			id: String(issue.number),
+			title: issue.title,
+			body: bodyWithoutMetadata(issue.body),
+			closedAt: issue.closed_at ?? issue.closedAt ?? null,
+			implementedAt: optionalMetadataStringOrNull(issue.body, source, 'implementedAt'),
+			auditedAt: optionalMetadataStringOrNull(issue.body, source, 'auditedAt'),
+			sliceBranch: requiredMetadataStringOrNull(issue.body, source, 'sliceBranch'),
+			readyForAgent: issue.labels.some((l) => l.name === deps.labels.readyForAgent),
+			blockedBy,
 		}
-	}
-
-	async function closeSliceIssueForFinalize(sliceId: string): Promise<void> {
-		await deps.gh.closeIssue(entityIdToGhNumber(sliceId))
-	}
-
-	async function closeSliceIssueForAbort(sliceId: string): Promise<void> {
-		const no = entityIdToGhNumber(sliceId)
-		if (deps.abortOptions.comment === null) await deps.gh.closeIssue(no)
-		else await deps.gh.closeIssue(no, { comment: deps.abortOptions.comment })
 	}
 
 	return {
@@ -162,26 +105,8 @@ export const createIssueStorage: StorageFactory = (deps) => {
 			const issue = await deps.gh.createIssue({ title: spec.title, body: spec.body, labels: [deps.labels.change] })
 			return { id: String(issue.number), title: issue.title }
 		},
-		findChange: async (id) => {
-			const issue = await deps.gh.viewIssue(entityIdToGhNumber(id))
-			const closedAt = issue.closedAt ?? null
-			return {
-				id: String(issue.number),
-				changeBranch: requiredMetadataString(issue.body, `issue #${issue.number}`, 'changeBranch'),
-				targetBranch: requiredMetadataString(issue.body, `issue #${issue.number}`, 'targetBranch'),
-				title: issue.title,
-				closedAt,
-			}
-		},
-		listChanges: async () => {
-			const issues = await deps.gh.listIssues({ label: deps.labels.change, state: 'all' })
-			return issues.map((issue) => ({
-				id: String(issue.number),
-				title: issue.title,
-				changeBranch: requiredMetadataString(issue.body, `issue #${issue.number}`, 'changeBranch'),
-				createdAt: issue.createdAt,
-			}))
-		},
+		findChange: async (id) => changeFromIssue(await deps.gh.viewIssue(entityIdToGhNumber(id))),
+		listChanges: async () => (await deps.gh.listIssues({ label: deps.labels.change, state: 'all' })).map(changeFromIssue),
 		finalizeChange: async (id) => {
 			const no = entityIdToGhNumber(id)
 			const issue = await deps.gh.viewIssue(no)
@@ -205,16 +130,34 @@ export const createIssueStorage: StorageFactory = (deps) => {
 
 			return { id: String(issue.number), title: issue.title }
 		},
-		findSlices: async (changeId) => {
-			const rawIssues = await deps.gh.listSubIssues(entityIdToGhNumber(changeId))
-			return Promise.all(rawIssues.map((issue) => sliceFromSubIssue(issue)))
+		findSlices: async (changeId) => Promise.all((await deps.gh.listSubIssues(entityIdToGhNumber(changeId))).map(sliceFromSubIssue)),
+		setSliceReadyForAgent: async (_changeId, sliceId, ready) => {
+			const label = deps.labels.readyForAgent
+			const opts = ready ? { add: [label] } : { remove: [label] }
+			await deps.gh.editIssueLabels(entityIdToGhNumber(sliceId), opts)
 		},
-		setSliceReadyForAgent: async (_changeId, sliceId, ready) => applyLabelPatch(sliceId, { readyForAgent: ready }),
-		setSliceBlockers: async (_changeId, sliceId, blockedBy) => replaceBlockedBy(sliceId, blockedBy),
+		setSliceBlockers: async (_changeId, sliceId, blockedBy) => {
+			const current = await deps.gh.listBlockedBy(entityIdToGhNumber(sliceId))
+			const currentByNumber = new Map(current.map((b) => [String(b.number), b.id]))
+			const target = new Set(blockedBy)
+			for (const [number, internalId] of currentByNumber) {
+				if (!target.has(number)) await deps.gh.removeBlockedBy(entityIdToGhNumber(sliceId), internalId)
+			}
+			for (const blockerId of blockedBy) {
+				const number = entityIdToGhNumber(blockerId)
+				if (currentByNumber.has(blockerId)) continue
+				const blocker = await deps.gh.viewIssue(number)
+				await deps.gh.addBlockedBy(entityIdToGhNumber(sliceId), blocker.internalId)
+			}
+		},
 		markSliceImplemented: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { implementedAt: at }),
 		markSliceAudited: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { auditedAt: at }),
-		finalizeSlice: async (_changeId, sliceId) => closeSliceIssueForFinalize(sliceId),
-		abortSlice: async (_changeId, sliceId) => closeSliceIssueForAbort(sliceId),
+		finalizeSlice: async (_changeId, sliceId) => await deps.gh.closeIssue(entityIdToGhNumber(sliceId)),
+		abortSlice: async (_changeId, sliceId) => {
+			const no = entityIdToGhNumber(sliceId)
+			if (deps.abortOptions.comment === null) await deps.gh.closeIssue(no)
+			else await deps.gh.closeIssue(no, { comment: deps.abortOptions.comment })
+		},
 		updateSliceMetadata: async (_changeId, sliceId, patch) => updateIssueMetadata(sliceId, patch),
 	}
 }
@@ -236,7 +179,7 @@ if (import.meta.vitest) {
 	}
 
 	function issueRecord(number: number, internalId: number): Awaited<ReturnType<import('../../utils/gh-ops.ts').GhOps['viewIssue']>> {
-		return { internalId, number, title: `Issue ${number}`, state: 'open', body: '', closedAt: null }
+		return { internalId, number, title: `Issue ${number}`, state: 'open', body: '', createdAt: '', closedAt: null }
 	}
 
 	function makeDeps(overrides: GhOverrides = {}): {
@@ -322,6 +265,7 @@ if (import.meta.vitest) {
 					internalId: number * 1000,
 					title: 'Session Middleware',
 					state: 'open',
+					createdAt: '',
 					body: trowelBody('wire JWT', {
 						sliceBranch: 'change-142/slice-145-session-middleware',
 						implementedAt: null,
@@ -533,28 +477,48 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([['listIssues', { label: 'change', state: 'all' }]])
 		})
 
-		test('returns one ChangeSummary per matching issue with stored Change branch metadata', async () => {
+		test('returns one Change per matching issue with stored Change branch metadata', async () => {
 			const { deps, calls } = makeDeps({
 				listIssues: async () => [
 					{
 						number: 42,
 						title: 'Fix Tabs',
 						createdAt: '2026-05-12T00:00:00Z',
-						body: '<!-- trowel:{"changeBranch":"change-42-fix-tabs","targetBranch":"main"} -->',
+						body: 'fix tabs\n\n<!-- trowel:{"changeBranch":"change-42-fix-tabs","targetBranch":"main"} -->',
+						state: 'open',
+						closedAt: null,
 					},
 					{
 						number: 7,
 						title: 'Add ORM',
 						createdAt: '2026-05-11T00:00:00Z',
-						body: '<!-- trowel:{"changeBranch":"change-7-add-orm","targetBranch":"main"} -->',
+						body: 'add orm\n\n<!-- trowel:{"changeBranch":"change-7-add-orm","targetBranch":"main"} -->',
+						state: 'closed',
+						closedAt: '2026-05-12T00:00:00Z',
 					},
 				],
 			})
 			const storage = createIssueStorage(deps)
 			const result = await storage.listChanges()
 			expect(result).toEqual([
-				{ id: '42', title: 'Fix Tabs', changeBranch: 'change-42-fix-tabs', createdAt: '2026-05-12T00:00:00Z' },
-				{ id: '7', title: 'Add ORM', changeBranch: 'change-7-add-orm', createdAt: '2026-05-11T00:00:00Z' },
+				{
+					id: '42',
+					title: 'Fix Tabs',
+					body: 'fix tabs',
+					createdAt: '2026-05-12T00:00:00Z',
+					closedAt: null,
+					targetBranch: 'main',
+					changeBranch: 'change-42-fix-tabs',
+				},
+				{
+					id: '7',
+					title: 'Add ORM',
+					body: 'add orm',
+					createdAt: '2026-05-11T00:00:00Z',
+					closedAt: '2026-05-12T00:00:00Z',
+					targetBranch: 'main',
+					changeBranch: 'change-7-add-orm',
+				},
 			])
 			// No per-issue lookups — Change branch is read from the list response metadata.
 			expect(calls.filter((c) => c[0] === 'viewIssue')).toEqual([])
@@ -757,23 +721,26 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: findChange', () => {
-		test('returns ChangeRecord with changeBranch and targetBranch for an existing issue', async () => {
+		test('returns Change with changeBranch and targetBranch for an existing issue', async () => {
 			const { deps } = makeDeps({
 				viewIssue: async () => ({
 					number: 42,
 					internalId: 42000,
 					title: 'Fix Tabs',
 					state: 'open',
+					createdAt: '',
 					body: 'body\n\n<!-- trowel:{"targetBranch":"release/1.2","changeBranch":"change-42-fix-tabs"} -->',
 				}),
 			})
 			const storage = createIssueStorage(deps)
 			expect(await storage.findChange('42')).toEqual({
 				id: '42',
-				changeBranch: 'change-42-fix-tabs',
-				targetBranch: 'release/1.2',
 				title: 'Fix Tabs',
+				body: 'body',
+				createdAt: '',
 				closedAt: null,
+				targetBranch: 'release/1.2',
+				changeBranch: 'change-42-fix-tabs',
 			})
 		})
 
@@ -796,6 +763,7 @@ if (import.meta.vitest) {
 					internalId: 42000,
 					title: 'Fix Tabs',
 					state: 'open',
+					createdAt: '',
 					body: trowelBody('body', { targetBranch: 'main', owner: 'docs' }),
 				}),
 			})
@@ -816,6 +784,7 @@ if (import.meta.vitest) {
 					internalId: 57000,
 					title: 'Slice',
 					state: 'open',
+					createdAt: '',
 					body: trowelBody('body', { reviewer: 'bot', sliceBranch: 'old' }),
 				}),
 			})
@@ -836,6 +805,7 @@ if (import.meta.vitest) {
 					internalId: 42000,
 					title: 'Missing',
 					state: 'open',
+					createdAt: '',
 					body: trowelBody('body', { targetBranch: 'main' }),
 				}),
 			})

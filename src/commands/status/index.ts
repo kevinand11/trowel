@@ -3,7 +3,7 @@ import path from 'node:path'
 import { renderStatus, renderStatusSlice } from './render.ts'
 import { loadConfig } from '../../config'
 import { getStorage } from '../../storages/registry.ts'
-import type { ChangeRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
+import type { Change, Slice, Storage, StorageDeps } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, createRepoGit, type GitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
@@ -115,7 +115,7 @@ type StatusSliceRuntime = {
 	stdout: (s: string) => void
 }
 
-type StatusSliceContext = { change: ChangeRecord; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
+type StatusSliceContext = { change: Change; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
 
 async function runStatusSlice(changeId: string, sliceId: string, rt: StatusSliceRuntime): Promise<void> {
 	const context = await statusSliceContext(changeId, sliceId, rt)
@@ -134,7 +134,7 @@ async function statusSliceContext(changeId: string, sliceId: string, rt: StatusS
 	return { change, target: targetStatusSlice(changeId, sliceId, siblings), siblings }
 }
 
-async function findChangeForStatusSlice(sliceId: string, changeId: string, rt: StatusSliceRuntime): Promise<ChangeRecord> {
+async function findChangeForStatusSlice(sliceId: string, changeId: string, rt: StatusSliceRuntime): Promise<Change> {
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`slice '${sliceId}' references missing Change '${changeId}'`)
 	return change
@@ -159,7 +159,7 @@ if (import.meta.vitest) {
 	const { withMutationLock } = await import('../../utils/mutation-lock.ts')
 
 	type FakeStorageState = {
-		change: ChangeRecord | null
+		change: Change | null
 		rawSlices: Slice[]
 	}
 
@@ -190,12 +190,14 @@ if (import.meta.vitest) {
 		}
 	}
 
-	const change: ChangeRecord = {
+	const change: Change = {
 		id: 'ab12cd',
-		changeBranch: 'change/ab12cd-feature',
-		targetBranch: 'main',
 		title: 'Add SSO',
+		body: '',
+		createdAt: '2026-01-01T00:00:00.000Z',
 		closedAt: null,
+		targetBranch: 'main',
+		changeBranch: 'change/ab12cd-feature',
 	}
 	const renderedChange = { ...change, state: 'open' as const }
 	const unmergedGit = () => branchStableGitFacts(noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false }))
@@ -592,7 +594,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('runStatusSlice', () => {
-		function sliceStorage(change: ChangeRecord, rawSlices: Slice[]): Storage {
+		function sliceStorage(change: Change, rawSlices: Slice[]): Storage {
 			return {
 				createChange: async () => ({ id: 'x', title: 'x' }),
 				findChange: async (id) => (id === change.id ? change : null),

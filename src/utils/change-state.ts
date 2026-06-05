@@ -1,6 +1,6 @@
 import type { GhOps } from './gh-ops.ts'
 import type { ReadOnlyGitFacts } from './git-ops.ts'
-import type { ChangeRecord } from '../storages/types.ts'
+import type { Change } from '../storages/types.ts'
 import type { ChangeState } from '../work/change-types.ts'
 import type { ClassifiedSlice } from '../work/slice-types.ts'
 
@@ -16,11 +16,11 @@ export type ChangeStateDeps = {
 	git: ReadOnlyGitFacts
 }
 
-export async function classifyChange(change: ChangeRecord, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeState> {
+export async function classifyChange(change: Change, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeState> {
 	return computeChangeState(change, slices, await collectChangeStateFacts(change, slices, deps))
 }
 
-export async function collectChangeStateFacts(change: ChangeRecord, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeStateFacts> {
+export async function collectChangeStateFacts(change: Change, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeStateFacts> {
 	const closeOutPrState = await closeOutPrStateFor(change, deps.gh)
 	return {
 		closeOutPrState,
@@ -28,7 +28,7 @@ export async function collectChangeStateFacts(change: ChangeRecord, slices: Clas
 	}
 }
 
-export function computeChangeState(change: Pick<ChangeRecord, 'closedAt'>, slices: ClassifiedSlice[], facts: ChangeStateFacts): ChangeState {
+export function computeChangeState(change: Pick<Change, 'closedAt'>, slices: ClassifiedSlice[], facts: ChangeStateFacts): ChangeState {
 	const repositoryMerged = mergeFactApplies(change.closedAt, slices, facts)
 	if (change.closedAt !== null && repositoryMerged) return 'done'
 	if (change.closedAt === null && repositoryMerged) return 'landed'
@@ -47,7 +47,7 @@ function allSlicesDone(slices: ClassifiedSlice[]): boolean {
 	return slices.length > 0 && slices.every((slice) => slice.state === 'done')
 }
 
-async function closeOutPrStateFor(change: ChangeRecord, gh: GhOps): Promise<CloseOutPrState> {
+async function closeOutPrStateFor(change: Change, gh: GhOps): Promise<CloseOutPrState> {
 	try {
 		return (await gh.findAnyPrByHead(change.changeBranch))?.state ?? null
 	} catch {
@@ -55,13 +55,13 @@ async function closeOutPrStateFor(change: ChangeRecord, gh: GhOps): Promise<Clos
 	}
 }
 
-async function repositoryMergeProven(change: ChangeRecord, slices: ClassifiedSlice[], deps: ChangeStateDeps, closeOutPrState: CloseOutPrState): Promise<boolean> {
+async function repositoryMergeProven(change: Change, slices: ClassifiedSlice[], deps: ChangeStateDeps, closeOutPrState: CloseOutPrState): Promise<boolean> {
 	if (closeOutPrState === 'MERGED') return true
 	if (!worthCheckingBranchMerge(change, slices)) return false
 	return await branchMergeProven(change.changeBranch, change.targetBranch, deps.git)
 }
 
-function worthCheckingBranchMerge(change: ChangeRecord, slices: ClassifiedSlice[]): boolean {
+function worthCheckingBranchMerge(change: Change, slices: ClassifiedSlice[]): boolean {
 	return change.closedAt !== null || allSlicesDone(slices)
 }
 
@@ -88,12 +88,14 @@ if (import.meta.vitest) {
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
-	const change = (overrides: Partial<ChangeRecord> = {}): ChangeRecord => ({
+	const change = (overrides: Partial<Change> = {}): Change => ({
 		id: '42',
-		changeBranch: 'change-42-x',
-		targetBranch: 'main',
 		title: 'X',
+		body: '',
+		createdAt: '2026-01-01T00:00:00.000Z',
 		closedAt: null,
+		targetBranch: 'main',
+		changeBranch: 'change-42-x',
 		...overrides,
 	})
 	const slice = (overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice => ({

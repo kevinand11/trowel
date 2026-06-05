@@ -10,7 +10,7 @@ export const DEFAULT_GH_OPS: GhOps = {
 	detectVersion: async () => ({ installed: true, version: '0.0.0' }),
 	isAuthenticated: async () => true,
 	createIssue: async () => ({ number: 0, internalId: 0, title: '', url: '#0' }),
-	viewIssue: async () => ({ internalId: 0, number: 0, title: '', state: 'open', body: '', closedAt: null }),
+	viewIssue: async () => ({ internalId: 0, number: 0, title: '', state: 'open', body: '', createdAt: '', closedAt: null }),
 	listIssues: emptyList,
 	closeIssue: noop,
 	reopenIssue: noop,

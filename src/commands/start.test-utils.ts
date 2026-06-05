@@ -1,11 +1,14 @@
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
 import type { StartRuntime } from './start.ts'
-import type { ChangeMetadataPatch, ChangeSpec, SliceMetadataPatch, SliceSpec } from '../storages/types.ts'
+import type { ChangeMetadataPatch, CreateChange, CreateSlice, SliceMetadataPatch } from '../storages/types.ts'
 import { noopGitOps } from '../test-utils/git-ops-fixtures.ts'
 import { fakeSliceStorage } from '../test-utils/storage-fixtures.ts'
 
 export type FakeCalls = {
-	createChange: ChangeSpec[]
-	createSlice: Array<{ changeId: string; spec: SliceSpec }>
+	createChange: CreateChange[]
+	createSlice: Array<{ changeId: string; spec: CreateSlice }>
 	updateChangeMetadata: Array<{ changeId: string; patch: ChangeMetadataPatch }>
 	setSliceBlockers: Array<{ changeId: string; sliceId: string; blockedBy: string[] }>
 	setSliceReadyForAgent: Array<{ changeId: string; sliceId: string; ready: boolean }>
@@ -35,7 +38,17 @@ export type MakeFakesOpts = {
 }
 
 export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeCalls; gitState: FakeGitState } {
-	const calls: FakeCalls = { createChange: [], createSlice: [], updateChangeMetadata: [], setSliceBlockers: [], setSliceReadyForAgent: [], updateSliceMetadata: [], stdout: [], git: [], order: [] }
+	const calls: FakeCalls = {
+		createChange: [],
+		createSlice: [],
+		updateChangeMetadata: [],
+		setSliceBlockers: [],
+		setSliceReadyForAgent: [],
+		updateSliceMetadata: [],
+		stdout: [],
+		git: [],
+		order: [],
+	}
 	const gitState: FakeGitState = {
 		current: opts.currentBranch ?? 'main',
 		clean: opts.cleanTree ?? true,
@@ -108,14 +121,15 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 	})
 
 	const rt: StartRuntime = {
-		projectRoot: '/fake/proj',
+		projectRoot: path.join(tmpdir(), 'trowel-start-fake'),
 		storage,
 		git,
 		startPromptText: '<prompt>',
 		runInteractive: async () => {},
 		readStartOut: async () => opts.startOut,
 		preflight: async () => {
-			if ((opts.preflightFailures ?? []).length > 0) throw new Error(`preflight failed:\n${opts.preflightFailures!.map((f) => `  · ${f}`).join('\n')}`)
+			if ((opts.preflightFailures ?? []).length > 0)
+				throw new Error(`preflight failed:\n${opts.preflightFailures!.map((f) => `  · ${f}`).join('\n')}`)
 		},
 		stdout: (s) => calls.stdout.push(s),
 		confirm: async () => false,
