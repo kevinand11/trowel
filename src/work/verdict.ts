@@ -18,6 +18,7 @@ export type FeedbackEntry =
 
 export type TurnIn = {
 	slice: { id: string; title: string; body: string }
+	changeBranch?: string
 	pr?: { number: number; branch: string }
 	feedback?: FeedbackEntry[]
 }
@@ -26,6 +27,7 @@ const ALL_VERDICTS = ['ready', 'needs-revision', 'no-work-needed', 'partial'] as
 
 const ROLE_VERDICTS: Record<Role, VerdictKind[]> = {
 	implement: ['ready', 'no-work-needed', 'partial'],
+	audit: ['ready', 'partial'],
 	review: ['ready', 'needs-revision', 'partial'],
 	address: ['ready', 'no-work-needed', 'partial'],
 }

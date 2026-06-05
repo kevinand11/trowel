@@ -66,6 +66,8 @@ function testSlice(changeId: string, overrides: Partial<Slice> = {}): Slice {
 		body: 'spec',
 		state: 'open',
 		closedAt: null,
+		implementedAt: null,
+		auditedAt: null,
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
@@ -108,6 +110,8 @@ function applySlicePatch(slice: Slice, patch: SlicePatch): void {
 		slice.closedAt = patch.closedAt
 		slice.state = patch.closedAt === null ? 'open' : 'done'
 	}
+	if (patch.implementedAt !== undefined) slice.implementedAt = patch.implementedAt
+	if (patch.auditedAt !== undefined) slice.auditedAt = patch.auditedAt
 	if (patch.readyForAgent !== undefined) slice.readyForAgent = patch.readyForAgent
 	if (patch.needsRevision !== undefined) slice.needsRevision = patch.needsRevision
 	if (patch.blockedBy !== undefined) slice.blockedBy = patch.blockedBy

@@ -104,11 +104,11 @@ if (import.meta.vitest) {
 	}
 
 	const baseConfig: LoopConfig = {
-		usePrs: false, review: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
+		usePrs: false, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false,
 	}
 
 	const doneSlice: ClassifiedSlice = {
-		id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false, needsRevision: false, blockedBy: [], sliceBranch: 'change-3/slice-s1-a', prState: null,
+		id: 's1', title: 'a', body: '', state: 'done', closedAt: '2026-06-04T00:00:00.000Z', implementedAt: null, auditedAt: null, readyForAgent: false, needsRevision: false, blockedBy: [], sliceBranch: 'change-3/slice-s1-a', prState: null,
 	}
 
 	type LoopFixtureOpts = {

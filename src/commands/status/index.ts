@@ -163,6 +163,8 @@ if (import.meta.vitest) {
 		body: '',
 		state: 'open',
 		closedAt: null,
+		implementedAt: null,
+		auditedAt: null,
 		readyForAgent: true,
 		needsRevision: false,
 		blockedBy: [],
@@ -368,7 +370,7 @@ if (import.meta.vitest) {
 		test('usePrs:true renders a ready storage slice with an open PR as in-flight', async () => {
 			const storage = fakeStorage({
 				change,
-				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: `change-${change.id}/slice-124-read-query-shape-validation`, prState: null }],
+				rawSlices: [{ id: '124', title: 'Read query-shape validation', body: '', state: 'open', closedAt: null, implementedAt: null, auditedAt: null, readyForAgent: true, needsRevision: false, blockedBy: [], sliceBranch: `change-${change.id}/slice-124-read-query-shape-validation`, prState: null }],
 			})
 			const { gh } = recordingGhOps({
 				listOpenPrs: async () => [{ number: 130, headRefName: `change-${change.id}/slice-124-read-query-shape-validation`, isDraft: false }],
@@ -388,6 +390,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'draft',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: false,
 			needsRevision: false,
 			blockedBy: [],
@@ -421,6 +425,15 @@ if (import.meta.vitest) {
 		test('"in-flight" section appears for in-flight slices', () => {
 			const out = renderStatus(renderedChange, [slice({ id: '145', title: 'Session middleware', state: 'in-flight', prState: 'draft' })])
 			expect(out).toMatch(/^ {2}in-flight$/m)
+		})
+
+		test('"implemented" and "audited" sections appear for process milestones', () => {
+			const out = renderStatus(renderedChange, [
+				slice({ id: '151', title: 'Implemented', state: 'implemented', implementedAt: 'x' }),
+				slice({ id: '152', title: 'Audited', state: 'audited', implementedAt: 'x', auditedAt: 'y' }),
+			])
+			expect(out).toMatch(/^ {2}audited$/m)
+			expect(out).toMatch(/^ {2}implemented$/m)
 		})
 
 		test('"blocked" section shows blockedBy ids in the right column', () => {
@@ -476,6 +489,8 @@ if (import.meta.vitest) {
 			body: '',
 			state: 'open',
 			closedAt: null,
+			implementedAt: null,
+			auditedAt: null,
 			readyForAgent: true,
 			needsRevision: false,
 			blockedBy: [],

@@ -2,6 +2,7 @@ import { Command } from 'commander'
 
 import { abortChange } from './commands/abort/index.ts'
 import { address } from './commands/address.ts'
+import { audit } from './commands/audit.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { implement } from './commands/implement.ts'
@@ -115,6 +116,16 @@ export function run(): void {
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.action(async (sliceId: string, opts) => {
 			await implement(sliceId, opts)
+		})
+
+	sliceCmd
+		.command('audit')
+		.description('Run auditor on one implemented slice')
+		.argument('<slice-id>')
+		.option('--storage <kind>', 'Override project storage')
+		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
+		.action(async (sliceId: string, opts) => {
+			await audit(sliceId, opts)
 		})
 
 	sliceCmd

@@ -1,6 +1,6 @@
 import type { SliceState } from './slice-state.ts'
 
-export const SLICE_STATE_ORDER: SliceState[] = ['done', 'landed', 'needs-revision', 'in-flight', 'blocked', 'open', 'draft']
+export const SLICE_STATE_ORDER: SliceState[] = ['done', 'landed', 'needs-revision', 'in-flight', 'audited', 'implemented', 'blocked', 'open', 'draft']
 
 export function emptySliceStateCounts(): Record<SliceState, number> {
 	return {
@@ -8,6 +8,8 @@ export function emptySliceStateCounts(): Record<SliceState, number> {
 		landed: 0,
 		'needs-revision': 0,
 		'in-flight': 0,
+		audited: 0,
+		implemented: 0,
 		blocked: 0,
 		open: 0,
 		draft: 0,
