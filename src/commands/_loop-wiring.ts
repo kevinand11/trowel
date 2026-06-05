@@ -11,7 +11,7 @@ import type { PhaseCtx, Storage, Slice } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
-import { landAddress, landAudit, landImplement, landReview, prepareAddress, prepareAudit, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
+import { landAudit, landImplement, landReview, prepareAudit, prepareImplement, prepareReview, type PhaseDeps } from '../work/phases.ts'
 import { spawnTurn } from '../work/turn.ts'
 import type { TurnIn, TurnOut } from '../work/verdict.ts'
 import { ensureTrowelDir, type TurnWorktree } from '../work/worktrees.ts'
@@ -131,13 +131,11 @@ function logHarnessExitIfFailed(exitCode: number, worktree: TurnWorktree, harnes
 function prepareOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, ctx: PhaseCtx) {
 	if (role === 'implement') return prepareImplement(phaseDeps, slice, ctx)
 	if (role === 'audit') return prepareAudit(phaseDeps, slice, ctx)
-	if (role === 'review') return prepareReview(phaseDeps, slice, ctx)
-	return prepareAddress(phaseDeps, slice, ctx)
+	return prepareReview(phaseDeps, slice, ctx)
 }
 
 function landOnePhase(role: Role, phaseDeps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx) {
 	if (role === 'implement') return landImplement(phaseDeps, slice, verdict, ctx)
 	if (role === 'audit') return landAudit(phaseDeps, slice, verdict, ctx)
-	if (role === 'review') return landReview(phaseDeps, slice, verdict, ctx)
-	return landAddress(phaseDeps, slice, verdict, ctx)
+	return landReview(phaseDeps, slice, verdict, ctx)
 }
