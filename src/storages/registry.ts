@@ -21,11 +21,8 @@ if (import.meta.vitest) {
 	const testDeps: StorageDeps = {
 		gh: recordingGhOps().gh,
 		git: noopGitOps({ currentBranch: async () => '', branchExists: async () => false }),
-		repoRoot: '/tmp/x',
-		projectRoot: '/tmp/x',
 		changesDir: '/tmp/x/docs/changes',
 		labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
-		abortOptions: { comment: null, deleteBranch: 'never' },
 	}
 
 	describe('getStorage', () => {

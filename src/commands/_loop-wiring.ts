@@ -33,7 +33,7 @@ export async function buildLoopWiring(opts: { storage?: string; harness?: Harnes
 	const harnessKind = opts.harness ?? config.agent.harness
 	const harness = getHarness(harnessKind)
 	const log = (m: string) => process.stdout.write(`${new Date().toISOString()} ${m}\n`)
-	const storage = buildStorage(base, opts.storage ?? config.storage, { log })
+	const storage = buildStorage(base, opts.storage ?? config.storage)
 
 	await ensureTrowelDir(projectRoot)
 

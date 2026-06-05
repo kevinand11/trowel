@@ -2,12 +2,8 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { allocateNextId } from '../../utils/id.ts'
-import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
-import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice } from '../../work/slice-types.ts'
-import type { PhaseCtx } from '../../work/types.ts'
-import type { Change, CreateChange, CreateSlice, Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
+import type { Change, CreateChange, CreateSlice, Slice, Storage, StorageDeps, StorageFactory } from '../types.ts'
 
 type ChangeStore = {
 	id: string
@@ -28,6 +24,7 @@ type SliceStore = Omit<ChangeStore, 'targetBranch' | 'changeBranch'> & {
 }
 type SliceStoreDraft = SliceStore
 type TestSliceSpec = CreateSlice & { blockedBy?: string[] }
+type SlicePatch = Partial<Pick<Slice, 'readyForAgent' | 'closedAt' | 'implementedAt' | 'auditedAt' | 'blockedBy'>>
 
 function applyValuePatch<T, K extends keyof T>(store: T, key: K, value: T[K] | undefined): void {
 	if (value !== undefined) store[key] = value
@@ -231,171 +228,41 @@ export const createFileStorage: StorageFactory = (deps) => {
 }
 
 if (import.meta.vitest) {
-	const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
+	const { describe, test, expect } = import.meta.vitest
 	const path = await import('node:path')
-	const { mkdir, rm, readFile, stat, writeFile } = await import('node:fs/promises')
-	const { exec } = await import('../../utils/shell.ts')
-	const { setupTestRepoWithBare } = await import('../../test-utils/git-repo.ts')
+	const { mkdir, mkdtemp, rm, readFile, stat, writeFile } = await import('node:fs/promises')
+	const { tmpdir } = await import('node:os')
 	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 
 	type Fixture = {
 		work: string
-		bare: string
 		changesDir: string
 		deps: StorageDeps
-		calls: { git: Array<[string, ...string[]]>; log: string[] }
+		calls: { log: string[] }
 	}
 
-	async function setup(): Promise<Fixture> {
-		const repo = await setupTestRepoWithBare({ prefix: 'trowel-file-' })
-		const work = repo.work
-		const bare = repo.bare
-		const changesDir = path.join(work, 'docs', 'changes')
-		const calls: { git: Array<[string, ...string[]]>; log: string[] } = { git: [], log: [] }
-		const { createRepoGit } = await import('../../utils/git-ops.ts')
-		const realGit = createRepoGit(work)
-		// Spy wrapper: each method records its call name + args, then delegates to the real bag
-		// so file-storage tests can assert against both call sequence AND real git state.
-		const git = {
-			fetch: async (b: string) => {
-				calls.git.push(['fetch', b])
-				await realGit.fetch(b)
-			},
-			push: async (b: string) => {
-				calls.git.push(['push', b])
-				await realGit.push(b)
-			},
-			checkout: async (b: string) => {
-				calls.git.push(['checkout', b])
-				await realGit.checkout(b)
-			},
-			mergeNoFf: async (b: string) => {
-				calls.git.push(['mergeNoFf', b])
-				await realGit.mergeNoFf(b)
-			},
-			mergeNoFfIn: async (p: string, b: string) => {
-				calls.git.push(['mergeNoFfIn', p, b])
-				await realGit.mergeNoFfIn(p, b)
-			},
-			mergeAbortIn: async (p: string) => {
-				calls.git.push(['mergeAbortIn', p])
-				await realGit.mergeAbortIn(p)
-			},
-			deleteRemoteBranch: async (b: string) => {
-				calls.git.push(['deleteRemoteBranch', b])
-				await realGit.deleteRemoteBranch(b)
-			},
-			remoteBranchExists: async (b: string) => realGit.remoteBranchExists(b),
-			createRemoteBranch: async (n: string, b: string) => {
-				calls.git.push(['createRemoteBranch', n, b])
-				await realGit.createRemoteBranch(n, b)
-			},
-			createLocalBranch: async (n: string, b: string) => {
-				calls.git.push(['createLocalBranch', n, b])
-				await realGit.createLocalBranch(n, b)
-			},
-			pushSetUpstream: async (b: string) => {
-				calls.git.push(['pushSetUpstream', b])
-				await realGit.pushSetUpstream(b)
-			},
-			fastForward: async (ref: string) => {
-				calls.git.push(['fastForward', ref])
-				await realGit.fastForward(ref)
-			},
-			currentBranch: async () => {
-				const r = await realGit.currentBranch()
-				calls.git.push(['currentBranch'])
-				return r
-			},
-			baseBranch: async () => {
-				const r = await realGit.baseBranch()
-				calls.git.push(['baseBranch'])
-				return r
-			},
-			branchExists: async (b: string) => {
-				const r = await realGit.branchExists(b)
-				calls.git.push(['branchExists', b])
-				return r
-			},
-			localBranchExists: async (b: string) => {
-				const r = await realGit.localBranchExists(b)
-				calls.git.push(['localBranchExists', b])
-				return r
-			},
-			isMerged: async (b: string, base: string) => {
-				const r = await realGit.isMerged(b, base)
-				calls.git.push(['isMerged', b, base])
-				return r
-			},
-			deleteBranch: async (b: string) => {
-				calls.git.push(['deleteBranch', b])
-				await realGit.deleteBranch(b)
-			},
-			listLocalBranches: async () => realGit.listLocalBranches(),
-			resolveRef: async (ref: string, p?: string) => realGit.resolveRef(ref, p),
-			checkoutDetached: async (p: string, ref: string) => {
-				calls.git.push(['checkoutDetached', p, ref])
-				await realGit.checkoutDetached(p, ref)
-			},
-			resetHard: async (p: string, ref: string) => {
-				calls.git.push(['resetHard', p, ref])
-				await realGit.resetHard(p, ref)
-			},
-			pushHeadTo: async (p: string, b: string) => {
-				calls.git.push(['pushHeadTo', p, b])
-				await realGit.pushHeadTo(p, b)
-			},
-			updateLocalBranchRef: async (b: string, ref: string) => {
-				calls.git.push(['updateLocalBranchRef', b, ref])
-				await realGit.updateLocalBranchRef(b, ref)
-			},
-			worktreeAdd: async (p: string, b: string) => {
-				await realGit.worktreeAdd(p, b)
-			},
-			worktreeRemove: async (p: string, opts?: { force?: boolean }) => {
-				await realGit.worktreeRemove(p, opts)
-			},
-			worktreeList: async () => realGit.worktreeList(),
-			restoreAll: async (p: string) => {
-				await realGit.restoreAll(p)
-			},
-			cleanUntracked: async (p: string) => {
-				await realGit.cleanUntracked(p)
-			},
-			cleanAll: async (p: string) => {
-				await realGit.cleanAll(p)
-			},
-			isWorkingTreeClean: async () => realGit.isWorkingTreeClean(),
-			statusShort: async () => realGit.statusShort(),
-			stashPush: async (opts) => realGit.stashPush(opts),
-			stashPop: async () => realGit.stashPop(),
-			mergeAbort: async () => realGit.mergeAbort(),
-			commitsAhead: async (b, base) => realGit.commitsAhead(b, base),
-			detectVersion: async () => realGit.detectVersion(),
-		}
-		const { gh } = recordingGhOps()
-		const deps: StorageDeps = {
-			gh,
-			repoRoot: work,
-			projectRoot: work,
-			changesDir,
-			labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
-			abortOptions: { comment: null, deleteBranch: 'never' },
-			confirm: async () => false,
-			git,
-			log: (m) => {
-				calls.log.push(m)
-			},
-		}
-		return { work, bare, changesDir, deps, calls }
-	}
-
-	async function teardown(f: Fixture | undefined) {
-		if (!f) return
-		await rm(f.work, { recursive: true, force: true })
-		await rm(f.bare, { recursive: true, force: true })
-	}
+	const storageTest = test.extend<{ f: Fixture }>({
+		f: async ({ task: _ }, use) => {
+			const work = await mkdtemp(path.join(tmpdir(), 'trowel-file-'))
+			const changesDir = path.join(work, 'docs', 'changes')
+			const calls: { log: string[] } = { log: [] }
+			const git = noopGitOps()
+			const { gh } = recordingGhOps()
+			const deps: StorageDeps = {
+				gh,
+				changesDir,
+				labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
+				git,
+			}
+			const f: Fixture = { work, changesDir, deps, calls }
+			try {
+				await use(f)
+			} finally {
+				await rm(f.work, { recursive: true, force: true })
+			}
+		},
+	})
 
 	async function exists(p: string): Promise<boolean> {
 		try {
@@ -417,6 +284,10 @@ if (import.meta.vitest) {
 			path.join(dir, 'store.json'),
 			JSON.stringify({ ...entry, targetBranch: 'main', changeBranch: `change-${entry.id}-${entry.slug}` }),
 		)
+	}
+
+	async function readChangeStoreJson(f: Fixture, id: string, slug: string): Promise<Record<string, unknown>> {
+		return JSON.parse(await readFile(path.join(f.changesDir, `${id}-${slug}`, 'store.json'), 'utf8')) as Record<string, unknown>
 	}
 
 	async function createMaterialisedChange(
@@ -454,304 +325,8 @@ if (import.meta.vitest) {
 		return { storage, changeId, slice }
 	}
 
-	async function stateForReadySliceBlockedByA(f: Fixture, doneA: boolean): Promise<string> {
-		const storage = createFileStorage(f.deps)
-		const { id: changeId } = await createMaterialisedChange(storage)
-		const a = await createMaterialisedSlice(storage, changeId, { title: 'A', body: 'spec' })
-		const b = await createMaterialisedSlice(storage, changeId, { title: 'B', body: 'b spec', blockedBy: [a.id] })
-		if (doneA) await storage.finalizeSlice(changeId, a.id)
-		await storage.setSliceReadyForAgent(changeId, b.id, true)
-		return classifySlices(await storage.findSlices(changeId)).find((s) => s.id === b.id)!.state
-	}
-
-	describe('file storage: phase primitives', () => {
-		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
-			return {
-				id: 's1',
-				title: 'Implement A',
-				body: 'spec',
-				state: 'open',
-				closedAt: null,
-				implementedAt: null,
-				auditedAt: null,
-				readyForAgent: true,
-				needsRevision: false,
-				blockedBy: [],
-				sliceBranch: `change-1/slice-${overrides.id ?? 's1'}-implement-a`,
-				prState: null,
-				...overrides,
-			}
-		}
-
-		function makePhaseDeps(f: Fixture, storage: Storage): PhaseDeps {
-			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
-		}
-
-		async function createReadySlice(
-			f: Fixture,
-			storage: Storage,
-			title = 'A',
-			branchMode: 'shared' | 'distinct' = 'shared',
-		): Promise<{ result: { id: string; changeBranch: string }; slice: Slice }> {
-			const result = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
-			await f.deps.git.createLocalBranch(result.changeBranch, 'main')
-			await f.deps.git.pushSetUpstream(result.changeBranch)
-			const sliceBranch = branchMode === 'shared' ? result.changeBranch : undefined
-			const slice = await createMaterialisedSlice(storage, result.id, { title, body: 'spec' }, sliceBranch)
-			await storage.setSliceReadyForAgent(result.id, slice.id, true)
-			f.calls.git.length = 0
-			return { result, slice }
-		}
-
-		function makeRecordingGit(
-			currentBranch: string,
-			baseBranch: string,
-		): { git: PhaseDeps['git']; calls: Array<[string, ...string[]]> } {
-			const calls: Array<[string, ...string[]]> = []
-			return {
-				calls,
-				git: noopGitOps({
-					fetch: async (b: string) => {
-						calls.push(['fetch', b])
-					},
-					push: async (b: string) => {
-						calls.push(['push', b])
-					},
-					checkout: async (b: string) => {
-						calls.push(['checkout', b])
-					},
-					mergeNoFf: async (b: string) => {
-						calls.push(['mergeNoFf', b])
-					},
-					deleteRemoteBranch: async (b: string) => {
-						calls.push(['deleteRemoteBranch', b])
-					},
-					createRemoteBranch: async (n: string, b: string) => {
-						calls.push(['createRemoteBranch', n, b])
-					},
-					currentBranch: async () => currentBranch,
-					baseBranch: async () => baseBranch,
-				}),
-			}
-		}
-
-		async function landReadySlice(f: Fixture, verdict: { verdict: 'no-work-needed' | 'partial'; commits: number }) {
-			const storage = createFileStorage(f.deps)
-			const { result, slice } = await createReadySlice(f, storage)
-			const outcome = await landImplement(makePhaseDeps(f, storage), { ...slice, readyForAgent: true }, verdict, {
-				changeId: result.id,
-				changeBranch: result.changeBranch,
-				config: { pr: false, audit: false, perSliceBranches: false },
-			})
-			return { outcome, after: classifySlices(await storage.findSlices(result.id)) }
-		}
-
-		async function readySliceBranchFixture(f: Fixture, baseBranch: string) {
-			const storage = createFileStorage(f.deps)
-			const {
-				result: { id: changeId, changeBranch },
-				slice,
-			} = await createReadySlice(f, storage, 'Implement A', 'distinct')
-			const sliceBranch = `${changeId}/${slice.id}-implement-a`
-			const { git: recordingGit, calls } = makeRecordingGit(changeBranch, baseBranch)
-			const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
-			return { storage, changeId, changeBranch, slice, sliceBranch, deps, calls }
-		}
-
-		test('prepareImplement: shared-branch Slice uses the stored Change branch; turnIn carries the slice', async () => {
-			const f = await setup()
-			try {
-				const storage = createFileStorage(f.deps)
-				const { id: changeId, changeBranch } = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
-				await f.deps.git.createLocalBranch(changeBranch, 'main')
-				await f.deps.git.pushSetUpstream(changeBranch)
-				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec' }, changeBranch)
-				f.calls.git.length = 0
-
-				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
-					changeId,
-					changeBranch,
-					config: { pr: false, audit: false, perSliceBranches: false },
-				})
-				expect(prep.branch).toBe(changeBranch)
-				expect(prep.turnIn.slice).toEqual({ id: slice.id, title: 'Implement A', body: 'spec' })
-				expect(f.calls.git).toEqual([['fetch', changeBranch]])
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('landImplement + ready: pushes Change branch and records implementedAt', async () => {
-			const f = await setup()
-			try {
-				const storage = createFileStorage(f.deps)
-				const { result, slice } = await createReadySlice(f, storage, 'Implement A')
-
-				const outcome = await landImplement(
-					makePhaseDeps(f, storage),
-					{ ...slice, readyForAgent: true },
-					{ verdict: 'ready', commits: 1 },
-					{
-						changeId: result.id,
-						changeBranch: result.changeBranch,
-						config: { pr: false, audit: false, perSliceBranches: false },
-					},
-				)
-
-				expect(outcome).toBe('progress')
-				expect(f.calls.git).toContainEqual(['push', result.changeBranch])
-				const after = classifySlices(await storage.findSlices(result.id))
-				expect(after[0]!.state).toBe('implemented')
-				expect(after[0]!.implementedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('landImplement + no-work-needed: clears readyForAgent, returns no-work, does not push', async () => {
-			const f = await setup()
-			try {
-				const { outcome, after } = await landReadySlice(f, { verdict: 'no-work-needed', commits: 0 })
-				expect(outcome).toBe('no-work')
-				expect(f.calls.git.find((c) => c[0] === 'push')).toBeUndefined()
-				expect(after[0]!.state).toBe('draft')
-				expect(after[0]!.readyForAgent).toBe(false)
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('landImplement + partial: no host action, returns partial', async () => {
-			const f = await setup()
-			try {
-				const { outcome, after } = await landReadySlice(f, { verdict: 'partial', commits: 0 })
-				expect(outcome).toBe('partial')
-				expect(f.calls.git).toEqual([])
-				expect(after[0]!.state).toBe('open')
-				expect(after[0]!.readyForAgent).toBe(true)
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('prepareImplement + distinct stored Slice branch: fetches existing branch without creating it, turnIn carries the slice', async () => {
-			const f = await setup()
-			try {
-				const storage = createFileStorage(f.deps)
-				const { id: changeId, changeBranch } = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
-				await f.deps.git.createLocalBranch(changeBranch, 'main')
-				await f.deps.git.pushSetUpstream(changeBranch)
-				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec' })
-				await f.deps.git.createRemoteBranch(slice.sliceBranch!, changeBranch)
-				f.calls.git.length = 0
-
-				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
-					changeId,
-					changeBranch,
-					config: { pr: false, audit: false, perSliceBranches: true },
-				})
-				expect(prep.branch).toBe(`${changeId}/${slice.id}-implement-a`)
-				expect(f.calls.git).toContainEqual(['fetch', prep.branch])
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('landImplement + perSliceBranches:true + pr:false + ready: records implementedAt without host-merge', async () => {
-			const f = await setup()
-			try {
-				// Replace the spy git with a recording no-op for this matrix cell — we want to assert the
-				// call sequence, not exercise real git state on a synthetic slice branch.
-				const { storage, changeId, changeBranch, slice, sliceBranch, deps, calls } = await readySliceBranchFixture(f, 'main')
-
-				const outcome = await landImplement(
-					deps,
-					{ ...slice, readyForAgent: true } as Slice,
-					{ verdict: 'ready', commits: 1 },
-					{ changeId, changeBranch: changeBranch, config: { pr: false, audit: false, perSliceBranches: true } },
-				)
-
-				expect(outcome).toBe('progress')
-				expect(calls.map((c) => c[0])).toEqual(['push'])
-				expect(calls).toContainEqual(['push', sliceBranch])
-				const after = classifySlices(await storage.findSlices(changeId))
-				expect(after[0]!.state).toBe('implemented')
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('landImplement + perSliceBranches:true + pr:true + ready: records implementedAt without opening a PR', async () => {
-			const f = await setup()
-			try {
-				const {
-					storage,
-					changeId,
-					changeBranch,
-					slice,
-					sliceBranch,
-					deps,
-					calls: gitCalls,
-				} = await readySliceBranchFixture(f, 'develop')
-				const { gh, calls: ghCalls } = recordingGhOps()
-				deps.gh = gh
-
-				const outcome = await landImplement(
-					deps,
-					{ ...slice, readyForAgent: true } as Slice,
-					{ verdict: 'ready', commits: 1 },
-					{ changeId, changeBranch: changeBranch, config: { pr: true, audit: false, perSliceBranches: true } },
-				)
-
-				expect(outcome).toBe('progress')
-				expect(gitCalls).toContainEqual(['push', sliceBranch])
-				expect(gitCalls.map((c) => c[0])).not.toContain('mergeNoFf')
-				expect(gitCalls.map((c) => c[0])).not.toContain('deleteRemoteBranch')
-				expect(ghCalls.find((c) => c[0] === 'createDraftPr')).toBeUndefined()
-				const after = classifySlices(await storage.findSlices(changeId))
-				expect(after[0]!.state).toBe('implemented')
-			} finally {
-				await teardown(f)
-			}
-		})
-
-		test('review phase on file storage reaches the PR-lookup layer for feedback', async () => {
-			const f = await setup()
-			try {
-				const storage = createFileStorage(f.deps)
-				const slice = makeOpenSlice()
-				const ctx: PhaseCtx = {
-					changeId: 'p1',
-					changeBranch: 'change/p1-x',
-					config: { pr: true, audit: true, perSliceBranches: true },
-				}
-				const { gh } = recordingGhOps({
-					findPrNumberByHead: async (head) => {
-						throw new Error(`no PR found for head '${head}'`)
-					},
-				})
-				const deps: PhaseDeps = { storage, git: f.deps.git!, gh, log: f.deps.log!, mergeNoVerify: false }
-				// No PR exists, so findPrNumberByHead throws "no PR found".
-				// The point: that's now the failure mode, not "requires capability 'prFlow'".
-				await expect(prepareReview(deps, slice, ctx)).rejects.toThrow(/no PR found/)
-				// landReview with verdict 'partial' short-circuits before any gh call.
-				expect(await landReview(deps, slice, { verdict: 'partial', commits: 0 }, ctx)).toBe('partial')
-			} finally {
-				await teardown(f)
-			}
-		})
-	})
-
 	describe('file storage: createChange', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('writes README.md and store.json under <changesDir>/<id>-<slug>/ and returns matching id+title', async () => {
+		storageTest('writes README.md and store.json under <changesDir>/<id>-<slug>/ and returns matching id+title', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const result = await storage.createChange({ title: 'Fix Tabs', body: '# Hi\n\nthe body' })
 			expect(result.title).toBe('Fix Tabs')
@@ -767,16 +342,7 @@ if (import.meta.vitest) {
 			expect(typeof store.createdAt).toBe('string')
 		})
 
-		test('does not create or push the Change branch before metadata orchestration', async () => {
-			const storage = createFileStorage(f.deps)
-			await storage.createChange({ title: 'Add ORM', body: 'spec' })
-			const localHead = (await exec('git', ['-C', f.work, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
-			expect(localHead).toBe('main')
-			expect(f.calls.git.map((c) => c[0])).not.toContain('createLocalBranch')
-			expect(f.calls.git.map((c) => c[0])).not.toContain('pushSetUpstream')
-		})
-
-		test('updateChangeMetadata persists targetBranch and changeBranch', async () => {
+		storageTest('updateChangeMetadata persists targetBranch and changeBranch', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const result = await storage.createChange({ title: 'Ship From Release', body: 'spec' })
 			await storage.updateChangeMetadata(result.id, { targetBranch: 'release/1.2', changeBranch: `${result.id}-ship-from-release` })
@@ -790,20 +356,12 @@ if (import.meta.vitest) {
 	})
 
 	describe('file storage: listChanges', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('returns empty array when changesDir does not exist', async () => {
+		storageTest('returns empty array when changesDir does not exist', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			expect(await storage.listChanges()).toEqual([])
 		})
 
-		test('returns both open and closed Changes', async () => {
+		storageTest('returns both open and closed Changes', async ({ f }) => {
 			await writeChangeStoreFixture(f, {
 				id: 'aaaaaa',
 				slug: 'alpha',
@@ -825,7 +383,7 @@ if (import.meta.vitest) {
 			expect(all.map((p) => p.id).sort()).toEqual(['aaaaaa', 'bbbbbb'])
 		})
 
-		test('returns Changes with their createdAt populated (consumer sorts; see `trowel list`)', async () => {
+		storageTest('returns Changes with their createdAt populated (consumer sorts; see `trowel list`)', async ({ f }) => {
 			const dirs = [
 				{ name: 'aaaaaa-old', id: 'aaaaaa', slug: 'old', createdAt: '2026-05-01T00:00:00.000Z' },
 				{ name: 'bbbbbb-new', id: 'bbbbbb', slug: 'new', createdAt: '2026-05-12T00:00:00.000Z' },
@@ -856,50 +414,27 @@ if (import.meta.vitest) {
 	})
 
 	describe('file storage: close', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('sets closedAt in store.json without auto-committing the change', async () => {
+		storageTest('sets closedAt in store.json', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
 			await storage.finalizeChange(id)
-			const storePath = path.join(f.changesDir, `${id}-alpha`, 'store.json')
-			const store = JSON.parse(await readFile(storePath, 'utf8'))
-			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
-			const commitCount = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
-			expect(commitCount).toBe('1')
+			expect((await readChangeStoreJson(f, id, 'alpha')).closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 
-		test('idempotent: re-running close on a closed Change is a no-op', async () => {
+		storageTest('idempotent: re-running close on a closed Change keeps the same closedAt', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
 			await storage.finalizeChange(id)
-			const storePath = path.join(f.changesDir, `${id}-alpha`, 'store.json')
-			const firstClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
-			const commitCountBefore = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
+			const firstClosedAt = (await readChangeStoreJson(f, id, 'alpha')).closedAt
 			await storage.finalizeChange(id)
-			const secondClosedAt = JSON.parse(await readFile(storePath, 'utf8')).closedAt
+			const secondClosedAt = (await readChangeStoreJson(f, id, 'alpha')).closedAt
 			expect(secondClosedAt).toBe(firstClosedAt)
-			const commitCountAfter = (await exec('git', ['-C', f.work, 'rev-list', '--count', 'HEAD'])).stdout.trim()
-			expect(commitCountAfter).toBe(commitCountBefore)
 		})
 	})
 
 	describe('file storage: createSlice', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
 
-		test('writes README.md and store.json under <changeDir>/slices/<id>-<slug>/ and returns id+title', async () => {
+		storageTest('writes README.md and store.json under <changeDir>/slices/<id>-<slug>/ and returns id+title', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'Add ORM', body: 'change-spec' })
 
@@ -917,27 +452,19 @@ if (import.meta.vitest) {
 	})
 
 	describe('file storage: findSlices', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('returns empty array when the Change has no slices/ directory', async () => {
+		storageTest('returns empty array when the Change has no slices/ directory', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'P', body: 'b' })
 			expect(await storage.findSlices(changeId)).toEqual([])
 		})
 
-		test('returned slices have prState=null (file storage has no PR concept)', async () => {
+		storageTest('returned slices have prState=null (file storage has no PR concept)', async ({ f }) => {
 			const { storage, changeId } = await createChangeWithSlice(f)
-			const [s] = classifySlices(await storage.findSlices(changeId))
-			expect(s!.prState).toBeNull()
+			const [s] = await storage.findSlices(changeId)
+			expect(s).not.toHaveProperty('prState')
 		})
 
-		test('returns one Slice per slice directory with body from README.md and state from closedAt', async () => {
+		storageTest('returns one Slice per slice directory with body and raw terminal fields', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await createMaterialisedChange(storage)
 			const a = await createMaterialisedSlice(storage, changeId, { title: 'Alpha', body: 'aa' })
@@ -945,31 +472,22 @@ if (import.meta.vitest) {
 			// Mark b as closed; needs-revision is PR-derived and not stored by file storage.
 			await storage.finalizeSlice(changeId, b.id)
 
-			const slices = classifySlices(await storage.findSlices(changeId))
+			const slices = await storage.findSlices(changeId)
 			expect(slices).toHaveLength(2)
 			const byId = Object.fromEntries(slices.map((s) => [s.id, s]))
 			expect(byId[a.id]).toMatchObject({
 				title: 'Alpha',
 				body: 'aa',
-				state: 'draft',
 				closedAt: null,
 				readyForAgent: false,
-				needsRevision: false,
 			})
-			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb', state: 'done', needsRevision: false })
+			expect(byId[b.id]).toMatchObject({ title: 'Beta', body: 'bb' })
+			expect(byId[b.id]!.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 	})
 
 	describe('file storage: createSlice round-trips blockedBy', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('persists spec.blockedBy to store.json; findSlices returns it on Slice', async () => {
+		storageTest('persists spec.blockedBy to store.json; findSlices returns it on Slice', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await createMaterialisedChange(storage)
 			const slice = await createMaterialisedSlice(storage, changeId, {
@@ -984,66 +502,42 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('file storage: findSlices computes state', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('OPEN slice with no readiness flags → draft', async () => {
+	describe('file storage: findSlices raw persistence fields', () => {
+		storageTest('new slice has raw readiness and terminal fields unset', async ({ f }) => {
 			const { storage, changeId } = await createChangeWithSlice(f)
-			const [s] = classifySlices(await storage.findSlices(changeId))
-			expect(s!.state).toBe('draft')
+			const [s] = await storage.findSlices(changeId)
+			expect(s).toMatchObject({ readyForAgent: false, closedAt: null, implementedAt: null, auditedAt: null, blockedBy: [] })
 		})
 
-		test('readyForAgent and no deps → open', async () => {
+		storageTest('setSliceReadyForAgent persists readyForAgent=true', async ({ f }) => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
 			await storage.setSliceReadyForAgent(changeId, slice.id, true)
-			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.state).toBe('open')
+			const [updated] = await storage.findSlices(changeId)
+			expect(updated!.readyForAgent).toBe(true)
 		})
 
-		test('CLOSED → done', async () => {
+		storageTest('finalizeSlice persists closedAt', async ({ f }) => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
 			await storage.finalizeSlice(changeId, slice.id)
-			const [updated] = classifySlices(await storage.findSlices(changeId))
-			expect(updated!.state).toBe('done')
+			const [updated] = await storage.findSlices(changeId)
+			expect(updated!.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 
-		test('slice with Depends-on: pointing to a non-done slice → blocked', async () => {
-			expect(await stateForReadySliceBlockedByA(f, false)).toBe('blocked')
-		})
-
-		test('slice with Depends-on: pointing to a done slice → open (dep satisfied)', async () => {
-			expect(await stateForReadySliceBlockedByA(f, true)).toBe('open')
-		})
-
-		test('file storage never returns in-flight (no PR concept)', async () => {
+		storageTest('setSliceBlockers overrides blockedBy with the raw blocker id set', async ({ f }) => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f)
-			await storage.setSliceReadyForAgent(changeId, slice.id, true)
-			const slices = classifySlices(await storage.findSlices(changeId))
-			expect(slices.every((x) => x.state !== 'in-flight')).toBe(true)
+			await storage.setSliceBlockers(changeId, slice.id, ['1', '2'])
+			const [updated] = await storage.findSlices(changeId)
+			expect(updated!.blockedBy).toEqual(['1', '2'])
 		})
 	})
 
 	describe('file storage: findChange', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('returns null when no Change exists for id', async () => {
+		storageTest('returns null when no Change exists for id', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			expect(await storage.findChange('zzzzzz')).toBeNull()
 		})
 
-		test('returns Change with closedAt=null for an open Change', async () => {
+		storageTest('returns Change with closedAt=null for an open Change', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
 			expect(await storage.findChange(id)).toMatchObject({
@@ -1056,9 +550,8 @@ if (import.meta.vitest) {
 			})
 		})
 
-		test('returns Change with closedAt set after close', async () => {
-			const deps: StorageDeps = { ...f.deps, abortOptions: { comment: null, deleteBranch: 'never' } }
-			const storage = createFileStorage(deps)
+		storageTest('returns Change with closedAt set after close', async ({ f }) => {
+			const storage = createFileStorage(f.deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Beta', body: 'b' })
 			await storage.finalizeChange(id)
 			expect(await storage.findChange(id)).toMatchObject({ id, changeBranch, targetBranch: 'main', title: 'Beta' })
@@ -1067,21 +560,13 @@ if (import.meta.vitest) {
 	})
 
 	describe('file storage: allocateNextId via createChange/createSlice', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('first Change gets id "1"', async () => {
+		storageTest('first Change gets id "1"', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await storage.createChange({ title: 'First', body: 'a' })
 			expect(id).toBe('1')
 		})
 
-		test('Changes and slices share one pool: change(1), slice(2), change(3)', async () => {
+		storageTest('Changes and slices share one pool: change(1), slice(2), change(3)', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const first = await storage.createChange({ title: 'First', body: 'a' })
 			expect(first.id).toBe('1')
@@ -1093,7 +578,7 @@ if (import.meta.vitest) {
 			expect(slice2.id).toBe('4')
 		})
 
-		test('closed Changes reserve their id (counter does not roll back)', async () => {
+		storageTest('closed Changes reserve their id (counter does not roll back)', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const first = await createMaterialisedChange(storage, { title: 'First', body: 'a' })
 			await storage.finalizeChange(first.id)
@@ -1103,15 +588,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('file storage: branch metadata', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('updateChangeMetadata persists one field without clobbering existing branch metadata', async () => {
+		storageTest('updateChangeMetadata persists one field without clobbering existing branch metadata', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id } = await createMaterialisedChange(storage, { title: 'Branch Metadata', body: 'b' })
 
@@ -1120,7 +597,7 @@ if (import.meta.vitest) {
 			expect(await storage.findChange(id)).toMatchObject({ id, targetBranch: 'main', changeBranch: 'change-custom' })
 		})
 
-		test('updateSliceMetadata persists the stored Slice branch', async () => {
+		storageTest('updateSliceMetadata persists the stored Slice branch', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'P', body: 'b' })
 			const slice = await storage.createSlice(changeId, { title: 'Slice', body: 's' })
@@ -1130,7 +607,7 @@ if (import.meta.vitest) {
 			expect((await storage.findSlices(changeId))[0]).toMatchObject({ id: slice.id, sliceBranch: 'change-custom/slice' })
 		})
 
-		test('findChange fails loudly when required branch metadata is missing', async () => {
+		storageTest('findChange fails loudly when required branch metadata is missing', async ({ f }) => {
 			await mkdir(path.join(f.changesDir, '1-missing'), { recursive: true })
 			await writeFile(
 				path.join(f.changesDir, '1-missing', 'store.json'),
@@ -1141,7 +618,7 @@ if (import.meta.vitest) {
 			await expect(storage.findChange('1')).rejects.toThrow(/missing required Change branch metadata/)
 		})
 
-		test('findSlices fails loudly when required Slice branch metadata is missing', async () => {
+		storageTest('findSlices fails loudly when required Slice branch metadata is missing', async ({ f }) => {
 			await writeChangeStoreFixture(f, { id: '1', slug: 'p', title: 'P', createdAt: '2026-05-17T00:00:00.000Z', closedAt: null })
 			await mkdir(path.join(f.changesDir, '1-p', 'slices', '2-s'), { recursive: true })
 			await writeFile(path.join(f.changesDir, '1-p', 'slices', '2-s', 'README.md'), 'body')
@@ -1165,15 +642,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('file storage: updateSlice', () => {
-		let f: Fixture
-		beforeEach(async () => {
-			f = await setup()
-		})
-		afterEach(async () => {
-			await teardown(f)
-		})
-
-		test('flips readyForAgent without writing needsRevision', async () => {
+		storageTest('flips readyForAgent without writing needsRevision', async ({ f }) => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b' })
 
 			await storage.setSliceReadyForAgent(changeId, slice.id, true)
@@ -1189,7 +658,7 @@ if (import.meta.vitest) {
 			expect(store).not.toHaveProperty('needsRevision')
 		})
 
-		test('finalizeSlice stamps closedAt', async () => {
+		storageTest('finalizeSlice stamps closedAt', async ({ f }) => {
 			const { storage, changeId, slice } = await createChangeWithSlice(f, { title: 'Foo', body: 'b' })
 
 			await storage.finalizeSlice(changeId, slice.id)
@@ -1199,7 +668,7 @@ if (import.meta.vitest) {
 			expect(store.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 
-		test('updates blockedBy as a full-array replace', async () => {
+		storageTest('updates blockedBy as a full-array replace', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await createMaterialisedChange(storage)
 			const s = await createMaterialisedSlice(storage, changeId, { title: 'Foo', body: 'b', blockedBy: ['old1', 'old2'] })
@@ -1214,7 +683,7 @@ if (import.meta.vitest) {
 			expect(found2.blockedBy).toEqual([])
 		})
 
-		test('throws when the slice does not exist', async () => {
+		storageTest('throws when the slice does not exist', async ({ f }) => {
 			const storage = createFileStorage(f.deps)
 			const { id: changeId } = await storage.createChange({ title: 'P', body: 'b' })
 			await expect(storage.setSliceReadyForAgent(changeId, 'zzzzzz', true)).rejects.toThrow(/no slice/i)

@@ -5,7 +5,7 @@ import { readOptionalFile } from './grill-flow.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt } from '../prompts/load.ts'
 import { getStorage } from '../storages/registry.ts'
-import type { Storage, StorageDeps } from '../storages/types.ts'
+import type { Storage } from '../storages/types.ts'
 import { createGh, type GhOps } from '../utils/gh-ops.ts'
 import { createRepoGit, type GitOps } from '../utils/git-ops.ts'
 
@@ -25,21 +25,13 @@ export async function loadCommandBase(commandName: string): Promise<CommandBase>
 	return { config, projectRoot, git: createRepoGit(projectRoot), gh: createGh() }
 }
 
-function buildStorageDeps(base: CommandBase, overrides: Partial<StorageDeps> = {}): StorageDeps {
-	return {
+export function buildStorage(base: CommandBase, storage: string): Storage {
+	return getStorage(storage, {
 		gh: base.gh,
 		git: base.git,
-		repoRoot: base.projectRoot,
-		projectRoot: base.projectRoot,
 		changesDir: path.resolve(base.projectRoot, base.config.docs.changesDir),
 		labels: base.config.labels,
-		abortOptions: base.config.abort,
-		...overrides,
-	}
-}
-
-export function buildStorage(base: CommandBase, storage: string, overrides: Partial<StorageDeps> = {}): Storage {
-	return getStorage(storage, buildStorageDeps(base, overrides))
+	})
 }
 
 export type GrillCommandRuntime = {

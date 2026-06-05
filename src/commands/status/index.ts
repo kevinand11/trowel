@@ -60,11 +60,8 @@ async function buildStatusStorage(opts: {
 	const storageDeps: StorageDeps = {
 		gh,
 		git,
-		repoRoot: projectRoot,
-		projectRoot,
 		changesDir: path.resolve(projectRoot, config.docs.changesDir),
 		labels: config.labels,
-		abortOptions: config.abort,
 	}
 	return {
 		storage: getStorage(storage, storageDeps),

@@ -89,7 +89,7 @@ async function abortOpenOrReadyChange(
 ): Promise<void> {
 	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
-	await rt.storage.abortChange(change.id)
+	await rt.storage.abortChange(change.id, abortStorageOptions(rt))
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
@@ -98,7 +98,7 @@ async function abortInFlightChange(change: Change, slices: ClassifiedSlice[], ta
 	await closeOpenCloseOutPr(change, rt)
 	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
-	await rt.storage.abortChange(change.id)
+	await rt.storage.abortChange(change.id, abortStorageOptions(rt))
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
@@ -134,8 +134,12 @@ async function closePrWithoutMerging(prNumber: number, rt: AbortRuntime): Promis
 
 async function closeOpenSliceRecords(changeId: string, slices: ClassifiedSlice[], rt: AbortRuntime): Promise<void> {
 	for (const slice of slices) {
-		if (slice.closedAt === null) await rt.storage.abortSlice(changeId, slice.id)
+		if (slice.closedAt === null) await rt.storage.abortSlice(changeId, slice.id, abortStorageOptions(rt))
 	}
+}
+
+function abortStorageOptions(rt: AbortRuntime): { comment?: string } | undefined {
+	return rt.abortComment === null ? undefined : { comment: rt.abortComment }
 }
 
 async function cleanupAfterAbort(change: Change, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
@@ -167,8 +171,7 @@ function listOpenPrsFor(base: CommandBase): (branch: string) => Promise<OpenPr[]
 
 async function buildAbortRuntime(opts: { storage?: string }): Promise<{ base: CommandBase; rt: AbortRuntime }> {
 	const base = await loadCommandBase('change abort')
-	const confirm = (msg: string) => inqConfirm({ message: msg, default: false })
-	const storage = buildStorage(base, opts.storage ?? base.config.storage, { confirm })
+	const storage = buildStorage(base, opts.storage ?? base.config.storage)
 	return {
 		base,
 		rt: {
@@ -180,7 +183,7 @@ async function buildAbortRuntime(opts: { storage?: string }): Promise<{ base: Co
 			deleteBranchPolicy: base.config.abort.deleteBranch,
 			abortComment: base.config.abort.comment,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-			confirm,
+			confirm: (msg) => inqConfirm({ message: msg, default: false }),
 			confirmExact: async (message, expected) => (await inqInput({ message })) === expected,
 			stdout: (s) => process.stdout.write(s),
 			listOpenPrs: listOpenPrsFor(base),

@@ -1,7 +1,4 @@
-import { classifySlices } from '../../utils/slice-state.ts'
-import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice } from '../../work/slice-types.ts'
-import type { Change, Slice, Storage, StorageDeps, StorageFactory } from '../types.ts'
+import type { Change, Slice, StorageDeps, StorageFactory } from '../types.ts'
 
 type TrowelMetadata = Record<string, unknown>
 type IssueChangeArtifact = {
@@ -113,11 +110,10 @@ export const createIssueStorage: StorageFactory = (deps) => {
 			if (issue.state === 'closed') return
 			await deps.gh.closeIssue(no)
 		},
-		abortChange: async (id) => {
+		abortChange: async (id, opts) => {
 			const no = entityIdToGhNumber(id)
 			const issue = await deps.gh.viewIssue(no)
 			if (issue.state === 'closed') return
-			const opts = deps.abortOptions.comment !== null ? { comment: deps.abortOptions.comment } : undefined
 			await deps.gh.closeIssue(no, opts)
 		},
 		updateChangeMetadata: async (changeId, patch) => updateIssueMetadata(changeId, patch),
@@ -153,10 +149,8 @@ export const createIssueStorage: StorageFactory = (deps) => {
 		markSliceImplemented: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { implementedAt: at }),
 		markSliceAudited: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { auditedAt: at }),
 		finalizeSlice: async (_changeId, sliceId) => await deps.gh.closeIssue(entityIdToGhNumber(sliceId)),
-		abortSlice: async (_changeId, sliceId) => {
-			const no = entityIdToGhNumber(sliceId)
-			if (deps.abortOptions.comment === null) await deps.gh.closeIssue(no)
-			else await deps.gh.closeIssue(no, { comment: deps.abortOptions.comment })
+		abortSlice: async (_changeId, sliceId, opts) => {
+			await deps.gh.closeIssue(entityIdToGhNumber(sliceId), opts)
 		},
 		updateSliceMetadata: async (_changeId, sliceId, patch) => updateIssueMetadata(sliceId, patch),
 	}
@@ -168,8 +162,6 @@ if (import.meta.vitest) {
 	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
 
 	type GhOverrides = Partial<import('../../utils/gh-ops.ts').GhOps>
-	type GitCall = [string, ...string[]]
-
 	function trowelBody(body: string, metadata: Record<string, unknown>): string {
 		return `${body}\n\n<!-- trowel:${JSON.stringify(metadata)} -->`
 	}
@@ -185,234 +177,20 @@ if (import.meta.vitest) {
 	function makeDeps(overrides: GhOverrides = {}): {
 		deps: StorageDeps
 		calls: Array<[string, ...unknown[]]>
-		gitCalls: GitCall[]
-		logCalls: string[]
 	} {
 		const { gh, calls } = recordingGhOps(overrides)
-		const gitCalls: GitCall[] = []
-		const logCalls: string[] = []
 		const deps: StorageDeps = {
 			gh,
-			repoRoot: '/tmp/x',
-			projectRoot: '/tmp/x',
 			changesDir: '/tmp/x/docs/changes',
 			labels: { change: 'change', readyForAgent: 'ready-for-agent', needsRevision: 'needs-revision' },
-			abortOptions: { comment: null, deleteBranch: 'never' },
-			confirm: async () => false,
-			git: noopGitOps({
-				fetch: async (b) => {
-					gitCalls.push(['fetch', b])
-				},
-				push: async (b) => {
-					gitCalls.push(['push', b])
-				},
-				checkout: async (b) => {
-					gitCalls.push(['checkout', b])
-				},
-				mergeNoFf: async (b) => {
-					gitCalls.push(['mergeNoFf', b])
-				},
-				deleteRemoteBranch: async (b) => {
-					gitCalls.push(['deleteRemoteBranch', b])
-				},
-				createRemoteBranch: async (n, b) => {
-					gitCalls.push(['createRemoteBranch', n, b])
-				},
-				createLocalBranch: async (n, b) => {
-					gitCalls.push(['createLocalBranch', n, b])
-				},
-				pushSetUpstream: async (b) => {
-					gitCalls.push(['pushSetUpstream', b])
-				},
-				currentBranch: async () => '',
-				baseBranch: async () => 'develop',
-				branchExists: async () => false,
-			}),
-			log: (m) => {
-				logCalls.push(m)
-			},
+			git: noopGitOps(),
 		}
-		return { deps, calls, gitCalls, logCalls }
+		return { deps, calls }
 	}
-
-	describe('issue storage: phase primitives', () => {
-		function makeOpenSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
-			return {
-				id: '145',
-				title: 'Session Middleware',
-				body: 'wire JWT',
-				state: 'open',
-				closedAt: null,
-				implementedAt: null,
-				auditedAt: null,
-				readyForAgent: true,
-				needsRevision: false,
-				blockedBy: [],
-				sliceBranch: `change-142/slice-${overrides.id ?? '145'}-session-middleware`,
-				prState: null,
-				...overrides,
-			}
-		}
-
-		function phaseDeps(deps: StorageDeps, storage: Storage): PhaseDeps {
-			return { storage, git: deps.git!, gh: deps.gh, log: deps.log!, mergeNoVerify: false }
-		}
-
-		function makeIssueFixture(overrides: GhOverrides = {}): ReturnType<typeof makeDeps> & { storage: Storage; phase: PhaseDeps } {
-			const fixture = makeDeps({
-				viewIssue: async (number) => ({
-					number,
-					internalId: number * 1000,
-					title: 'Session Middleware',
-					state: 'open',
-					createdAt: '',
-					body: trowelBody('wire JWT', {
-						sliceBranch: 'change-142/slice-145-session-middleware',
-						implementedAt: null,
-						auditedAt: null,
-					}),
-					closedAt: null,
-				}),
-				...overrides,
-			})
-			const storage = createIssueStorage(fixture.deps)
-			return { ...fixture, storage, phase: phaseDeps(fixture.deps, storage) }
-		}
-
-		function phaseContext(config = { pr: true, audit: false, perSliceBranches: true }) {
-			return { changeId: '142', changeBranch: 'changes-issue-142', config }
-		}
-
-		function reviewContext() {
-			return phaseContext({ pr: true, audit: true, perSliceBranches: true })
-		}
-
-		function expectNoPhaseSideEffects(outcome: string, gitCalls: GitCall[], calls: Array<[string, ...unknown[]]>): void {
-			expect(outcome).toBe('partial')
-			expect(gitCalls).toEqual([])
-			expect(calls).toEqual([])
-		}
-
-		test('prepareImplement: verifies and fetches the stored Slice branch without creating it', async () => {
-			const { phase, gitCalls } = makeIssueFixture()
-			const prep = await prepareImplement(phase, makeOpenSlice(), phaseContext())
-			expect(prep.branch).toBe('change-142/slice-145-session-middleware')
-			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
-			expect(gitCalls.map((c) => c[0])).not.toContain('createRemoteBranch')
-			expect(gitCalls).toContainEqual(['fetch', 'change-142/slice-145-session-middleware'])
-		})
-
-		test('landImplement + ready: pushes slice branch and records implementedAt; returns progress', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext())
-			expect(outcome).toBe('progress')
-			expect(gitCalls).toContainEqual(['push', 'change-142/slice-145-session-middleware'])
-			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
-			expect(calls.map((c) => c[0])).not.toContain('createDraftPr')
-		})
-
-		test('landImplement + pr=false + ready: records implementedAt without merging; returns progress', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(
-				phase,
-				makeOpenSlice(),
-				{ verdict: 'ready', commits: 1 },
-				phaseContext({ pr: false, audit: false, perSliceBranches: true }),
-			)
-			expect(outcome).toBe('progress')
-			expect(gitCalls).toEqual([['push', 'change-142/slice-145-session-middleware']])
-			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
-		})
-
-		test('landImplement + stored Slice branch equals Change branch + ready: pushes Change branch and records implementedAt; returns progress', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(
-				phase,
-				makeOpenSlice({ sliceBranch: 'changes-issue-142' }),
-				{ verdict: 'ready', commits: 1 },
-				phaseContext({ pr: false, audit: false, perSliceBranches: false }),
-			)
-			expect(outcome).toBe('progress')
-			expect(gitCalls).toEqual([['push', 'changes-issue-142']])
-			expect(calls.some((call) => call[0] === 'editIssueBody' && /"implementedAt":"\d{4}-/.test(String(call[2])))).toBe(true)
-		})
-
-		test('prepareImplement + stored Slice branch equals Change branch: runs on stored branch and fetches it', async () => {
-			const { phase, gitCalls } = makeIssueFixture()
-			const prep = await prepareImplement(
-				phase,
-				makeOpenSlice({ sliceBranch: 'changes-issue-142' }),
-				phaseContext({ pr: false, audit: false, perSliceBranches: false }),
-			)
-			expect(prep.branch).toBe('changes-issue-142')
-			expect(gitCalls).toEqual([['fetch', 'changes-issue-142']])
-		})
-
-		test('landImplement + no-work-needed: clears readyForAgent via gh label edit, returns no-work', async () => {
-			const { phase, calls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'no-work-needed', commits: 0 }, phaseContext())
-			expect(outcome).toBe('no-work')
-			expect(calls).toContainEqual(['editIssueLabels', 145, { remove: ['ready-for-agent'] }])
-		})
-
-		test('landImplement + partial: returns partial, no side effects', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'partial', commits: 0 }, phaseContext())
-			expectNoPhaseSideEffects(outcome, gitCalls, calls)
-		})
-
-		test('prepareReview: finds PR, fetches feedback, and packs both into turnIn', async () => {
-			const { phase, calls } = makeIssueFixture({ findPrNumberByHead: async () => 168 })
-			const prep = await prepareReview(phase, makeOpenSlice({ prState: 'ready', needsRevision: true }), reviewContext())
-			expect(prep.branch).toBe('change-142/slice-145-session-middleware')
-			expect(prep.turnIn.pr).toEqual({ number: 168, branch: 'change-142/slice-145-session-middleware' })
-			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
-			expect(prep.turnIn.feedback).toEqual([])
-			expect(calls).toContainEqual(['findPrNumberByHead', 'change-142/slice-145-session-middleware'])
-		})
-
-		test('landReview + ready (commits > 0): pushes slice branch, clears needsRevision, returns progress', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 145 })
-			const outcome = await landReview(
-				phase,
-				makeOpenSlice({ prState: 'ready', needsRevision: true }),
-				{ verdict: 'ready', commits: 3 },
-				reviewContext(),
-			)
-			expect(outcome).toBe('progress')
-			expect(gitCalls).toContainEqual(['push', 'change-142/slice-145-session-middleware'])
-			expect(calls).toContainEqual(['editIssueLabels', 145, { remove: ['needs-revision'] }])
-			expect(calls.find((c) => c[0] === 'markPrReady')).toBeUndefined()
-		})
-
-		test('landReview + no-work-needed: clears needsRevision, returns no-work, no push', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture({ findPrNumberByHead: async () => 145 })
-			const outcome = await landReview(
-				phase,
-				makeOpenSlice({ prState: 'ready', needsRevision: true }),
-				{ verdict: 'no-work-needed', commits: 0 },
-				reviewContext(),
-			)
-			expect(outcome).toBe('no-work')
-			expect(gitCalls.find((c) => c[0] === 'push')).toBeUndefined()
-			expect(calls).toContainEqual(['editIssueLabels', 145, { remove: ['needs-revision'] }])
-		})
-
-		test('landReview + partial: returns partial, no side effects', async () => {
-			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landReview(
-				phase,
-				makeOpenSlice({ prState: 'ready', needsRevision: true }),
-				{ verdict: 'partial', commits: 0 },
-				reviewContext(),
-			)
-			expectNoPhaseSideEffects(outcome, gitCalls, calls)
-		})
-	})
 
 	describe('issue storage: createChange', () => {
 		test('creates the issue record and returns allocated id+title without branch metadata', async () => {
-			const { deps, calls, gitCalls } = makeDeps({
+			const { deps, calls } = makeDeps({
 				createIssue: async ({ title }) => createdIssue(42, title),
 			})
 			const storage = createIssueStorage(deps)
@@ -420,11 +198,10 @@ if (import.meta.vitest) {
 			expect(result).toEqual({ id: '42', title: 'Fix Tabs on macOS' })
 			expect(calls[0]).toEqual(['createIssue', { title: 'Fix Tabs on macOS', body: 'the spec', labels: ['change'] }])
 			expect(calls.find((c) => c[0] === 'editIssueBody')).toBeUndefined()
-			expect(gitCalls).toEqual([])
 		})
 
 		test('createChange ignores targetBranch because branch metadata is updated after branch creation', async () => {
-			const { deps, calls, gitCalls } = makeDeps({
+			const { deps, calls } = makeDeps({
 				createIssue: async ({ title }) => createdIssue(99, title),
 			})
 			const storage = createIssueStorage(deps)
@@ -433,11 +210,10 @@ if (import.meta.vitest) {
 
 			expect(result).toEqual({ id: '99', title: 'Release Feature' })
 			expect(calls[0]).toEqual(['createIssue', { title: 'Release Feature', body: 'body', labels: ['change'] }])
-			expect(gitCalls).toEqual([])
 		})
 
 		test('applies configured labels.change to the createIssue call', async () => {
-			const { deps, calls, gitCalls } = makeDeps({
+			const { deps, calls } = makeDeps({
 				createIssue: async ({ title }) => createdIssue(7, title),
 			})
 			deps.labels.change = 'roadmap'
@@ -448,7 +224,6 @@ if (import.meta.vitest) {
 			expect(name).toBe('createIssue')
 			expect((args as { labels: string[] }).labels).toEqual(['roadmap'])
 			expect((args as { body: string }).body).toBe('b')
-			expect(gitCalls).toEqual([])
 		})
 
 		test('throws if gh createIssue fails', async () => {
@@ -520,7 +295,6 @@ if (import.meta.vitest) {
 					changeBranch: 'change-7-add-orm',
 				},
 			])
-			// No per-issue lookups — Change branch is read from the list response metadata.
 			expect(calls.filter((c) => c[0] === 'viewIssue')).toEqual([])
 		})
 	})
@@ -579,37 +353,31 @@ if (import.meta.vitest) {
 				],
 			})
 			const storage = createIssueStorage(deps)
-			const slices = classifySlices(await storage.findSlices('42'))
+			const slices = await storage.findSlices('42')
 			expect(calls[0]).toEqual(['listSubIssues', 42])
 			expect(slices).toEqual([
 				{
 					id: '57',
 					title: 'Implement Parser',
 					body: 'parser spec',
-					state: 'open',
 					closedAt: null,
 					implementedAt: null,
 					auditedAt: null,
 					readyForAgent: true,
-					needsRevision: false,
 					blockedBy: [],
 					sliceBranch: 'change-42/slice-57-implement-parser',
-					prState: null,
-				},
+					},
 				{
 					id: '58',
 					title: 'Wire CLI',
 					body: 'cli spec',
-					state: 'done',
 					closedAt: '2026-06-04T00:00:00Z',
 					implementedAt: null,
 					auditedAt: null,
 					readyForAgent: false,
-					needsRevision: false,
 					blockedBy: [],
 					sliceBranch: 'change-42/slice-58-wire-cli',
-					prState: null,
-				},
+					},
 			])
 		})
 
@@ -633,8 +401,8 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('issue storage: findSlices output → classifier', () => {
-		test('open slice with readyForAgent label and no blockers → open state', async () => {
+	describe('issue storage: findSlices raw persistence fields', () => {
+		test('readyForAgent label maps to the raw readyForAgent flag without PR queries', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
 					{
@@ -647,12 +415,12 @@ if (import.meta.vitest) {
 				],
 			})
 			const storage = createIssueStorage(deps)
-			const slices = await storage.findSlices('42')
-			expect(classifySlices(slices)[0]!.state).toBe('open')
+			const [slice] = await storage.findSlices('42')
+			expect(slice).toMatchObject({ readyForAgent: true, closedAt: null, blockedBy: [] })
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeUndefined()
 		})
 
-		test('open slice with issue-level needsRevision label stays open; PR surface owns revision state', async () => {
+		test('issue-level needsRevision label is not persisted as Slice state', async () => {
 			const { deps } = makeDeps({
 				listSubIssues: async () => [
 					{
@@ -665,12 +433,11 @@ if (import.meta.vitest) {
 				],
 			})
 			const storage = createIssueStorage(deps)
-			const [s] = classifySlices(await storage.findSlices('42'))
-			expect(s!.state).toBe('open')
-			expect(s!.needsRevision).toBe(false)
+			const [slice] = await storage.findSlices('42')
+			expect(slice).not.toHaveProperty('needsRevision')
 		})
 
-		test('open slice with total_blocked_by > 0 → fetches dependencies + populates blockedBy + blocked state', async () => {
+		test('total_blocked_by > 0 fetches dependencies and populates raw blockedBy', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
 					{
@@ -693,14 +460,13 @@ if (import.meta.vitest) {
 				listBlockedBy: async (id) => (id === 58 ? [{ id: 1, number: 57 }] : []),
 			})
 			const storage = createIssueStorage(deps)
-			const slices = classifySlices(await storage.findSlices('42'))
+			const slices = await storage.findSlices('42')
 			const b = slices.find((x) => x.id === '58')!
 			expect(b.blockedBy).toEqual(['57'])
-			expect(b.state).toBe('blocked')
 			expect(calls.filter((c) => c[0] === 'listBlockedBy').map((c) => c[1])).toEqual([58])
 		})
 
-		test('closed slice → done state; no listOpenPrs call (findSlices does not issue PR queries)', async () => {
+		test('closed slice maps to raw closedAt without PR queries', async () => {
 			const { deps, calls } = makeDeps({
 				listSubIssues: async () => [
 					{
@@ -714,8 +480,8 @@ if (import.meta.vitest) {
 				],
 			})
 			const storage = createIssueStorage(deps)
-			const [s] = classifySlices(await storage.findSlices('42'))
-			expect(s!.state).toBe('done')
+			const [slice] = await storage.findSlices('42')
+			expect(slice!.closedAt).toBe('2026-06-04T00:00:00Z')
 			expect(calls.some((c) => c[0] === 'listOpenPrs')).toBe(false)
 		})
 	})
@@ -853,17 +619,15 @@ if (import.meta.vitest) {
 
 		test('finalizeSlice closes without abort comment', async () => {
 			const { deps, calls } = makeDeps()
-			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
 			await storage.finalizeSlice('42', '57')
 			expect(calls).toEqual([['closeIssue', 57]])
 		})
 
-		test('abortSlice passes the configured abort comment when present', async () => {
+		test('abortSlice passes the supplied abort comment when present', async () => {
 			const { deps, calls } = makeDeps()
-			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
-			await storage.abortSlice('42', '57')
+			await storage.abortSlice('42', '57', { comment: 'Closed via trowel' })
 			expect(calls).toEqual([['closeIssue', 57, { comment: 'Closed via trowel' }]])
 		})
 	})
@@ -885,10 +649,7 @@ if (import.meta.vitest) {
 			const storage = createIssueStorage(deps)
 			await storage.setSliceBlockers('42', '100', ['8', '9'])
 
-			// 7 was in old, removed → removeBlockedBy with internal id 700
 			expect(calls).toContainEqual(['removeBlockedBy', 100, 700])
-
-			// 8 and 9 are new → two addBlockedBy calls with their resolved internal ids
 			expect(calls).toContainEqual(['addBlockedBy', 100, 800])
 			expect(calls).toContainEqual(['addBlockedBy', 100, 900])
 		})
@@ -919,11 +680,10 @@ if (import.meta.vitest) {
 			expect(calls.find((c) => c[1] === 'closeIssue')).toBeUndefined()
 		})
 
-		test('passes the comment through to closeIssue when config.abort.comment is set', async () => {
+		test('passes the supplied comment through to closeIssue', async () => {
 			const { deps, calls } = makeDeps()
-			deps.abortOptions.comment = 'Closed via trowel'
 			const storage = createIssueStorage(deps)
-			await storage.abortChange('42')
+			await storage.abortChange('42', { comment: 'Closed via trowel' })
 			expect(calls).toContainEqual(['closeIssue', 42, { comment: 'Closed via trowel' }])
 		})
 	})
