@@ -570,11 +570,12 @@ if (import.meta.vitest) {
 			return { storage, git: f.deps.git!, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 		}
 
-		async function createReadySlice(f: Fixture, storage: Storage, title = 'A'): Promise<{ result: { id: string; changeBranch: string }; slice: Slice }> {
+		async function createReadySlice(f: Fixture, storage: Storage, title = 'A', branchMode: 'shared' | 'distinct' = 'shared'): Promise<{ result: { id: string; changeBranch: string }; slice: Slice }> {
 			const result = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
 			await f.deps.git.createLocalBranch(result.changeBranch, 'main')
 			await f.deps.git.pushSetUpstream(result.changeBranch)
-			const slice = await createMaterialisedSlice(storage, result.id, { title, body: 'spec', blockedBy: [] })
+			const sliceBranch = branchMode === 'shared' ? result.changeBranch : undefined
+			const slice = await createMaterialisedSlice(storage, result.id, { title, body: 'spec', blockedBy: [] }, sliceBranch)
 			await storage.updateSlice(result.id, slice.id, { readyForAgent: true })
 			f.calls.git.length = 0
 			return { result, slice }
@@ -615,24 +616,31 @@ if (import.meta.vitest) {
 
 		async function readySliceBranchFixture(f: Fixture, baseBranch: string) {
 			const storage = createFileStorage(f.deps)
-			const { result: { id: changeId, changeBranch }, slice } = await createReadySlice(f, storage, 'Implement A')
+			const { result: { id: changeId, changeBranch }, slice } = await createReadySlice(f, storage, 'Implement A', 'distinct')
 			const sliceBranch = `${changeId}/${slice.id}-implement-a`
 			const { git: recordingGit, calls } = makeRecordingGit(changeBranch, baseBranch)
 			const deps: PhaseDeps = { storage, git: recordingGit, gh: f.deps.gh, log: f.deps.log!, mergeNoVerify: false }
 			return { storage, changeId, changeBranch, slice, sliceBranch, deps, calls }
 		}
 
-		test('prepareImplement: branch is the Change branch; turnIn carries the slice', async () => {
+		test('prepareImplement: shared-branch Slice uses the stored Change branch; turnIn carries the slice', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
-				const prep = await prepareImplement(makePhaseDeps(f, storage), makeOpenSlice(), {
-					changeId: 'p1',
-					changeBranch: 'change/p1-x',
+				const { id: changeId, changeBranch } = await createMaterialisedChange(storage, { title: 'X', body: 'b' })
+				await f.deps.git.createLocalBranch(changeBranch, 'main')
+				await f.deps.git.pushSetUpstream(changeBranch)
+				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec', blockedBy: [] }, changeBranch)
+				f.calls.git.length = 0
+
+				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {
+					changeId,
+					changeBranch,
 					config: { usePrs: false, review: false, perSliceBranches: false },
 				})
-				expect(prep.branch).toBe('change/p1-x')
-				expect(prep.turnIn.slice).toEqual({ id: 's1', title: 'Implement A', body: 'spec' })
+				expect(prep.branch).toBe(changeBranch)
+				expect(prep.turnIn.slice).toEqual({ id: slice.id, title: 'Implement A', body: 'spec' })
+				expect(f.calls.git).toEqual([['fetch', changeBranch]])
 			} finally {
 				await teardown(f)
 			}
@@ -690,7 +698,7 @@ if (import.meta.vitest) {
 			}
 		})
 
-		test('prepareImplement + perSliceBranches:true: creates slice branch via git, turnIn carries the slice', async () => {
+		test('prepareImplement + distinct stored Slice branch: fetches existing branch without creating it, turnIn carries the slice', async () => {
 			const f = await setup()
 			try {
 				const storage = createFileStorage(f.deps)
@@ -698,6 +706,7 @@ if (import.meta.vitest) {
 				await f.deps.git.createLocalBranch(changeBranch, 'main')
 				await f.deps.git.pushSetUpstream(changeBranch)
 				const slice = await createMaterialisedSlice(storage, changeId, { title: 'Implement A', body: 'spec', blockedBy: [] })
+				await f.deps.git.createRemoteBranch(slice.sliceBranch, changeBranch)
 				f.calls.git.length = 0
 
 				const prep = await prepareImplement(makePhaseDeps(f, storage), { ...slice, state: 'open' } as ClassifiedSlice, {

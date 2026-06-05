@@ -353,12 +353,12 @@ if (import.meta.vitest) {
 			expect(calls).toEqual([])
 		}
 
-		test('prepareImplement: creates slice branch via git, returns {branch, turnIn}', async () => {
+		test('prepareImplement: verifies and fetches the stored Slice branch without creating it', async () => {
 			const { phase, gitCalls } = makeIssueFixture()
 			const prep = await prepareImplement(phase, makeOpenSlice(), phaseContext())
 			expect(prep.branch).toBe('change-142/slice-145-session-middleware')
 			expect(prep.turnIn.slice).toEqual({ id: '145', title: 'Session Middleware', body: 'wire JWT' })
-			expect(gitCalls).toContainEqual(['createRemoteBranch', 'change-142/slice-145-session-middleware', 'changes-issue-142'])
+			expect(gitCalls.map((c) => c[0])).not.toContain('createRemoteBranch')
 			expect(gitCalls).toContainEqual(['fetch', 'change-142/slice-145-session-middleware'])
 		})
 
@@ -392,19 +392,19 @@ if (import.meta.vitest) {
 			expectClosedWithoutDraftPr(calls)
 		})
 
-		test('landImplement + perSliceBranches:false + ready: pushes Change branch directly, closes sub-issue via updateSlice; returns done', async () => {
+		test('landImplement + stored Slice branch equals Change branch + ready: pushes Change branch directly, closes sub-issue via updateSlice; returns done', async () => {
 			const { phase, calls, gitCalls } = makeIssueFixture()
-			const outcome = await landImplement(phase, makeOpenSlice(), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
+			const outcome = await landImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), { verdict: 'ready', commits: 1 }, phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
 			expect(outcome).toBe('done')
 			expect(gitCalls).toEqual([['push', 'changes-issue-142']])
 			expectClosedWithoutDraftPr(calls)
 		})
 
-		test('prepareImplement + perSliceBranches:false: runs on the Change branch; no git ops', async () => {
+		test('prepareImplement + stored Slice branch equals Change branch: runs on stored branch and fetches it', async () => {
 			const { phase, gitCalls } = makeIssueFixture()
-			const prep = await prepareImplement(phase, makeOpenSlice(), phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
+			const prep = await prepareImplement(phase, makeOpenSlice({ sliceBranch: 'changes-issue-142' }), phaseContext({ usePrs: false, review: false, perSliceBranches: false }))
 			expect(prep.branch).toBe('changes-issue-142')
-			expect(gitCalls).toEqual([])
+			expect(gitCalls).toEqual([['fetch', 'changes-issue-142']])
 		})
 
 		test('landImplement + no-work-needed: clears readyForAgent via gh label edit, returns no-work', async () => {
