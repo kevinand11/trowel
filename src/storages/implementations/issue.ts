@@ -152,7 +152,7 @@ export const createIssueStorage: StorageFactory = (deps: StorageDeps): Storage =
 
 	function requiredMetadataString(body: string | null | undefined, source: string, key: string): string {
 		const value = metadataFromBody(body)[key]
-		if (typeof value !== 'string' || value.length === 0) throw new Error(`${source} is missing required Trowel metadata: ${key}`)
+		if (typeof value !== 'string' || value.length === 0) throw new Error(`${source} is missing required Trowel metadata: ${key}. Repair legacy issue storage with \`trowel repair branch-metadata --dry-run\`, review the patches, then run \`trowel repair branch-metadata --apply\`.`)
 		return value
 	}
 
@@ -763,20 +763,20 @@ if (import.meta.vitest) {
 			])
 		})
 
-		test('findChange fails loudly when required branch metadata is missing', async () => {
+		test('findChange fails loudly with repair guidance when required branch metadata is missing', async () => {
 			const { deps } = makeDeps({
 				viewIssue: async () => ({ number: 42, title: 'Missing', state: 'OPEN', body: trowelBody('body', { targetBranch: 'main' }) }),
 			})
 			const storage = createIssueStorage(deps)
-			await expect(storage.findChange('42')).rejects.toThrow(/missing required Trowel metadata: changeBranch/)
+			await expect(storage.findChange('42')).rejects.toThrow(/missing required Trowel metadata: changeBranch[\s\S]*trowel repair branch-metadata --dry-run[\s\S]*--apply/)
 		})
 
-		test('findSlices fails loudly when required Slice branch metadata is missing', async () => {
+		test('findSlices fails loudly with repair guidance when required Slice branch metadata is missing', async () => {
 			const { deps } = makeDeps({
 				listSubIssues: async () => [{ number: 57, title: 'Slice', body: 'body', state: 'open', labels: [] }],
 			})
 			const storage = createIssueStorage(deps)
-			await expect(storage.findSlices('42')).rejects.toThrow(/missing required Trowel metadata: sliceBranch/)
+			await expect(storage.findSlices('42')).rejects.toThrow(/missing required Trowel metadata: sliceBranch[\s\S]*trowel repair branch-metadata --dry-run[\s\S]*--apply/)
 		})
 	})
 
