@@ -39,7 +39,7 @@ export function fakeSliceStorage(slices: Slice[], _changeId: string | null = 'p1
 }
 
 async function defaultFindChange(id: string): Promise<ChangeRecord> {
-	return { id, changeBranch: 'b', targetBranch: 'main', title: 't', state: 'OPEN', closedAt: null }
+	return { id, changeBranch: 'b', targetBranch: 'main', title: 't', closedAt: null }
 }
 
 async function unusedCreateSlice(): Promise<Slice> {

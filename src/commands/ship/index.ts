@@ -1,13 +1,13 @@
 import type { ChangeRecord, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
-import type { ChangeState } from '../../work/change-types.ts'
-import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
+import type { ChangeState } from '../../work/change-types.ts'
 import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { runCloseOut } from '../../work/close-out.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
@@ -392,7 +392,7 @@ if (import.meta.vitest) {
 
 		test('done Change exits successfully through cleanup', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED' }),
+				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', closedAt: '2026-06-04T00:00:00.000Z' }),
 			})
 			const { rt, out } = makeRt({
 				storage,
@@ -404,7 +404,7 @@ if (import.meta.vitest) {
 
 		test('PR mode fails loudly when the Change branch equals the Target branch', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'main', targetBranch: 'main', title: 'X', state: 'OPEN', closedAt: null }),
+				findChange: async (id) => ({ id, changeBranch: 'main', targetBranch: 'main', title: 'X', closedAt: null }),
 			})
 			const { rt, ghCalls } = makeRt({
 				storage,
@@ -432,7 +432,6 @@ if (import.meta.vitest) {
 						changeBranch: 'change-3-x',
 						targetBranch: 'main',
 						title: 'X',
-						state: 'OPEN',
 						closedAt: null,
 					}),
 				},
@@ -453,7 +452,6 @@ if (import.meta.vitest) {
 						changeBranch: 'change-3-x',
 						targetBranch: 'main',
 						title: 'X',
-						state: 'CLOSED',
 						closedAt: '2026-06-04T00:00:00.000Z',
 					}),
 				},
@@ -688,7 +686,7 @@ if (import.meta.vitest) {
 		test('already done Change still best-effort syncs the local Target branch after cleanup', async () => {
 			const gitCalls: string[] = []
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED' }),
+				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', closedAt: '2026-06-04T00:00:00.000Z' }),
 			})
 			const { rt } = makeRt({
 				storage,
@@ -713,7 +711,7 @@ if (import.meta.vitest) {
 
 		test('Target sync failures warn and do not fail Ship', async () => {
 			const storage = fakeSliceStorage([fakeClassifiedSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z' })], '3', {
-				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', state: 'CLOSED' }),
+				findChange: async (id) => ({ id, changeBranch: 'change-3-x', targetBranch: 'main', title: 'X', closedAt: '2026-06-04T00:00:00.000Z' }),
 			})
 			const { rt, out } = makeRt({
 				storage,

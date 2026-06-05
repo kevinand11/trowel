@@ -1,10 +1,10 @@
+import type { ChangeState } from './change-types.ts'
 import { createEffectiveSliceReader } from './effective-slices.ts'
 import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
+import type { ClassifiedSlice } from './slice-types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
-import type { ChangeState } from './change-types.ts'
-import type { ClassifiedSlice } from './slice-types.ts'
 import { classifyChange } from '../utils/change-state.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
@@ -158,7 +158,6 @@ if (import.meta.vitest) {
 			changeBranch: '3-feat',
 			targetBranch: 'main',
 			title: 'Feat',
-			state: 'OPEN' as const,
 			closedAt: null,
 		}
 		const slices = opts.slices ?? []
@@ -222,7 +221,6 @@ if (import.meta.vitest) {
 					changeBranch: '3-feat',
 					targetBranch: 'main',
 					title: 'Feat',
-					state: 'CLOSED',
 					closedAt: '2026-06-04T00:00:00.000Z',
 				},
 				slices: [doneSlice],
@@ -234,7 +232,6 @@ if (import.meta.vitest) {
 					changeBranch: '3-feat',
 					targetBranch: 'main',
 					title: 'Feat',
-					state: 'CLOSED',
 					closedAt: '2026-06-04T00:00:00.000Z',
 				},
 				slices: [doneSlice],

@@ -10,11 +10,11 @@ import {
 	prepareReview,
 	type PhaseDeps,
 } from './phases.ts'
+import type { ClassifiedSlice } from './slice-types.ts'
+import type { ClassifySliceConfig, PhaseOutcome, ResumeState } from './types.ts'
 import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { Slice } from '../storages/types.ts'
-import type { ClassifiedSlice } from './slice-types.ts'
-import type { ClassifySliceConfig, PhaseOutcome, ResumeState } from './types.ts'
 
 export type ProcessOutcome = 'done' | 'partial' | 'no-work'
 

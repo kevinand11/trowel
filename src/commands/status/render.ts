@@ -1,9 +1,9 @@
 import type { ChangeRecord } from '../../storages/types.ts'
+import { emptySliceStateCounts, formatSliceStateCounts, SLICE_STATE_ORDER } from '../../utils/slice-state-format.ts'
 import type { ChangeState } from '../../work/change-types.ts'
 import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
-import { emptySliceStateCounts, formatSliceStateCounts, SLICE_STATE_ORDER } from '../../utils/slice-state-format.ts'
 
-export type StatusChange = Omit<ChangeRecord, 'state'> & { state: ChangeState }
+export type StatusChange = ChangeRecord & { state: ChangeState }
 
 export function renderStatus(change: StatusChange, slices: ClassifiedSlice[]): string {
 	const counts = stateCountsFor(slices)

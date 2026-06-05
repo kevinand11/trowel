@@ -1,11 +1,11 @@
 import type { ChangeSummary, Storage } from '../../storages/types.ts'
-import type { ChangeState } from '../../work/change-types.ts'
-import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
 import { emptySliceStateCounts, formatSliceStateCounts } from '../../utils/slice-state-format.ts'
+import type { ChangeState } from '../../work/change-types.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
+import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 import { buildStorage, loadCommandBase } from '../runtime.ts'
 
 type ListRuntime = { storage: Storage; pr: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts }

@@ -4,11 +4,11 @@ import { renderStatus, renderStatusSlice } from './render.ts'
 import { loadConfig } from '../../config'
 import { getStorage } from '../../storages/registry.ts'
 import type { ChangeRecord, Slice, Storage, StorageDeps } from '../../storages/types.ts'
-import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, createRepoGit, type GitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
 
 type StatusRuntime = {
 	storage: Storage
@@ -189,7 +189,6 @@ if (import.meta.vitest) {
 		changeBranch: 'change/ab12cd-feature',
 		targetBranch: 'main',
 		title: 'Add SSO',
-		state: 'OPEN',
 		closedAt: null,
 	}
 	const renderedChange = { ...change, state: 'open' as const }

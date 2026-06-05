@@ -6,6 +6,8 @@ import { withMutationLock } from '../../utils/mutation-lock.ts'
 import { classifySlices } from '../../utils/slice-state.ts'
 import { slug as slugify } from '../../utils/slug.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
+import type { PhaseCtx } from '../../work/types.ts'
 import type {
 	ChangeMetadataPatch,
 	ChangeRecord,
@@ -21,8 +23,6 @@ import type {
 	StorageDeps,
 	StorageFactory,
 } from '../types.ts'
-import type { ClassifiedSlice } from '../../work/slice-types.ts'
-import type { PhaseCtx } from '../../work/types.ts'
 
 type ChangeStore = {
 	id: string
@@ -324,7 +324,6 @@ export const createFileStorage: StorageFactory = (deps) => {
 				changeBranch: store.changeBranch,
 				targetBranch: store.targetBranch,
 				title: store.title,
-				state: store.closedAt === null ? 'OPEN' : 'CLOSED',
 				closedAt: store.closedAt,
 			}
 		} catch (error) {
@@ -1197,7 +1196,7 @@ if (import.meta.vitest) {
 			expect(await storage.findChange('zzzzzz')).toBeNull()
 		})
 
-		test('returns ChangeRecord with state=OPEN for an open Change', async () => {
+		test('returns ChangeRecord with closedAt=null for an open Change', async () => {
 			const storage = createFileStorage(f.deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Alpha', body: 'a' })
 			expect(await storage.findChange(id)).toEqual({
@@ -1205,17 +1204,16 @@ if (import.meta.vitest) {
 				changeBranch,
 				targetBranch: 'main',
 				title: 'Alpha',
-				state: 'OPEN',
 				closedAt: null,
 			})
 		})
 
-		test('returns ChangeRecord with state=CLOSED after close', async () => {
+		test('returns ChangeRecord with closedAt set after close', async () => {
 			const deps: StorageDeps = { ...f.deps, abortOptions: { comment: null, deleteBranch: 'never' } }
 			const storage = createFileStorage(deps)
 			const { id, changeBranch } = await createMaterialisedChange(storage, { title: 'Beta', body: 'b' })
 			await storage.closeChange(id)
-			expect(await storage.findChange(id)).toMatchObject({ id, changeBranch, targetBranch: 'main', title: 'Beta', state: 'CLOSED' })
+			expect(await storage.findChange(id)).toMatchObject({ id, changeBranch, targetBranch: 'main', title: 'Beta' })
 			expect((await storage.findChange(id))!.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
 		})
 	})

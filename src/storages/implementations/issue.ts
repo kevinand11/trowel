@@ -1,7 +1,7 @@
 import { classifySlices } from '../../utils/slice-state.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
 import type { ClassifiedSlice } from '../../work/slice-types.ts'
+import type { Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
 
 type LabelPatch = { readyForAgent?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]
@@ -181,7 +181,6 @@ export const createIssueStorage: StorageFactory = (deps) => {
 				changeBranch: requiredMetadataString(issue.body, `issue #${issue.number}`, 'changeBranch'),
 				targetBranch: requiredMetadataString(issue.body, `issue #${issue.number}`, 'targetBranch'),
 				title: issue.title,
-				state: closedAt === null && issue.state === 'open' ? 'OPEN' : 'CLOSED',
 				closedAt,
 			}
 		},
@@ -791,7 +790,7 @@ if (import.meta.vitest) {
 	})
 
 	describe('issue storage: findChange', () => {
-		test('returns ChangeRecord with changeBranch, targetBranch, and state for an existing issue', async () => {
+		test('returns ChangeRecord with changeBranch and targetBranch for an existing issue', async () => {
 			const { deps } = makeDeps({
 				viewIssue: async () => ({
 					number: 42,
@@ -807,23 +806,8 @@ if (import.meta.vitest) {
 				changeBranch: 'change-42-fix-tabs',
 				targetBranch: 'release/1.2',
 				title: 'Fix Tabs',
-				state: 'OPEN',
 				closedAt: null,
 			})
-		})
-
-		test('maps "closed" GitHub state to CLOSED', async () => {
-			const { deps } = makeDeps({
-				viewIssue: async () => ({
-					number: 42,
-					internalId: 42000,
-					title: 'X',
-					state: 'closed',
-					body: '<!-- trowel:{"targetBranch":"main","changeBranch":"change-42-x"} -->',
-				}),
-			})
-			const storage = createIssueStorage(deps)
-			expect((await storage.findChange('42'))!.state).toBe('CLOSED')
 		})
 
 		test('propagates viewIssue errors when an issue is not found', async () => {

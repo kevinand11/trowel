@@ -32,7 +32,7 @@ export async function setupLocalSliceMergeFixture(opts: {
 	if (currentBranch !== 'main') await exec('git', ['-C', fixture.work, 'checkout', '-q', '-b', currentBranch, 'origin/main'])
 
 	const state = {
-		change: { id: changeId, changeBranch, targetBranch: 'main', title: 'Feature', state: 'OPEN' as const, closedAt: null },
+		change: { id: changeId, changeBranch, targetBranch: 'main', title: 'Feature', closedAt: null },
 		slice: testSlice(changeId, opts.slice),
 	}
 	if (state.slice.sliceBranch !== null && state.slice.sliceBranch !== changeBranch) await createRemoteSliceBranch(fixture.work, state.slice.sliceBranch, changeBranch)
@@ -84,7 +84,6 @@ function localSliceMergeStorage(state: { change: ChangeRecord; slice: Slice }): 
 		listChanges: async () => [],
 		closeChange: async (id) => {
 			if (id !== state.change.id) return
-			state.change.state = 'CLOSED'
 			state.change.closedAt = new Date().toISOString()
 		},
 		updateChangeMetadata: async (_changeId, patch) => {

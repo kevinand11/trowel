@@ -1,16 +1,16 @@
 import { confirm as inqConfirm, input as inqInput } from '@inquirer/prompts'
 
+import { restoreStartingBranch, type OpenPr } from './branch.ts'
 import type { ChangeRecord, DeleteBranchPolicy, Storage } from '../../storages/types.ts'
-import type { ChangeState } from '../../work/change-types.ts'
-import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
+import type { ChangeState } from '../../work/change-types.ts'
 import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
-import { restoreStartingBranch, type OpenPr } from './branch.ts'
 
 type AbortRuntime = {
 	projectRoot?: string
@@ -218,7 +218,6 @@ if (import.meta.vitest) {
 			changeBranch: 'change-42-feature',
 			targetBranch: 'main',
 			title: 'Feature',
-			state: 'OPEN',
 			closedAt: null,
 			...overrides,
 		}
@@ -256,10 +255,7 @@ if (import.meta.vitest) {
 			updateChangeMetadata: async () => {},
 			closeChange: async (id) => {
 				calls.push(`closeChange(${id})`)
-				if (state.change && state.change.id === id) {
-					state.change.state = 'CLOSED'
-					state.change.closedAt = new Date().toISOString()
-				}
+				if (state.change && state.change.id === id) state.change.closedAt = new Date().toISOString()
 			},
 			createSlice: async () => {
 				throw new Error('not implemented')
@@ -508,7 +504,7 @@ if (import.meta.vitest) {
 
 		test('already aborted Change: runs cleanup only', async () => {
 			const { storageCalls, gitCalls, stdout } = await runAbortChangeWith({
-				storageState: { change: fakeChange({ state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }), slices: [] },
+				storageState: { change: fakeChange({ closedAt: '2026-06-04T00:00:00.000Z' }), slices: [] },
 				runtime: { deleteBranchPolicy: 'always' },
 			})
 
@@ -533,7 +529,7 @@ if (import.meta.vitest) {
 			await expect(
 				runAbortChangeWith({
 					storageState: {
-						change: fakeChange({ state: 'CLOSED', closedAt: '2026-06-04T00:00:00.000Z' }),
+						change: fakeChange({ closedAt: '2026-06-04T00:00:00.000Z' }),
 						slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })],
 					},
 					gitState: { mergedIntoTarget: true },

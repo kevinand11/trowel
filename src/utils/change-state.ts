@@ -28,20 +28,14 @@ export async function collectChangeStateFacts(change: ChangeRecord, slices: Clas
 	}
 }
 
-export function computeChangeState(change: Pick<ChangeRecord, 'closedAt' | 'state'>, slices: ClassifiedSlice[], facts: ChangeStateFacts): ChangeState {
-	const closedAt = rawClosedAt(change)
-	const repositoryMerged = mergeFactApplies(closedAt, slices, facts)
-	if (closedAt !== null && repositoryMerged) return 'done'
-	if (closedAt === null && repositoryMerged) return 'landed'
-	if (closedAt !== null) return 'aborted'
+export function computeChangeState(change: Pick<ChangeRecord, 'closedAt'>, slices: ClassifiedSlice[], facts: ChangeStateFacts): ChangeState {
+	const repositoryMerged = mergeFactApplies(change.closedAt, slices, facts)
+	if (change.closedAt !== null && repositoryMerged) return 'done'
+	if (change.closedAt === null && repositoryMerged) return 'landed'
+	if (change.closedAt !== null) return 'aborted'
 	if (facts.closeOutPrState === 'OPEN') return 'in-flight'
 	if (allSlicesDone(slices)) return 'ready'
 	return 'open'
-}
-
-function rawClosedAt(change: Pick<ChangeRecord, 'closedAt' | 'state'>): string | null {
-	if (change.closedAt !== undefined && change.closedAt !== null) return change.closedAt
-	return change.state === 'CLOSED' ? 'closed' : null
 }
 
 function mergeFactApplies(closedAt: string | null, slices: ClassifiedSlice[], facts: ChangeStateFacts): boolean {
@@ -68,7 +62,7 @@ async function repositoryMergeProven(change: ChangeRecord, slices: ClassifiedSli
 }
 
 function worthCheckingBranchMerge(change: ChangeRecord, slices: ClassifiedSlice[]): boolean {
-	return rawClosedAt(change) !== null || allSlicesDone(slices)
+	return change.closedAt !== null || allSlicesDone(slices)
 }
 
 async function branchMergeProven(branch: string, targetBranch: string, git: ReadOnlyGitFacts): Promise<boolean> {
@@ -99,7 +93,6 @@ if (import.meta.vitest) {
 		changeBranch: 'change-42-x',
 		targetBranch: 'main',
 		title: 'X',
-		state: 'OPEN',
 		closedAt: null,
 		...overrides,
 	})
@@ -122,9 +115,9 @@ if (import.meta.vitest) {
 
 	describe('computeChangeState', () => {
 		test('priority is done → landed → aborted → in-flight → ready → open', () => {
-			expect(computeChangeState(change({ closedAt: 'x', state: 'CLOSED' }), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: true })).toBe('done')
+			expect(computeChangeState(change({ closedAt: 'x' }), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: true })).toBe('done')
 			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: true })).toBe('landed')
-			expect(computeChangeState(change({ closedAt: 'x', state: 'CLOSED' }), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: false })).toBe('aborted')
+			expect(computeChangeState(change({ closedAt: 'x' }), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: false })).toBe('aborted')
 			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: false })).toBe('in-flight')
 			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: null, repositoryMerged: false })).toBe('ready')
 			expect(computeChangeState(change(), [slice()], { closeOutPrState: null, repositoryMerged: false })).toBe('open')
@@ -180,7 +173,7 @@ if (import.meta.vitest) {
 		test('missing remote does not prove merge unless local fallback is merged', async () => {
 			const { gh } = recordingGhOps({ findAnyPrByHead: async () => null })
 			const git = noopGitOps({ remoteBranchExists: async () => false, branchExists: async () => false })
-			expect(await classifyChange(change({ closedAt: 'x', state: 'CLOSED' }), [doneSlice()], { gh, git })).toBe('aborted')
+			expect(await classifyChange(change({ closedAt: 'x' }), [doneSlice()], { gh, git })).toBe('aborted')
 		})
 	})
 }

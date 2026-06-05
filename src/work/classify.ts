@@ -1,5 +1,5 @@
-import type { Slice } from '../storages/types.ts'
 import type { ClassifySliceConfig, ResumeState } from './types.ts'
+import type { Slice } from '../storages/types.ts'
 
 /**
  * Decide what the loop should do next for this slice. Pure: reads computed Slice state,
