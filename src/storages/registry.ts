@@ -2,7 +2,7 @@ import { createFileStorage } from './implementations/file.ts'
 import { createIssueStorage } from './implementations/issue.ts'
 import type { Storage, StorageDeps, StorageFactory } from './types.ts'
 
-export const storageFactories = {
+export const storageFactories: Record<string, StorageFactory> = {
 	file: createFileStorage,
 	issue: createIssueStorage,
 } satisfies Record<string, StorageFactory>

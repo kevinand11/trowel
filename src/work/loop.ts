@@ -356,8 +356,9 @@ if (import.meta.vitest) {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
 			const { gh, calls } = recordingGhOps({
-				createDraftPr: async () => {
+				createDraftPr: async ({ head }) => {
 					slice.prState = 'draft'
+					return { number: 1, headRefName: head, isDraft: true, url: '#1' }
 				},
 				listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: true }],
 			})
@@ -428,7 +429,7 @@ if (import.meta.vitest) {
 				}),
 			)
 			expect(roles).toEqual(['review'])
-			expect(calls).toContainEqual(['editIssueLabels', '5', { remove: ['needs-revision'] }])
+			expect(calls).toContainEqual(['editIssueLabels', 5, { remove: ['needs-revision'] }])
 			expect(needsRevision).toBe(false)
 		})
 
@@ -577,6 +578,7 @@ if (import.meta.vitest) {
 					const id = head.includes('fast') ? 'fast' : 'slow'
 					const slice = state.slices.find((s) => s.id === id)
 					if (slice) slice.prState = 'draft'
+					return { number: 1, headRefName: head, isDraft: true, url: '#1' }
 				},
 				findPrNumberByHead: async () => 1,
 				markPrReady: async () => {

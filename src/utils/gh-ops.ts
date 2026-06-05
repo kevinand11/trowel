@@ -11,6 +11,8 @@ type GhRunner = (args: string[]) => Promise<ShellResult>
 
 type VersionInfo = { installed: boolean; version?: string }
 
+export type IssueState = 'open' | 'closed'
+
 export type IssueSummary = {
 	number: number
 	title: string
@@ -19,11 +21,58 @@ export type IssueSummary = {
 }
 
 export type IssueRecord = {
+	internalId: number
 	number: number
 	title: string
-	state: string
+	state: IssueState
 	body: string
 	closedAt?: string | null
+}
+
+export type CreatedIssue = {
+	number: number
+	internalId: number
+	title: string
+	url: string
+}
+
+export type CreatedPr = {
+	number: number
+	headRefName: string
+	isDraft: boolean
+	url: string
+}
+
+type ApiIssue = {
+	id: number
+	number: number
+	title: string
+	state: IssueState
+	body: string | null
+	created_at?: string
+	closed_at?: string | null
+	html_url?: string
+}
+
+type ApiPull = {
+	number: number
+	state: string
+	draft?: boolean
+	html_url?: string
+	head?: { ref?: string }
+}
+
+type ApiReview = {
+	user: { login: string }
+	submitted_at: string
+	body: string
+	state: 'COMMENTED' | 'CHANGES_REQUESTED' | 'APPROVED'
+}
+
+type ApiIssueComment = {
+	user: { login: string }
+	created_at: string
+	body: string
 }
 
 /**
@@ -34,7 +83,7 @@ export type RawSubIssue = {
 	number: number
 	title: string
 	body: string
-	state: string
+	state: IssueState
 	closed_at?: string | null
 	closedAt?: string | null
 	labels: Array<{ name: string }>
@@ -79,25 +128,23 @@ export type GhOps = {
 	isAuthenticated(): Promise<boolean>
 
 	// Issues
-	createIssue(opts: { title: string; body: string; labels?: string[] }): Promise<string>
-	viewIssue(id: string): Promise<IssueRecord | null>
-	getIssueState(id: string): Promise<string | null>
+	createIssue(opts: { title: string; body: string; labels?: string[] }): Promise<CreatedIssue>
+	viewIssue(issueNumber: number): Promise<IssueRecord>
 	listIssues(opts: { label: string; state: 'open' | 'closed' | 'all' }): Promise<IssueSummary[]>
-	closeIssue(id: string, opts?: { comment?: string }): Promise<void>
-	reopenIssue(id: string): Promise<void>
-	editIssueBody(id: string, body: string): Promise<void>
-	editIssueLabels(id: string, opts: { add?: string[]; remove?: string[] }): Promise<void>
+	closeIssue(issueNumber: number, opts?: { comment?: string }): Promise<void>
+	reopenIssue(issueNumber: number): Promise<void>
+	editIssueBody(issueNumber: number, body: string): Promise<void>
+	editIssueLabels(issueNumber: number, opts: { add?: string[]; remove?: string[] }): Promise<void>
 
 	// Sub-issues & blocker deps
-	listSubIssues(changeId: string): Promise<RawSubIssue[]>
-	getIssueInternalId(issueNumber: string): Promise<string>
-	addSubIssue(changeId: string, internalId: string): Promise<void>
-	listBlockedBy(issueId: string): Promise<BlockerEntry[]>
-	addBlockedBy(issueId: string, internalId: string): Promise<void>
-	removeBlockedBy(issueId: string, internalId: string): Promise<void>
+	listSubIssues(issueNumber: number): Promise<RawSubIssue[]>
+	addSubIssue(issueNumber: number, internalId: number): Promise<void>
+	listBlockedBy(issueNumber: number): Promise<BlockerEntry[]>
+	addBlockedBy(issueNumber: number, internalId: number): Promise<void>
+	removeBlockedBy(issueNumber: number, internalId: number): Promise<void>
 
 	// PRs
-	createDraftPr(opts: { title: string; head: string; base: string; body: string }): Promise<void>
+	createDraftPr(opts: { title: string; head: string; base: string; body: string }): Promise<CreatedPr>
 	markPrReady(prNumber: number): Promise<void>
 	findPrNumberByHead(head: string): Promise<number>
 	listOpenPrs(opts?: { base?: string }): Promise<PrSummary[]>
@@ -128,6 +175,10 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		return JSON.parse(r.stdout) as T
 	}
 
+	async function ghPaginatedArray<T>(args: string[]): Promise<T[]> {
+		return parsePaginatedArray<T>(await ghOrThrow(args))
+	}
+
 	return {
 		async detectVersion() {
 			const r = await runner(['--version'])
@@ -140,57 +191,87 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		},
 
 		async createIssue({ title, body, labels = [] }) {
-			const args = ['issue', 'create', '--title', title, '--body', body]
-			for (const label of labels) args.push('--label', label)
-			const out = await ghOrThrow(args)
-			return out
+			const issue = await ghJson<ApiIssue>([
+				'api',
+				'-X',
+				'POST',
+				'repos/{owner}/{repo}/issues',
+				'-f',
+				`title=${title}`,
+				'-f',
+				`body=${body}`,
+				...labelFields(labels),
+			])
+			return {
+				number: issue.number,
+				internalId: issue.id,
+				title: issue.title,
+				url: issue.html_url ?? `#${issue.number}`,
+			}
 		},
 		async viewIssue(id) {
-			const r = await runner(['issue', 'view', id, '--json', 'number,title,state,body,closedAt'])
-			if (!r.ok) return null
-			const parsed = JSON.parse(r.stdout) as IssueRecord & { body: string | null }
-			return { ...parsed, body: parsed.body ?? '', closedAt: parsed.closedAt ?? null }
-		},
-		async getIssueState(id) {
-			const r = await runner(['issue', 'view', id, '--json', 'state'])
-			if (!r.ok) return null
-			const parsed = JSON.parse(r.stdout) as { state: string }
-			return parsed.state
+			const issue = await ghJson<ApiIssue>(['api', `repos/{owner}/{repo}/issues/${id}`])
+			return {
+				internalId: issue.id,
+				number: issue.number,
+				title: issue.title,
+				state: issue.state,
+				body: issue.body ?? '',
+				closedAt: issue.closed_at ?? null,
+			}
 		},
 		async listIssues({ label, state }) {
-			const out = await ghOrThrow(['issue', 'list', '--label', label, '--state', state, '--json', 'number,title,createdAt,body'])
-			return JSON.parse(out) as IssueSummary[]
+			const issues = await ghPaginatedArray<ApiIssue>([
+				'api',
+				'--paginate',
+				'--slurp',
+				'-X',
+				'GET',
+				'repos/{owner}/{repo}/issues',
+				'-f',
+				`labels=${label}`,
+				'-f',
+				`state=${state}`,
+				'-F',
+				'per_page=100',
+			])
+			return issues.map((issue) => ({
+				number: issue.number,
+				title: issue.title,
+				createdAt: issue.created_at ?? '',
+				body: issue.body ?? '',
+			}))
 		},
 		async closeIssue(id, opts) {
-			const args = ['issue', 'close', id]
-			if (opts?.comment !== undefined) args.push('--comment', opts.comment)
-			await ghOrThrow(args)
+			if (opts?.comment !== undefined)
+				await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${id}/comments`, '-f', `body=${opts.comment}`])
+			await ghOrThrow(['api', '-X', 'PATCH', `repos/{owner}/{repo}/issues/${id}`, '-f', 'state=closed'])
 		},
 		async reopenIssue(id) {
-			await ghOrThrow(['issue', 'reopen', id])
+			await ghOrThrow(['api', '-X', 'PATCH', `repos/{owner}/{repo}/issues/${id}`, '-f', 'state=open'])
 		},
 		async editIssueBody(id, body) {
-			await ghOrThrow(['issue', 'edit', id, '--body', body])
+			await ghOrThrow(['api', '-X', 'PATCH', `repos/{owner}/{repo}/issues/${id}`, '-f', `body=${body}`])
 		},
 		async editIssueLabels(id, { add = [], remove = [] }) {
-			for (const label of add) await ghOrThrow(['issue', 'edit', id, '--add-label', label])
-			for (const label of remove) await ghOrThrow(['issue', 'edit', id, '--remove-label', label])
+			if (add.length > 0) await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${id}/labels`, ...labelFields(add)])
+			for (const label of remove)
+				await ghOrThrow(['api', '-X', 'DELETE', `repos/{owner}/{repo}/issues/${id}/labels/${encodeURIComponent(label)}`])
 		},
 
 		async listSubIssues(changeId) {
-			const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${changeId}/sub_issues`])
-			return JSON.parse(out) as RawSubIssue[]
-		},
-		async getIssueInternalId(issueNumber) {
-			const out = await ghOrThrow(['api', `repos/{owner}/{repo}/issues/${issueNumber}`, '--jq', '.id'])
-			return out.trim()
+			return ghPaginatedArray<RawSubIssue>(['api', '--paginate', '--slurp', `repos/{owner}/{repo}/issues/${changeId}/sub_issues`])
 		},
 		async addSubIssue(changeId, internalId) {
 			await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${changeId}/sub_issues`, '-F', `sub_issue_id=${internalId}`])
 		},
 		async listBlockedBy(issueId) {
-			const out = await ghOrThrow(['api', '--paginate', `repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by`])
-			return JSON.parse(out) as BlockerEntry[]
+			return ghPaginatedArray<BlockerEntry>([
+				'api',
+				'--paginate',
+				'--slurp',
+				`repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by`,
+			])
 		},
 		async addBlockedBy(issueId, internalId) {
 			await ghOrThrow([
@@ -207,28 +288,44 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		},
 
 		async createDraftPr({ title, head, base, body }) {
-			await ghOrThrow(['pr', 'create', '--draft', '--title', title, '--head', head, '--base', base, '--body', body])
+			const pr = await ghJson<ApiPull>([
+				'api',
+				'-X',
+				'POST',
+				'repos/{owner}/{repo}/pulls',
+				'-f',
+				`title=${title}`,
+				'-f',
+				`head=${head}`,
+				'-f',
+				`base=${base}`,
+				'-f',
+				`body=${body}`,
+				'-F',
+				'draft=true',
+			])
+			return { number: pr.number, headRefName: pr.head?.ref ?? '', isDraft: pr.draft ?? false, url: pr.html_url ?? `#${pr.number}` }
 		},
 		async markPrReady(prNumber) {
 			await ghOrThrow(['pr', 'ready', String(prNumber)])
 		},
 		async findPrNumberByHead(head) {
-			const out = await ghOrThrow(['pr', 'list', '--head', head, '--json', 'number', '--jq', '.[0].number'])
-			const trimmed = out.trim()
-			if (!trimmed) throw new Error(`no PR found for head '${head}'`)
-			return Number.parseInt(trimmed, 10)
+			const prs = await ghJson<Array<{ number: number }>>(['pr', 'list', '--head', head, '--json', 'number'])
+			const pr = prs[0]
+			if (!pr) throw new Error(`no PR found for head '${head}'`)
+			return pr.number
 		},
 		async findAnyPrByHead(head) {
-			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state', '--jq', '.[0]'])
-			return r.ok ? parseAnyPrByHead(r.stdout) : null
+			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state'])
+			return r.ok ? parseAnyPrByHeadList(r.stdout) : null
 		},
 		async closePr(prNumber, opts) {
-			const args = ['pr', 'close', String(prNumber)]
-			if (opts?.comment !== undefined) args.push('--comment', opts.comment)
-			await ghOrThrow(args)
+			if (opts?.comment !== undefined)
+				await ghOrThrow(['api', '-X', 'POST', `repos/{owner}/{repo}/issues/${prNumber}/comments`, '-f', `body=${opts.comment}`])
+			await ghOrThrow(['api', '-X', 'PATCH', `repos/{owner}/{repo}/pulls/${prNumber}`, '-f', 'state=closed'])
 		},
 		async mergePr(prNumber, method) {
-			await ghOrThrow(['pr', 'merge', String(prNumber), `--${method}`])
+			await ghOrThrow(['api', '-X', 'PUT', `repos/{owner}/{repo}/pulls/${prNumber}/merge`, '-f', `merge_method=${method}`])
 		},
 		async listOpenPrs(opts) {
 			const args = ['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels,reviewDecision']
@@ -243,23 +340,27 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return ghJson<LineCommentRaw[]>(['api', `repos/{owner}/{repo}/pulls/${prNumber}/comments`])
 		},
 		async fetchPrReviews(prNumber) {
-			const wrapped = await ghJson<{ reviews: ReviewRaw[] }>(['pr', 'view', String(prNumber), '--json', 'reviews'])
-			return wrapped.reviews
+			const reviews = await ghJson<ApiReview[]>(['api', `repos/{owner}/{repo}/pulls/${prNumber}/reviews`])
+			return reviews.map((review) => ({
+				author: { login: review.user.login },
+				submittedAt: review.submitted_at,
+				body: review.body,
+				state: review.state,
+			}))
 		},
 		async fetchPrThread(prNumber) {
-			const wrapped = await ghJson<{ comments: ThreadCommentRaw[] }>(['pr', 'view', String(prNumber), '--json', 'comments'])
-			return wrapped.comments
+			const comments = await ghJson<ApiIssueComment[]>(['api', `repos/{owner}/{repo}/issues/${prNumber}/comments`])
+			return comments.map((comment) => ({ author: { login: comment.user.login }, createdAt: comment.created_at, body: comment.body }))
 		},
 	}
 }
 
 type AnyPrByHead = { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' }
 
-function parseAnyPrByHead(stdout: string): AnyPrByHead | null {
-	const trimmed = stdout.trim()
-	if (!trimmed || trimmed === 'null') return null
-	const parsed = JSON.parse(trimmed) as { number: number; state: string }
-	return { number: parsed.number, state: normalizePrState(parsed.state) }
+function parseAnyPrByHeadList(stdout: string): AnyPrByHead | null {
+	const prs = JSON.parse(stdout) as Array<{ number: number; state: string }>
+	const pr = prs[0]
+	return pr ? { number: pr.number, state: normalizePrState(pr.state) } : null
 }
 
 function normalizePrState(state: string): AnyPrByHead['state'] {
@@ -269,15 +370,13 @@ function normalizePrState(state: string): AnyPrByHead['state'] {
 	return 'OPEN'
 }
 
-/**
- * Helper: turn the URL returned by `gh issue create` into the issue number string.
- * Lives here rather than in issue storage because the URL shape is a `gh` contract.
- */
-export function parseGhIssueNumber(url: string): string {
-	const trimmed = url.trim()
-	const last = trimmed.split('/').pop() ?? ''
-	if (!/^\d+$/.test(last)) throw new Error(`could not parse issue number from URL: ${trimmed}`)
-	return last
+function labelFields(labels: string[]): string[] {
+	return labels.flatMap((label) => ['-f', `labels[]=${label}`])
+}
+
+function parsePaginatedArray<T>(stdout: string): T[] {
+	const parsed = JSON.parse(stdout) as T[] | T[][]
+	return Array.isArray(parsed[0]) ? (parsed as T[][]).flat() : (parsed as T[])
 }
 
 if (import.meta.vitest) {
@@ -327,128 +426,212 @@ if (import.meta.vitest) {
 		})
 	})
 
-	describe('parseGhIssueNumber', () => {
-		test('extracts the trailing number from a typical gh-create URL', () => {
-			expect(parseGhIssueNumber('https://github.com/o/r/issues/42\n')).toBe('42')
-		})
-		test('throws if the URL does not end in a number', () => {
-			expect(() => parseGhIssueNumber('https://github.com/o/r/issues/x')).toThrow(/could not parse/)
-		})
-	})
-
 	describe('createGh: issue methods', () => {
-		test('createIssue interpolates title/body and one --label per entry, returns the URL stdout', async () => {
+		test('createIssue POSTs through gh api and returns structured issue ids', async () => {
 			const { runner, calls } = makeRunner([
-				{ match: (a) => a[0] === 'issue' && a[1] === 'create', respond: ok('https://github.com/o/r/issues/7\n') },
+				{
+					match: (a) => a[0] === 'api' && a.includes('repos/{owner}/{repo}/issues'),
+					respond: ok(
+						JSON.stringify({
+							id: 7000,
+							number: 7,
+							title: 'T',
+							html_url: 'https://github.com/o/r/issues/7',
+							state: 'open',
+							body: 'B',
+						}),
+					),
+				},
 			])
-			const gh = createGh(runner)
-			const url = await gh.createIssue({ title: 'T', body: 'B', labels: ['change', 'urgent'] })
-			expect(url).toBe('https://github.com/o/r/issues/7\n')
-			expect(calls[0]).toEqual(['issue', 'create', '--title', 'T', '--body', 'B', '--label', 'change', '--label', 'urgent'])
+			const issue = await createGh(runner).createIssue({ title: 'T', body: 'B', labels: ['change', 'urgent'] })
+			expect(issue).toEqual({ number: 7, internalId: 7000, title: 'T', url: 'https://github.com/o/r/issues/7' })
+			expect(calls[0]).toEqual([
+				'api',
+				'-X',
+				'POST',
+				'repos/{owner}/{repo}/issues',
+				'-f',
+				'title=T',
+				'-f',
+				'body=B',
+				'-f',
+				'labels[]=change',
+				'-f',
+				'labels[]=urgent',
+			])
 		})
 
-		test('createIssue with no labels emits no --label flags', async () => {
+		test('createIssue with no labels omits label fields', async () => {
 			const { runner, calls } = makeRunner([
-				{ match: (a) => a[0] === 'issue' && a[1] === 'create', respond: ok('https://github.com/o/r/issues/7\n') },
+				{
+					match: () => true,
+					respond: ok(
+						JSON.stringify({
+							id: 7000,
+							number: 7,
+							title: 'T',
+							html_url: 'https://github.com/o/r/issues/7',
+							state: 'open',
+							body: 'B',
+						}),
+					),
+				},
 			])
 			await createGh(runner).createIssue({ title: 'T', body: 'B' })
-			expect(calls[0]).toEqual(['issue', 'create', '--title', 'T', '--body', 'B'])
+			expect(calls[0]).toEqual(['api', '-X', 'POST', 'repos/{owner}/{repo}/issues', '-f', 'title=T', '-f', 'body=B'])
 		})
 
-		test('viewIssue returns null when gh fails (issue not found)', async () => {
+		test('viewIssue throws when gh api fails (issue not found)', async () => {
 			const { runner } = makeRunner([{ match: () => true, respond: { ok: false, error: new Error('not found') } }])
-			expect(await createGh(runner).viewIssue('42')).toBeNull()
+			await expect(createGh(runner).viewIssue(42)).rejects.toThrow(/not found/)
 		})
 
-		test('viewIssue parses {number,title,state,body,closedAt}', async () => {
-			const { runner } = makeRunner([{ match: () => true, respond: ok(JSON.stringify({ number: 42, title: 'X', state: 'OPEN', body: 'body', closedAt: null })) }])
-			expect(await createGh(runner).viewIssue('42')).toEqual({ number: 42, title: 'X', state: 'OPEN', body: 'body', closedAt: null })
+		test('viewIssue maps snake_case API fields to IssueRecord', async () => {
+			const { runner, calls } = makeRunner([
+				{
+					match: () => true,
+					respond: ok(JSON.stringify({ id: 4200, number: 42, title: 'X', state: 'open', body: null, closed_at: null })),
+				},
+			])
+			expect(await createGh(runner).viewIssue(42)).toEqual({ number: 42, internalId: 4200, title: 'X', state: 'open', body: '', closedAt: null })
+			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/issues/42'])
 		})
 
-		test('closeIssue passes --comment when provided', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).closeIssue('7', { comment: 'closed via trowel' })
-			expect(calls[0]).toEqual(['issue', 'close', '7', '--comment', 'closed via trowel'])
-		})
-
-		test('closeIssue without --comment when comment is undefined', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).closeIssue('7')
-			expect(calls[0]).toEqual(['issue', 'close', '7'])
-		})
-
-		test('editIssueLabels emits one --add-label per add and one --remove-label per remove', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).editIssueLabels('7', { add: ['a', 'b'], remove: ['c'] })
+		test('closeIssue comments when provided, then patches state closed', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).closeIssue(7, { comment: 'closed via trowel' })
 			expect(calls).toEqual([
-				['issue', 'edit', '7', '--add-label', 'a'],
-				['issue', 'edit', '7', '--add-label', 'b'],
-				['issue', 'edit', '7', '--remove-label', 'c'],
+				['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/7/comments', '-f', 'body=closed via trowel'],
+				['api', '-X', 'PATCH', 'repos/{owner}/{repo}/issues/7', '-f', 'state=closed'],
 			])
 		})
 
-		test('listIssues threads --label/--state through to gh and parses JSON', async () => {
+		test('closeIssue without comment only patches state closed', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).closeIssue(7)
+			expect(calls).toEqual([['api', '-X', 'PATCH', 'repos/{owner}/{repo}/issues/7', '-f', 'state=closed']])
+		})
+
+		test('reopenIssue patches state open', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).reopenIssue(7)
+			expect(calls[0]).toEqual(['api', '-X', 'PATCH', 'repos/{owner}/{repo}/issues/7', '-f', 'state=open'])
+		})
+
+		test('editIssueBody patches the issue body', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).editIssueBody(7, 'new body')
+			expect(calls[0]).toEqual(['api', '-X', 'PATCH', 'repos/{owner}/{repo}/issues/7', '-f', 'body=new body'])
+		})
+
+		test('editIssueLabels adds labels in one API call and removes labels by encoded path segment', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).editIssueLabels(7, { add: ['a', 'b'], remove: ['needs review'] })
+			expect(calls).toEqual([
+				['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/7/labels', '-f', 'labels[]=a', '-f', 'labels[]=b'],
+				['api', '-X', 'DELETE', 'repos/{owner}/{repo}/issues/7/labels/needs%20review'],
+			])
+		})
+
+		test('listIssues queries the issues API and maps paginated API fields', async () => {
 			const { runner, calls } = makeRunner([
-				{ match: () => true, respond: ok(JSON.stringify([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z' }])) },
+				{
+					match: () => true,
+					respond: ok(
+						JSON.stringify([
+							[{ id: 7000, number: 7, title: 't', state: 'open', created_at: '2026-05-01T00:00:00Z', body: null }],
+						]),
+					),
+				},
 			])
 			const out = await createGh(runner).listIssues({ label: 'change', state: 'open' })
-			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z' }])
-			expect(calls[0]).toEqual(['issue', 'list', '--label', 'change', '--state', 'open', '--json', 'number,title,createdAt,body'])
-		})
-
-		test('closePr passes --comment when provided and never merges', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).closePr(12, { comment: 'aborting' })
-			expect(calls[0]).toEqual(['pr', 'close', '12', '--comment', 'aborting'])
-		})
-
-		test('closePr without comment emits no --comment flag', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).closePr(12)
-			expect(calls[0]).toEqual(['pr', 'close', '12'])
+			expect(out).toEqual([{ number: 7, title: 't', createdAt: '2026-05-01T00:00:00Z', body: '' }])
+			expect(calls[0]).toEqual([
+				'api',
+				'--paginate',
+				'--slurp',
+				'-X',
+				'GET',
+				'repos/{owner}/{repo}/issues',
+				'-f',
+				'labels=change',
+				'-f',
+				'state=open',
+				'-F',
+				'per_page=100',
+			])
 		})
 	})
 
 	describe('createGh: sub-issue + blocker methods', () => {
-		test('listSubIssues paginates and parses', async () => {
+		test('listSubIssues paginates with --slurp and parses flattened pages', async () => {
 			const { runner, calls } = makeRunner([
-				{ match: () => true, respond: ok(JSON.stringify([{ number: 1, title: 'a', body: '', state: 'open', labels: [] }])) },
+				{ match: () => true, respond: ok(JSON.stringify([[{ number: 1, title: 'a', body: '', state: 'open', labels: [] }]])) },
 			])
-			await createGh(runner).listSubIssues('42')
-			expect(calls[0]).toEqual(['api', '--paginate', 'repos/{owner}/{repo}/issues/42/sub_issues'])
-		})
-
-		test('getIssueInternalId trims whitespace from --jq output', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('12345\n') }])
-			const id = await createGh(runner).getIssueInternalId('57')
-			expect(id).toBe('12345')
-			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/issues/57', '--jq', '.id'])
+			const issues = await createGh(runner).listSubIssues(42)
+			expect(issues).toEqual([{ number: 1, title: 'a', body: '', state: 'open', labels: [] }])
+			expect(calls[0]).toEqual(['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/issues/42/sub_issues'])
 		})
 
 		test('addSubIssue POSTs with sub_issue_id form', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).addSubIssue('42', '999')
+			await createGh(runner).addSubIssue(42, 999)
 			expect(calls[0]).toEqual(['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/42/sub_issues', '-F', 'sub_issue_id=999'])
 		})
 
 		test('addBlockedBy POSTs with issue_id form', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).addBlockedBy('57', '999')
+			await createGh(runner).addBlockedBy(57, 999)
 			expect(calls[0]).toEqual(['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/57/dependencies/blocked_by', '-F', 'issue_id=999'])
+		})
+
+		test('listBlockedBy paginates with --slurp and parses flattened pages', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([[{ id: 999, number: 57 }]])) }])
+			expect(await createGh(runner).listBlockedBy(58)).toEqual([{ id: 999, number: 57 }])
+			expect(calls[0]).toEqual(['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/issues/58/dependencies/blocked_by'])
 		})
 
 		test('removeBlockedBy DELETEs the internal id', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).removeBlockedBy('57', '999')
+			await createGh(runner).removeBlockedBy(57, 999)
 			expect(calls[0]).toEqual(['api', '-X', 'DELETE', 'repos/{owner}/{repo}/issues/57/dependencies/blocked_by/999'])
 		})
 	})
 
 	describe('createGh: PR methods', () => {
-		test('createDraftPr passes --draft and the four args', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).createDraftPr({ title: 'T', head: 'h', base: 'b', body: 'body' })
-			expect(calls[0]).toEqual(['pr', 'create', '--draft', '--title', 'T', '--head', 'h', '--base', 'b', '--body', 'body'])
+		test('createDraftPr POSTs through gh api and returns structured PR data', async () => {
+			const { runner, calls } = makeRunner([
+				{
+					match: () => true,
+					respond: ok(
+						JSON.stringify({
+							number: 12,
+							draft: true,
+							html_url: 'https://github.com/o/r/pull/12',
+							head: { ref: 'h' },
+							state: 'open',
+						}),
+					),
+				},
+			])
+			const pr = await createGh(runner).createDraftPr({ title: 'T', head: 'h', base: 'b', body: 'body' })
+			expect(pr).toEqual({ number: 12, headRefName: 'h', isDraft: true, url: 'https://github.com/o/r/pull/12' })
+			expect(calls[0]).toEqual([
+				'api',
+				'-X',
+				'POST',
+				'repos/{owner}/{repo}/pulls',
+				'-f',
+				'title=T',
+				'-f',
+				'head=h',
+				'-f',
+				'base=b',
+				'-f',
+				'body=body',
+				'-F',
+				'draft=true',
+			])
 		})
 
 		test('markPrReady stringifies the number', async () => {
@@ -457,18 +640,21 @@ if (import.meta.vitest) {
 			expect(calls[0]).toEqual(['pr', 'ready', '168'])
 		})
 
-		test('findPrNumberByHead returns parsed number', async () => {
-			const { runner } = makeRunner([{ match: () => true, respond: ok('168\n') }])
+		test('findPrNumberByHead parses structured gh pr list JSON', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 168 }])) }])
 			expect(await createGh(runner).findPrNumberByHead('feature/x')).toBe(168)
+			expect(calls[0]).toEqual(['pr', 'list', '--head', 'feature/x', '--json', 'number'])
 		})
 
 		test('findPrNumberByHead throws when no PR matches', async () => {
-			const { runner } = makeRunner([{ match: () => true, respond: ok('') }])
+			const { runner } = makeRunner([{ match: () => true, respond: ok('[]') }])
 			await expect(createGh(runner).findPrNumberByHead('feature/x')).rejects.toThrow(/no PR found/)
 		})
 
 		test('listOpenPrs without base lists all open PRs', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a', isDraft: false }])) }])
+			const { runner, calls } = makeRunner([
+				{ match: () => true, respond: ok(JSON.stringify([{ number: 1, headRefName: 'a', isDraft: false }])) },
+			])
 			const out = await createGh(runner).listOpenPrs()
 			expect(out).toEqual([{ number: 1, headRefName: 'a', isDraft: false }])
 			expect(calls[0]).toEqual(['pr', 'list', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels,reviewDecision'])
@@ -477,7 +663,37 @@ if (import.meta.vitest) {
 		test('listOpenPrs with base filters by --base', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('[]') }])
 			await createGh(runner).listOpenPrs({ base: 'feature' })
-			expect(calls[0]).toEqual(['pr', 'list', '--base', 'feature', '--state', 'open', '--json', 'number,headRefName,isDraft,url,labels,reviewDecision'])
+			expect(calls[0]).toEqual([
+				'pr',
+				'list',
+				'--base',
+				'feature',
+				'--state',
+				'open',
+				'--json',
+				'number,headRefName,isDraft,url,labels,reviewDecision',
+			])
+		})
+
+		test('findAnyPrByHead parses the first structured PR across all states', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 12, state: 'MERGED' }])) }])
+			expect(await createGh(runner).findAnyPrByHead('feature/x')).toEqual({ number: 12, state: 'MERGED' })
+			expect(calls[0]).toEqual(['pr', 'list', '--head', 'feature/x', '--state', 'all', '--json', 'number,state'])
+		})
+
+		test('closePr comments when provided, then patches PR state closed', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).closePr(12, { comment: 'aborting' })
+			expect(calls).toEqual([
+				['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/12/comments', '-f', 'body=aborting'],
+				['api', '-X', 'PATCH', 'repos/{owner}/{repo}/pulls/12', '-f', 'state=closed'],
+			])
+		})
+
+		test('mergePr uses the PR merge API with the configured method', async () => {
+			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('{}') }])
+			await createGh(runner).mergePr(12, 'squash')
+			expect(calls[0]).toEqual(['api', '-X', 'PUT', 'repos/{owner}/{repo}/pulls/12/merge', '-f', 'merge_method=squash'])
 		})
 	})
 
@@ -488,23 +704,25 @@ if (import.meta.vitest) {
 			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/pulls/168/comments'])
 		})
 
-		test('fetchPrReviews unwraps the {reviews:[]} payload', async () => {
-			const { runner } = makeRunner([
+		test('fetchPrReviews maps pull review API fields', async () => {
+			const { runner, calls } = makeRunner([
 				{
 					match: () => true,
-					respond: ok(JSON.stringify({ reviews: [{ author: { login: 'r' }, submittedAt: 't', body: 'b', state: 'COMMENTED' }] })),
+					respond: ok(JSON.stringify([{ user: { login: 'r' }, submitted_at: 't', body: 'b', state: 'COMMENTED' }])),
 				},
 			])
 			const out = await createGh(runner).fetchPrReviews(168)
 			expect(out).toEqual([{ author: { login: 'r' }, submittedAt: 't', body: 'b', state: 'COMMENTED' }])
+			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/pulls/168/reviews'])
 		})
 
-		test('fetchPrThread unwraps the {comments:[]} payload', async () => {
-			const { runner } = makeRunner([
-				{ match: () => true, respond: ok(JSON.stringify({ comments: [{ author: { login: 'r' }, createdAt: 't', body: 'b' }] })) },
+		test('fetchPrThread maps issue comment API fields', async () => {
+			const { runner, calls } = makeRunner([
+				{ match: () => true, respond: ok(JSON.stringify([{ user: { login: 'r' }, created_at: 't', body: 'b' }])) },
 			])
 			const out = await createGh(runner).fetchPrThread(168)
 			expect(out).toEqual([{ author: { login: 'r' }, createdAt: 't', body: 'b' }])
+			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/issues/168/comments'])
 		})
 	})
 }

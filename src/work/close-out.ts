@@ -68,10 +68,9 @@ async function ensureCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targ
 }
 
 async function createCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number> {
-	await deps.gh.createDraftPr({ title: entity.title, head: entity.changeBranch, base: targetBranch, body: bodyFor(entity) })
-	const prNumber = await deps.gh.findPrNumberByHead(entity.changeBranch)
-	deps.log(`${tag} opened PR #${prNumber} ${entity.changeBranch} → ${targetBranch}`)
-	return prNumber
+	const pr = await deps.gh.createDraftPr({ title: entity.title, head: entity.changeBranch, base: targetBranch, body: bodyFor(entity) })
+	deps.log(`${tag} opened PR #${pr.number} ${entity.changeBranch} → ${targetBranch}`)
+	return pr.number
 }
 
 async function markCloseOutPrReady(prNumber: number, deps: CloseOutDeps, tag: string): Promise<void> {
@@ -235,7 +234,7 @@ if (import.meta.vitest) {
 			const { git } = fakeGit()
 			const { gh, calls } = recordingGhOps({
 				findAnyPrByHead: async () => null,
-				findPrNumberByHead: async () => 22,
+				createDraftPr: async ({ head }) => ({ number: 22, headRefName: head, isDraft: true, url: '#22' }),
 			})
 			await runCloseOut(
 				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },

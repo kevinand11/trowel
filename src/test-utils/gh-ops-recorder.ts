@@ -37,24 +37,25 @@ if (import.meta.vitest) {
 
 	describe('recordingGhOps', () => {
 		test('records each call as [methodName, ...args] and returns the override result', async () => {
+			const issue = { number: 42, internalId: 4200, title: 't', url: 'https://github.com/o/r/issues/42' }
 			const { gh, calls } = recordingGhOps({
-				createIssue: async () => 'https://github.com/o/r/issues/42\n',
+				createIssue: async () => issue,
 			})
-			const url = await gh.createIssue({ title: 't', body: 'b', labels: ['change'] })
-			expect(url).toBe('https://github.com/o/r/issues/42\n')
+			const out = await gh.createIssue({ title: 't', body: 'b', labels: ['change'] })
+			expect(out).toBe(issue)
 			expect(calls).toEqual([['createIssue', { title: 't', body: 'b', labels: ['change'] }]])
 		})
 
 		test('falls back to a sensible default when no override is given', async () => {
 			const { gh } = recordingGhOps()
 			expect(await gh.listIssues({ label: 'change', state: 'open' })).toEqual([])
-			expect(await gh.viewIssue('42')).toBeNull()
+			expect(await gh.viewIssue(42)).toMatchObject({ internalId: 0, number: 0, state: 'open' })
 		})
 
 		test('records calls across multiple methods in invocation order', async () => {
 			const { gh, calls } = recordingGhOps()
-			await gh.editIssueLabels('7', { add: ['change'] })
-			await gh.closeIssue('7')
+			await gh.editIssueLabels(7, { add: ['change'] })
+			await gh.closeIssue(7)
 			expect(calls.map((c) => c[0])).toEqual(['editIssueLabels', 'closeIssue'])
 		})
 	})

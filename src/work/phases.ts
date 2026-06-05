@@ -219,10 +219,9 @@ async function openReadySlicePr(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, br
 		deps.log(`${tag} marked existing draft PR #${prNumber} for ${branch} ready for merge`)
 		return 'progress'
 	}
-	await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.changeBranch, body: `Closes #${slice.id}` })
-	const prNumber = await deps.gh.findPrNumberByHead(branch)
-	await deps.gh.markPrReady(prNumber)
-	deps.log(`${tag} opened PR #${prNumber} for ${branch} and marked it ready for merge`)
+	const pr = await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.changeBranch, body: `Closes #${slice.id}` })
+	await deps.gh.markPrReady(pr.number)
+	deps.log(`${tag} opened PR #${pr.number} for ${branch} and marked it ready for merge`)
 	return 'progress'
 }
 
@@ -304,7 +303,7 @@ async function landReviewNoWorkNeeded(deps: PhaseDeps, branch: string, tag: stri
 async function clearSliceNeedsRevision(deps: PhaseDeps, branch: string, tag: string, prefix = ''): Promise<void> {
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
 	const label = deps.needsRevisionLabel ?? 'needs-revision'
-	await deps.gh.editIssueLabels(String(prNumber), { remove: [label] })
+	await deps.gh.editIssueLabels(prNumber, { remove: [label] })
 	deps.log(`${tag} ${prefix}cleared PR needs-revision`)
 }
 
@@ -427,6 +426,7 @@ if (import.meta.vitest) {
 		const gh: GhOps = {
 			createDraftPr: async (opts) => {
 				calls.push({ method: 'createDraftPr', args: [opts] })
+				return { number: 132, headRefName: opts.head, isDraft: true, url: '#132' }
 			},
 			findPrNumberByHead: async (head) => {
 				calls.push({ method: 'findPrNumberByHead', args: [head] })
@@ -747,7 +747,7 @@ if (import.meta.vitest) {
 				{ verdict: 'ready', commits: 5 },
 				{ ...ctx, config: { pr: true, audit: true, perSliceBranches: true } },
 			)
-			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: [132, { remove: ['needs-revision'] }] })
 		})
 
 		test('no-work-needed clears matching PR label so enrichment does not requeue review', async () => {
@@ -758,7 +758,7 @@ if (import.meta.vitest) {
 				{ verdict: 'no-work-needed', commits: 0 },
 				{ ...ctx, config: { pr: true, audit: true, perSliceBranches: true } },
 			)
-			expect(calls).toContainEqual({ method: 'editIssueLabels', args: ['132', { remove: ['needs-revision'] }] })
+			expect(calls).toContainEqual({ method: 'editIssueLabels', args: [132, { remove: ['needs-revision'] }] })
 		})
 	})
 

@@ -142,7 +142,7 @@ function requiredStringKeys(value: Record<string, unknown>, keys: string[]): str
 	return keys.filter((key) => typeof value[key] !== 'string' || value[key] === '')
 }
 
-export const createFileStorage: StorageFactory = (deps: StorageDeps): Storage => {
+export const createFileStorage: StorageFactory = (deps) => {
 	async function findEntityDir(root: string, kind: 'Change', id: string): Promise<string> {
 		let entries: string[]
 		try {
