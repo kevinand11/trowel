@@ -1,4 +1,5 @@
-import type { Slice, SliceState, Storage } from '../storages/types.ts'
+import type { Slice, Storage } from '../storages/types.ts'
+import type { SliceState } from '../work/slice-types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import { classifySlicesForChange } from '../work/slice-states.ts'
 

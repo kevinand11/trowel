@@ -1,6 +1,7 @@
 import { classifySlices } from '../../utils/slice-state.ts'
 import { landImplement, landReview, prepareImplement, prepareReview, type PhaseDeps } from '../../work/phases.ts'
-import type { ClassifiedSlice, Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
+import type { Slice, SlicePatch, Storage, StorageDeps, StorageFactory } from '../types.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
 
 type LabelPatch = { readyForAgent?: boolean }
 type GhSubIssue = Awaited<ReturnType<StorageDeps['gh']['listSubIssues']>>[number]

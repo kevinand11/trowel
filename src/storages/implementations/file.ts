@@ -11,10 +11,8 @@ import type {
 	ChangeRecord,
 	ChangeSpec,
 	ChangeSummary,
-	ClassifiedSlice,
 	CreatedChange,
 	CreatedSlice,
-	PhaseCtx,
 	Slice,
 	SliceMetadataPatch,
 	SlicePatch,
@@ -23,6 +21,8 @@ import type {
 	StorageDeps,
 	StorageFactory,
 } from '../types.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
+import type { PhaseCtx } from '../../work/types.ts'
 
 type ChangeStore = {
 	id: string

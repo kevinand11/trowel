@@ -1,4 +1,5 @@
-import type { Slice, SliceState } from '../storages/types.ts'
+import type { Slice } from '../storages/types.ts'
+import type { SliceState } from '../work/slice-types.ts'
 
 export type { SliceState }
 

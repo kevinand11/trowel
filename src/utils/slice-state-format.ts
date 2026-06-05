@@ -1,4 +1,4 @@
-import type { SliceState } from './slice-state.ts'
+import type { SliceState } from '../work/slice-types.ts'
 
 export const SLICE_STATE_ORDER: SliceState[] = ['done', 'landed', 'needs-revision', 'awaiting-review', 'in-flight', 'audited', 'implemented', 'blocked', 'open', 'draft']
 

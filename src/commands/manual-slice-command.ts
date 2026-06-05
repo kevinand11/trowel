@@ -2,7 +2,7 @@ import { buildLoopWiring } from './_loop-wiring.ts'
 import { runSlicePhaseCommand } from './slice-phase-command.ts'
 import type { HarnessKind } from '../harnesses/registry.ts'
 import type { Role } from '../prompts/load.ts'
-import type { SliceState } from '../storages/types.ts'
+import type { SliceState } from '../work/slice-types.ts'
 
 export async function runManualSliceCommand(opts: {
 	commandName: string

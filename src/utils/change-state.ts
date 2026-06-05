@@ -1,6 +1,8 @@
 import type { GhOps } from './gh-ops.ts'
 import type { ReadOnlyGitFacts } from './git-ops.ts'
-import type { ClassifiedSlice, ChangeRecord, ChangeState } from '../storages/types.ts'
+import type { ChangeRecord } from '../storages/types.ts'
+import type { ChangeState } from '../work/change-types.ts'
+import type { ClassifiedSlice } from '../work/slice-types.ts'
 
 export type CloseOutPrState = 'OPEN' | 'CLOSED' | 'MERGED' | null
 

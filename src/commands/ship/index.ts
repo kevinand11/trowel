@@ -1,4 +1,6 @@
-import type { ChangeRecord, ChangeState, ClassifiedSlice, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
+import type { ChangeRecord, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
+import type { ChangeState } from '../../work/change-types.ts'
+import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'

@@ -1,4 +1,5 @@
-import type { ClassifiedSlice, ChangeRecord, Slice, Storage } from '../storages/types.ts'
+import type { ChangeRecord, Slice, Storage } from '../storages/types.ts'
+import type { ClassifiedSlice } from '../work/slice-types.ts'
 
 export function fakeClassifiedSlice(overrides: Partial<ClassifiedSlice> = {}): ClassifiedSlice {
 	return {

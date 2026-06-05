@@ -1,4 +1,6 @@
-import type { ChangeState, ChangeSummary, ClassifiedSlice, SliceState, Storage } from '../../storages/types.ts'
+import type { ChangeSummary, Storage } from '../../storages/types.ts'
+import type { ChangeState } from '../../work/change-types.ts'
+import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
 import { createGh } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
