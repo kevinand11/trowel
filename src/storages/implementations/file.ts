@@ -393,6 +393,14 @@ if (import.meta.vitest) {
 				calls.git.push(['mergeNoFf', b])
 				await realGit.mergeNoFf(b)
 			},
+			mergeNoFfIn: async (p: string, b: string) => {
+				calls.git.push(['mergeNoFfIn', p, b])
+				await realGit.mergeNoFfIn(p, b)
+			},
+			mergeAbortIn: async (p: string) => {
+				calls.git.push(['mergeAbortIn', p])
+				await realGit.mergeAbortIn(p)
+			},
 			deleteRemoteBranch: async (b: string) => {
 				calls.git.push(['deleteRemoteBranch', b])
 				await realGit.deleteRemoteBranch(b)
@@ -425,6 +433,11 @@ if (import.meta.vitest) {
 				calls.git.push(['branchExists', b])
 				return r
 			},
+			localBranchExists: async (b: string) => {
+				const r = await realGit.localBranchExists(b)
+				calls.git.push(['localBranchExists', b])
+				return r
+			},
 			isMerged: async (b: string, base: string) => {
 				const r = await realGit.isMerged(b, base)
 				calls.git.push(['isMerged', b, base])
@@ -435,6 +448,23 @@ if (import.meta.vitest) {
 				await realGit.deleteBranch(b)
 			},
 			listLocalBranches: async () => realGit.listLocalBranches(),
+			resolveRef: async (ref: string, p?: string) => realGit.resolveRef(ref, p),
+			checkoutDetached: async (p: string, ref: string) => {
+				calls.git.push(['checkoutDetached', p, ref])
+				await realGit.checkoutDetached(p, ref)
+			},
+			resetHard: async (p: string, ref: string) => {
+				calls.git.push(['resetHard', p, ref])
+				await realGit.resetHard(p, ref)
+			},
+			pushHeadTo: async (p: string, b: string) => {
+				calls.git.push(['pushHeadTo', p, b])
+				await realGit.pushHeadTo(p, b)
+			},
+			updateLocalBranchRef: async (b: string, ref: string) => {
+				calls.git.push(['updateLocalBranchRef', b, ref])
+				await realGit.updateLocalBranchRef(b, ref)
+			},
 			worktreeAdd: async (p: string, b: string) => {
 				await realGit.worktreeAdd(p, b)
 			},
@@ -447,6 +477,9 @@ if (import.meta.vitest) {
 			},
 			cleanUntracked: async (p: string) => {
 				await realGit.cleanUntracked(p)
+			},
+			cleanAll: async (p: string) => {
+				await realGit.cleanAll(p)
 			},
 			isWorkingTreeClean: async () => realGit.isWorkingTreeClean(),
 			statusShort: async () => realGit.statusShort(),

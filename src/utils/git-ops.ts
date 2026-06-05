@@ -15,6 +15,8 @@ export type GitOps = {
 	checkout(branch: string): Promise<void>
 	mergeNoFf(branch: string, opts?: { noVerify?: boolean }): Promise<void>
 	mergeAbort(): Promise<void>
+	mergeNoFfIn(worktreePath: string, branch: string, opts?: { noVerify?: boolean }): Promise<void>
+	mergeAbortIn(worktreePath: string): Promise<void>
 	deleteRemoteBranch(branch: string): Promise<void>
 	remoteBranchExists(branch: string): Promise<boolean>
 	createRemoteBranch(newBranch: string, baseBranch: string): Promise<void>
@@ -25,16 +27,23 @@ export type GitOps = {
 	currentBranch(): Promise<string>
 	baseBranch(): Promise<string>
 	branchExists(branch: string): Promise<boolean>
+	localBranchExists(branch: string): Promise<boolean>
 	isMerged(branch: string, baseBranch: string): Promise<boolean>
 	commitsAhead(branch: string, baseBranch: string): Promise<number>
 	listLocalBranches(): Promise<string[]>
 	deleteBranch(branch: string): Promise<void>
+	resolveRef(ref: string, worktreePath?: string): Promise<string>
+	checkoutDetached(worktreePath: string, ref: string): Promise<void>
+	resetHard(worktreePath: string, ref: string): Promise<void>
+	pushHeadTo(worktreePath: string, branch: string): Promise<void>
+	updateLocalBranchRef(branch: string, ref: string): Promise<void>
 	// worktree primitives (consumed by src/work/worktrees.ts for per-Turn worktrees)
 	worktreeAdd(worktreePath: string, branch: string): Promise<void>
 	worktreeRemove(worktreePath: string, opts?: { force?: boolean }): Promise<void>
 	worktreeList(): Promise<Array<{ path: string; branch: string | null; head: string }>>
 	restoreAll(worktreePath: string): Promise<void>
 	cleanUntracked(worktreePath: string): Promise<void>
+	cleanAll(worktreePath: string): Promise<void>
 	// host-side workflow ops (consumed by `runStart` in `src/commands/start.ts`)
 	isWorkingTreeClean(): Promise<boolean>
 	statusShort(): Promise<string>
@@ -65,6 +74,8 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		checkout: forbiddenGitMutation('checkout'),
 		mergeNoFf: forbiddenGitMutation('mergeNoFf'),
 		mergeAbort: forbiddenGitMutation('mergeAbort'),
+		mergeNoFfIn: forbiddenGitMutation('mergeNoFfIn'),
+		mergeAbortIn: forbiddenGitMutation('mergeAbortIn'),
 		deleteRemoteBranch: forbiddenGitMutation('deleteRemoteBranch'),
 		remoteBranchExists: git.remoteBranchExists,
 		createRemoteBranch: forbiddenGitMutation('createRemoteBranch'),
@@ -73,15 +84,22 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		currentBranch: git.currentBranch,
 		baseBranch: git.baseBranch,
 		branchExists: git.branchExists,
+		localBranchExists: git.localBranchExists,
 		isMerged: git.isMerged,
 		commitsAhead: git.commitsAhead,
 		listLocalBranches: git.listLocalBranches,
 		deleteBranch: forbiddenGitMutation('deleteBranch'),
+		resolveRef: git.resolveRef,
+		checkoutDetached: forbiddenGitMutation('checkoutDetached'),
+		resetHard: forbiddenGitMutation('resetHard'),
+		pushHeadTo: forbiddenGitMutation('pushHeadTo'),
+		updateLocalBranchRef: forbiddenGitMutation('updateLocalBranchRef'),
 		worktreeAdd: forbiddenGitMutation('worktreeAdd'),
 		worktreeRemove: forbiddenGitMutation('worktreeRemove'),
 		worktreeList: git.worktreeList,
 		restoreAll: forbiddenGitMutation('restoreAll'),
 		cleanUntracked: forbiddenGitMutation('cleanUntracked'),
+		cleanAll: forbiddenGitMutation('cleanAll'),
 		isWorkingTreeClean: git.isWorkingTreeClean,
 		statusShort: git.statusShort,
 		stashPush: forbiddenGitMutation('stashPush'),
@@ -126,6 +144,15 @@ export function createRepoGit(projectRoot: string): GitOps {
 		mergeAbort: async () => {
 			await gitOrThrow(['merge', '--abort'])
 		},
+		mergeNoFfIn: async (worktreePath, b, opts) => {
+			const args = ['merge', '--no-ff', '-q']
+			if (opts?.noVerify) args.push('--no-verify')
+			args.push(b)
+			await gitOrThrow(args, worktreePath)
+		},
+		mergeAbortIn: async (worktreePath) => {
+			await gitOrThrow(['merge', '--abort'], worktreePath)
+		},
 		deleteRemoteBranch: async (b) => {
 			await gitOrThrow(['push', '-q', 'origin', `:${b}`])
 		},
@@ -160,6 +187,10 @@ export function createRepoGit(projectRoot: string): GitOps {
 			const remote = await tryExec('git', ['-C', projectRoot, 'ls-remote', '--heads', 'origin', b])
 			return remote.ok && remote.stdout.trim() !== ''
 		},
+		localBranchExists: async (b) => {
+			const local = await tryExec('git', ['-C', projectRoot, 'branch', '--list', b])
+			return local.ok && local.stdout.trim() !== ''
+		},
 		isMerged: async (b, base) => {
 			const r = await tryExec('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', b, `origin/${base}`])
 			return r.ok
@@ -177,6 +208,19 @@ export function createRepoGit(projectRoot: string): GitOps {
 		},
 		deleteBranch: async (b) => {
 			await tryExec('git', ['-C', projectRoot, 'branch', '-q', '-D', b])
+		},
+		resolveRef: async (ref, worktreePath) => (await gitOrThrow(['rev-parse', '--verify', ref], worktreePath)).trim(),
+		checkoutDetached: async (worktreePath, ref) => {
+			await gitOrThrow(['checkout', '-q', '--detach', ref], worktreePath)
+		},
+		resetHard: async (worktreePath, ref) => {
+			await gitOrThrow(['reset', '--hard', '-q', ref], worktreePath)
+		},
+		pushHeadTo: async (worktreePath, branch) => {
+			await gitOrThrow(['push', '-q', 'origin', `HEAD:refs/heads/${branch}`], worktreePath)
+		},
+		updateLocalBranchRef: async (branch, ref) => {
+			await gitOrThrow(['update-ref', `refs/heads/${branch}`, ref])
 		},
 		worktreeAdd: async (worktreePath, branch) => {
 			await gitOrThrow(['worktree', 'add', worktreePath, branch])
@@ -196,6 +240,9 @@ export function createRepoGit(projectRoot: string): GitOps {
 		},
 		cleanUntracked: async (worktreePath) => {
 			await gitOrThrow(['clean', '-fd'], worktreePath)
+		},
+		cleanAll: async (worktreePath) => {
+			await gitOrThrow(['clean', '-fdx'], worktreePath)
 		},
 		isWorkingTreeClean: async () => {
 			const stdout = await gitOrThrow(['status', '--porcelain'])

@@ -1,3 +1,4 @@
+import { MERGE_SLICE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from './merge-worktree.ts'
 import { fetchPrFeedback } from './pr-flow.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { PhaseCtx, PhaseOutcome, PreparedPhase, Slice, Storage } from '../storages/types.ts'
@@ -74,8 +75,9 @@ function assertPrHeadCanTargetChangeBranch(slice: Slice, ctx: PhaseCtx, branch: 
  * - `slice.sliceBranch === change.changeBranch`, `usePrs: false`: push the stored branch,
  *   finalize the Slice, return `'done'`.
  * - distinct stored Slice branch, `usePrs: false`: push the Slice branch, host-side merge
- *   `--no-ff` into the Change branch, push the Change branch, close the Slice via storage,
- *   return `'done'`. Slice branch cleanup belongs to explicit Change-level Cleanup.
+ *   `--no-ff` into the Change branch through the reserved `__merge-slice` Worktree when
+ *   `projectRoot` is available, close the Slice via storage, return `'done'`. Slice branch cleanup
+ *   belongs to explicit Change-level Cleanup.
  * - distinct stored Slice branch, `usePrs: true`: push the Slice branch, open a draft PR, return
  *   `'progress'`. The next loop iteration's `findSlices` sees the PR and dispatches the reviewer.
  *   Works on every storage; at runtime requires a GitHub remote + `gh` auth (surfaced via
@@ -83,6 +85,30 @@ function assertPrHeadCanTargetChangeBranch(slice: Slice, ctx: PhaseCtx, branch: 
  */
 async function mergeSliceIntoChangeBranch(deps: PhaseDeps, slice: Slice, ctx: PhaseCtx, branch: string): Promise<void> {
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
+	await mergeSliceBranch(deps, ctx, branch)
+	deps.log(`${tag} merged ${branch} into ${ctx.changeBranch}; slice branch retained for Cleanup`)
+	await finalizeSlice(deps, ctx.changeId, slice.id)
+	deps.log(`${tag} finalized slice`)
+}
+
+async function mergeSliceBranch(deps: PhaseDeps, ctx: PhaseCtx, branch: string): Promise<void> {
+	if (deps.projectRoot) {
+		await mergeBranchIntoDestinationWithWorktree({
+			projectRoot: deps.projectRoot,
+			changeId: ctx.changeId,
+			reservation: MERGE_SLICE_WORKTREE,
+			destinationBranch: ctx.changeBranch,
+			sourceBranch: branch,
+			git: deps.git,
+			mergeNoVerify: deps.mergeNoVerify,
+			log: deps.log,
+		})
+		return
+	}
+	await legacyMergeSliceBranch(deps, ctx, branch)
+}
+
+async function legacyMergeSliceBranch(deps: PhaseDeps, ctx: PhaseCtx, branch: string): Promise<void> {
 	await deps.git.checkout(ctx.changeBranch)
 	try {
 		await deps.git.mergeNoFf(branch, { noVerify: deps.mergeNoVerify })
@@ -94,9 +120,6 @@ async function mergeSliceIntoChangeBranch(deps: PhaseDeps, slice: Slice, ctx: Ph
 		throw e
 	}
 	await deps.git.push(ctx.changeBranch)
-	deps.log(`${tag} merged ${branch} into ${ctx.changeBranch}; slice branch retained for Cleanup`)
-	await finalizeSlice(deps, ctx.changeId, slice.id)
-	deps.log(`${tag} finalized slice`)
 }
 
 export async function landImplement(deps: PhaseDeps, slice: Slice, verdict: TurnOut, ctx: PhaseCtx): Promise<PhaseOutcome> {
@@ -317,6 +340,8 @@ if (import.meta.vitest) {
 				if (overrides.mergeNoFfThrows) throw overrides.mergeNoFfThrows
 			},
 			mergeAbort: recorded('mergeAbort'),
+			mergeNoFfIn: recorded('mergeNoFfIn'),
+			mergeAbortIn: recorded('mergeAbortIn'),
 			deleteRemoteBranch: recorded('deleteRemoteBranch'),
 			remoteBranchExists: async (b) => {
 				calls.push({ method: 'remoteBranchExists', args: [b] })
@@ -328,15 +353,22 @@ if (import.meta.vitest) {
 			currentBranch: async () => 'change-branch',
 			baseBranch: async () => 'main',
 			branchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
+			localBranchExists: async (b) => overrides.branchExists ? overrides.branchExists(b) : true,
 			isMerged: async () => false,
-			commitsAhead: async () => overrides.commitsAhead ?? 0,
+			commitsAhead: async (branch, base) => { calls.push({ method: 'commitsAhead', args: [branch, base] }); return overrides.commitsAhead ?? 0 },
 			listLocalBranches: async () => [],
 			deleteBranch: recorded('deleteBranch'),
+			resolveRef: async (ref, worktreePath) => { calls.push({ method: 'resolveRef', args: [ref, worktreePath] }); return ref === 'HEAD' ? 'pushed-head' : ref },
+			checkoutDetached: recorded('checkoutDetached'),
+			resetHard: recorded('resetHard'),
+			pushHeadTo: recorded('pushHeadTo'),
+			updateLocalBranchRef: recorded('updateLocalBranchRef'),
 			worktreeAdd: recorded('worktreeAdd'),
 			worktreeRemove: recorded('worktreeRemove'),
 			worktreeList: async () => [],
 			restoreAll: recorded('restoreAll'),
 			cleanUntracked: recorded('cleanUntracked'),
+			cleanAll: recorded('cleanAll'),
 			isWorkingTreeClean: async () => true,
 			statusShort: async () => '',
 			stashPush: recorded('stashPush'),
@@ -489,6 +521,56 @@ if (import.meta.vitest) {
 			// `push` IS called once (the slice-branch push earlier in landImplement), but NOT
 			// the Change branch push that comes after the merge.
 			expect(methods.filter((m) => m === 'push')).toHaveLength(1)
+		})
+	})
+
+	describe('landImplement: slice host merges through the reserved merge worktree', () => {
+		test('ready + projectRoot merges the slice branch into the Change branch from __merge-slice without checking it out', async () => {
+			const { mkdtemp, rm } = await import('node:fs/promises')
+			const { tmpdir } = await import('node:os')
+			const path = await import('node:path')
+			const projectRoot = await mkdtemp(path.join(tmpdir(), 'trowel-phase-merge-'))
+			try {
+				const { deps, calls, storageState, logs } = makePhaseDeps()
+				deps.projectRoot = projectRoot
+
+				const outcome = await landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)
+
+				const mergeWorktreePath = path.join(projectRoot, '.trowel', 'worktrees', 'pid', '__merge-slice')
+				expect(outcome).toBe('done')
+				expect(calls.map((c) => c.method)).not.toContain('checkout')
+				expect(calls).toContainEqual({ method: 'worktreeAdd', args: [mergeWorktreePath, 'origin/change-branch'] })
+				expect(calls).toContainEqual({ method: 'mergeNoFfIn', args: [mergeWorktreePath, 'change-pid/slice-42-a-slice', { noVerify: false }] })
+				expect(calls).toContainEqual({ method: 'pushHeadTo', args: [mergeWorktreePath, 'change-branch'] })
+				expect(calls).toContainEqual({ method: 'updateLocalBranchRef', args: ['change-branch', 'pushed-head'] })
+				expect(storageState.closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+				expect(logs.some((l) => l.includes('merged change-pid/slice-42-a-slice into change-branch; slice branch retained for Cleanup'))).toBe(true)
+			} finally {
+				await rm(projectRoot, { recursive: true, force: true })
+			}
+		})
+
+		test('failed worktree merge reports the preserved __merge-slice path and does not finalize the slice', async () => {
+			const { mkdtemp, rm } = await import('node:fs/promises')
+			const { tmpdir } = await import('node:os')
+			const path = await import('node:path')
+			const projectRoot = await mkdtemp(path.join(tmpdir(), 'trowel-phase-merge-fail-'))
+			try {
+				const boom = new Error('merge conflict')
+				const { deps, calls, storageState } = makePhaseDeps()
+				deps.projectRoot = projectRoot
+				deps.git.mergeNoFfIn = async (worktreePath, branch, opts) => {
+					calls.push({ method: 'mergeNoFfIn', args: [worktreePath, branch, opts] })
+					throw boom
+				}
+
+				const mergeWorktreePath = path.join(projectRoot, '.trowel', 'worktrees', 'pid', '__merge-slice')
+				await expect(landImplement(deps, slice, { verdict: 'ready', commits: 1 }, ctx)).rejects.toThrow(`Merge worktree preserved at ${mergeWorktreePath}`)
+				expect(storageState.closedAt).toBeNull()
+				expect(calls.map((c) => c.method)).not.toContain('updateLocalBranchRef')
+			} finally {
+				await rm(projectRoot, { recursive: true, force: true })
+			}
 		})
 	})
 

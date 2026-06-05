@@ -7,7 +7,7 @@ import { classifyChange } from '../../utils/change-state.ts'
 import type { GhOps } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
-import { cleanupChange } from '../../work/cleanup.ts'
+import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import { buildStorage, exitOnCommandError, loadCommandBase, type CommandBase } from '../runtime.ts'
 
@@ -36,11 +36,16 @@ async function runAbortChange(changeId: string, rt: AbortRuntime): Promise<void>
 	const back = await rt.git.currentBranch()
 	const { change, slices, state } = await classifiedChangeOrThrow(changeId, rt)
 	const targetBranch = await changeTargetBranch(change, rt)
+	if (abortMayRunCleanup(state)) await refuseCurrentCleanupBranch({ change, slices, rt })
 	try {
 		await abortChangeByState({ change, slices, state }, targetBranch, rt)
 	} finally {
 		await restoreStartingBranch(back, targetBranch, rt)
 	}
+}
+
+function abortMayRunCleanup(state: ChangeState): boolean {
+	return state === 'open' || state === 'ready' || state === 'in-flight' || state === 'aborted'
 }
 
 async function classifiedChangeOrThrow(changeId: string, rt: AbortRuntime): Promise<ClassifiedChange> {
@@ -330,6 +335,56 @@ if (import.meta.vitest) {
 	describe('runAbortChange', () => {
 		test('throws when the Change is missing', async () => {
 			await expect(runAbortChangeWith({ storageState: { change: null, slices: [] } })).rejects.toThrow(/Change '42' not found/)
+		})
+
+		test('refuses before exact-id prompting when the current branch is a Cleanup candidate under abort prompt policy', async () => {
+			let confirmExactCalls = 0
+			const storageState = {
+				change: fakeChange(),
+				slices: [fakeSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })],
+			}
+
+			await expect(runAbortChangeWith({
+				storageState,
+				gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
+				gh: { findAnyPrByHead: async () => ({ number: 20, state: 'OPEN' }) },
+				runtime: {
+					deleteBranchPolicy: 'prompt',
+					confirm: async () => {
+						throw new Error('should not prompt')
+					},
+					confirmExact: async () => {
+						confirmExactCalls += 1
+						throw new Error('should not prompt')
+					},
+				},
+			})).rejects.toThrow(/Switch branches first/)
+			expect(confirmExactCalls).toBe(0)
+			expect(storageState.change.closedAt).toBeNull()
+		})
+
+		test('refuses before closing records when the current branch is a Cleanup candidate under abort always policy', async () => {
+			const storageState = { change: fakeChange(), slices: [fakeSlice()] }
+
+			await expect(runAbortChangeWith({
+				storageState,
+				gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
+				runtime: { deleteBranchPolicy: 'always' },
+			})).rejects.toThrow(/Switch branches first/)
+			expect(storageState.change.closedAt).toBeNull()
+			expect(storageState.slices[0]!.closedAt).toBeNull()
+		})
+
+		test('does not refuse the current Cleanup candidate when abort deletion policy is never', async () => {
+			const { storageCalls, gitCalls, gitState } = await runAbortChangeWith({
+				storageState: { change: fakeChange(), slices: [] },
+				gitState: { current: 'change-42-feature', branches: new Set(['main', 'change-42-feature']) },
+				runtime: { deleteBranchPolicy: 'never' },
+			})
+
+			expect(storageCalls).toContain('closeChange(42)')
+			expect(gitCalls.find((call) => call.startsWith('deleteBranch'))).toBeUndefined()
+			expect(gitState.current).toBe('change-42-feature')
 		})
 
 		test('open Change: closes open Slice PRs without merging, closes records, and cleans local branches under abort policy', async () => {

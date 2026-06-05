@@ -20,9 +20,22 @@ export type CleanupChangeArgs = {
 	rt: CleanupRuntime
 }
 
+export type CleanupPreflightArgs = Pick<CleanupChangeArgs, 'change' | 'slices'> & {
+	rt: Pick<CleanupRuntime, 'git' | 'deleteBranchPolicy'>
+}
+
 export async function cleanupChange(args: CleanupChangeArgs): Promise<void> {
+	await refuseCurrentCleanupBranch(args)
 	await cleanupChangeWorktrees(args.change.id, args.rt)
 	await cleanupLocalBranches(args)
+}
+
+export async function refuseCurrentCleanupBranch(args: CleanupPreflightArgs): Promise<void> {
+	if (args.rt.deleteBranchPolicy === 'never') return
+	const candidates = await cleanupLocalBranchCandidates(args.change, args.slices, args.rt.git)
+	const current = await args.rt.git.currentBranch()
+	if (!candidates.includes(current)) return
+	throw new Error(`Change ${args.change.id} cleanup may delete current branch '${current}'. Switch branches first, then retry.`)
 }
 
 async function cleanupChangeWorktrees(changeId: string, rt: CleanupRuntime): Promise<void> {
@@ -52,16 +65,15 @@ async function removeRegisteredWorktree(worktreePath: string, rt: CleanupRuntime
 }
 
 async function cleanupLocalBranches(args: CleanupChangeArgs): Promise<void> {
-	const localBranchSet = await cleanupLocalBranchSet(args.change, args.slices, args.rt.git)
+	const localBranchSet = await cleanupLocalBranchCandidates(args.change, args.slices, args.rt.git)
 	if (localBranchSet.length === 0) return
 	if (!(await branchDeletionAllowedByPolicy(args.change.id, localBranchSet, args.rt))) return
 	const deletable = await branchesPassingRemoteSafety(localBranchSet, args.rt)
 	if (deletable.length === 0) return
-	await checkoutAwayFromDeletedBranches(deletable, args.targetBranch, args.rt)
 	for (const branch of deletable) await args.rt.git.deleteBranch(branch)
 }
 
-async function cleanupLocalBranchSet(change: Pick<ChangeRecord, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], git: GitOps): Promise<string[]> {
+export async function cleanupLocalBranchCandidates(change: Pick<ChangeRecord, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], git: GitOps): Promise<string[]> {
 	const local = new Set(await git.listLocalBranches())
 	const candidates = new Set<string>([change.changeBranch])
 	for (const slice of slices) candidates.add(slice.sliceBranch)
@@ -104,11 +116,6 @@ async function hasCommitsNotOnRemote(branch: string, rt: CleanupRuntime): Promis
 	if (ahead <= 0) return false
 	rt.stdout(`Skipped local branch '${branch}': ${ahead} commit(s) not present on origin/${branch}.\n`)
 	return true
-}
-
-async function checkoutAwayFromDeletedBranches(branches: string[], targetBranch: string, rt: CleanupRuntime): Promise<void> {
-	const current = await rt.git.currentBranch()
-	if (branches.includes(current)) await rt.git.checkout(targetBranch)
 }
 
 if (import.meta.vitest) {
@@ -218,6 +225,51 @@ if (import.meta.vitest) {
 			expect(await readFile(logFile, 'utf8')).toBe('keep me\n')
 			expect(calls).toContain(`worktreeRemove(${wtA})`)
 			expect(calls).toContain(`worktreeRemove(${wtB})`)
+		})
+
+		test('computes local Cleanup branch candidates from stored branch metadata only', async () => {
+			const localBranches = new Set(['change-42-x', '42/s1-a', '42/s2-b', '42/stale-old-title', 'change-42/slice-stale-old-title', 'unrelated'])
+			const { git } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
+
+			await expect(cleanupLocalBranchCandidates({ id: '42', changeBranch: 'change-42-x' }, [fakeSlice('s1', 'A'), fakeSlice('s2', 'B')], git))
+				.resolves.toEqual(['change-42-x', '42/s1-a', '42/s2-b'])
+		})
+
+		test('refuses before prompting when the current branch is a Cleanup candidate', async () => {
+			const wt = path.join(projectRoot, '.trowel', 'worktrees', '42', 'a')
+			await mkdir(wt, { recursive: true })
+			const localBranches = new Set(['main', 'change-42-x'])
+			const state = { current: 'change-42-x', localBranches, remoteBranches: new Set<string>(), ahead: new Map<string, number>(), worktrees: [{ path: wt, branch: 'change-42-x', head: '1' }] }
+			const { git, calls } = fakeCleanupGit(state)
+			const prompts: string[] = []
+
+			await expect(cleanupChange({
+				change: { id: '42', changeBranch: 'change-42-x' },
+				slices: [],
+				targetBranch: 'main',
+				rt: cleanupRt(projectRoot, git, {
+					deleteBranchPolicy: 'prompt',
+					confirm: async (message) => {
+						prompts.push(message)
+						return true
+					},
+				}),
+			})).rejects.toThrow(/Switch branches first/)
+			expect(prompts).toEqual([])
+			expect(state.current).toBe('change-42-x')
+			expect(calls.find((call) => call.startsWith('worktreeRemove'))).toBeUndefined()
+			expect(calls.find((call) => call.startsWith('checkout'))).toBeUndefined()
+			expect(calls.find((call) => call.startsWith('deleteBranch'))).toBeUndefined()
+		})
+
+		test('deletes non-current branches without checking out the Target branch', async () => {
+			const localBranches = new Set(['main', 'change-42-x'])
+			const { git, calls } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [] })
+
+			await cleanupChange({ change: { id: '42', changeBranch: 'change-42-x' }, slices: [], targetBranch: 'main', rt: cleanupRt(projectRoot, git, { deleteBranchPolicy: 'always' }) })
+
+			expect(calls).toContain('deleteBranch(change-42-x)')
+			expect(calls.find((call) => call.startsWith('checkout'))).toBeUndefined()
 		})
 
 		test('prompt policy asks once for the stored local branch set', async () => {

@@ -92,6 +92,7 @@ if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
 	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
+	const { setupLocalSliceMergeFixture } = await import('../test-utils/local-merge-fixtures.ts')
 	const { fakeSliceStorage } = await import('../test-utils/storage-fixtures.ts')
 
 	function makeStorage(overrides: Partial<Storage>): Storage {
@@ -206,6 +207,36 @@ if (import.meta.vitest) {
 			const result = await runLoopFixture()
 			expect(result.changeClosed).toBe(false)
 			expect(result.logs.join('\n')).toContain('no slices; nothing to ship')
+		})
+
+		test('trowel change work keeps the user\'s main checkout on the starting branch during local slice host merges', async () => {
+			const fixture = await setupLocalSliceMergeFixture()
+			try {
+				const { gh } = recordingGhOps()
+				const logs: string[] = []
+
+				await runEntityLoop(
+					{ kind: 'change', id: fixture.state.change.id, changeBranch: fixture.state.change.changeBranch, targetBranch: fixture.state.change.targetBranch, title: fixture.state.change.title },
+					{
+						storage: fixture.storage,
+						git: fixture.git,
+						gh,
+						spawnTurn: async ({ branch }) => {
+							await fixture.commitOnBranch(branch, 'work.txt', 'work\n')
+							return { verdict: 'ready', commits: 1 }
+						},
+						log: (msg) => logs.push(msg),
+						config: { ...baseConfig, maxConcurrent: 1 },
+						projectRoot: fixture.projectRoot,
+					},
+				)
+
+				expect(await fixture.currentBranch()).toBe('main')
+				expect(fixture.state.slice.state).toBe('done')
+				expect(logs.join('\n')).toContain(`merged ${fixture.state.slice.sliceBranch} into ${fixture.state.change.changeBranch}`)
+			} finally {
+				await fixture.cleanup()
+			}
 		})
 	})
 }
