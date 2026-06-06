@@ -5,15 +5,17 @@
 > **Amended by:** [2026-06-05-slice-commands-require-change-id.md](./2026-06-05-slice-commands-require-change-id.md). Shared integer id allocation remains, but slice-id-only commands and `Storage.findSlice` were reversed.
 >
 > **Amended by:** [2026-06-05-mutation-lock-owned-by-orchestrators.md](./2026-06-05-mutation-lock-owned-by-orchestrators.md). Shared integer id allocation remains, but the layered-lock design is replaced: orchestrators acquire the Mutation lock around coherent state-mutating operations, Storage implementations do not acquire it, and `withMutationLock` is no longer reentrant.
+>
+> **Amended by implementation:** file-storage paths are now deterministic from ids. Changes live at `<changesDir>/<changeId>/`; Slices live at `<changesDir>/<changeId>/slices/<sliceId>/`. `store.json` remains the metadata record and must contain the matching numeric `id`; `slug` is not stored or used in file-storage paths.
 
 The `file` storage today mints **PRD ids** as 10-character base-36 random strings via `src/utils/id.ts:generateId`, with slice ids drawn from the same generator. Slice ids are namespaced under their PRD directory (`<prdsDir>/<prdId>-<slug>/slices/<sliceId>-<slug>/`) — two different PRDs can in principle hold slices that share the same id without conflict, because the lookup path always carries the PRD context. Random ids carry no information beyond uniqueness, are awkward to type, and force every slice-addressed command (`status`, `close`, `implement`, `address`, `review`) to also name the PRD.
 
-This ADR pivots `file` storage to a single project-wide pool of **positive integers**, shared between PRDs and slices. A PRD created next gets `1`; the first slice under it gets `2`; a second PRD gets `3`; a third PRD created before that PRD's slices gets `4`; the first slice under PRD `3` then gets `5`. Ids are not reused — a closed PRD's number stays reserved (its directory still exists with `closedAt` set; the scan sees it). The integer prefix in the directory name (`1-add-sso/`, `5-implement-tabs/`) is the load-bearing identifier; the slug remains for human legibility.
+This ADR pivots `file` storage to a single project-wide pool of **positive integers**, shared between PRDs and slices. A PRD created next gets `1`; the first slice under it gets `2`; a second PRD gets `3`; a third PRD created before that PRD's slices gets `4`; the first slice under PRD `3` then gets `5`. Ids are not reused — a closed PRD's number stays reserved (its `store.json` still exists with `closedAt` set; the scan sees it). The id is load-bearing for both the deterministic path and `store.json.id`: Change `4` lives at `<changesDir>/4/`, and Slice `5` under that Change lives at `<changesDir>/4/slices/5/`.
 
 Two consequences follow:
 
 1. **Slice ids become globally unique within a project.** The `trowel status slice <id>` / `trowel close slice <id>` / `trowel implement <slice-id>` shapes all become well-defined without a `<prd-id>` companion arg. The CLI surface collapses accordingly (see the companion command-scoping changes in CONTEXT.md and README.md).
-2. **The id is allocated compute-on-demand**, not from a persisted counter file. At allocation time the storage scans every existing PRD dir under `prdsDir` and every existing slice dir under each PRD, finds the max integer prefix, and returns `max + 1`. No `.counter.json`. The counter is implicit in the on-disk state.
+2. **The id is allocated compute-on-demand**, not from a persisted counter file. At allocation time the storage enumerates existing deterministic Change and Slice directories, reads their `store.json` files, finds the max positive integer id, and returns `max + 1`. No `.counter.json`. The counter is implicit in the stored entity records.
 
 Compute-on-demand is race-prone if two trowel invocations run concurrently. To make it safe, this ADR introduces the **Mutation lock**: a project-wide advisory lock at `<projectRoot>/.trowel/lock`, acquired by any state-mutating command. Read-only commands (`status`, `list`, `config`, `doctor`) do not acquire it. The lock is modelled after git's `.git/index.lock` and implemented via the `proper-lockfile` npm package — mtime-refreshed, with stale-lock detection at a conservative threshold. On contention, the caller retries with backoff for up to ~5 seconds, then fails with `trowel busy: another command holds the lock`.
 
@@ -212,8 +214,8 @@ No schema changes. `config.close.deleteBranch` already exists and is reused for 
 Partially supersedes `2026-05-11-prd-unique-id-and-file-backend-layout.md`:
 
 - The id-format claim ("6-character base-36 random string") is replaced by "positive integer from a project-wide shared pool".
-- The directory-layout claim (`<prdsDir>/<id>-<slug>/` with `README.md` + `store.json` + `slices/`) is unchanged.
-- The slug-as-load-bearing-identifier rejection still stands.
+- The directory-layout claim (`<prdsDir>/<id>-<slug>/` with `README.md` + `store.json` + `slices/`) is replaced by deterministic id-only paths: `<changesDir>/<changeId>/README.md`, `<changesDir>/<changeId>/store.json`, and `<changesDir>/<changeId>/slices/<sliceId>/...`.
+- The slug-as-load-bearing-identifier rejection still stands; `slug` is not stored and is not part of file-storage paths.
 - The `store.json:closedAt`-as-state claim is unchanged.
 
 The older ADR is not deleted — its "Considered options" rationale (rejecting slug-as-id, rejecting UUIDs, rejecting branch-existence-as-state) remains useful context.

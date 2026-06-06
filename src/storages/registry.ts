@@ -1,6 +1,6 @@
-import { createFileStorage } from './implementations/file.ts'
-import { createIssueStorage } from './implementations/issue.ts'
-import type { Storage, StorageDeps, StorageFactory } from './types.ts'
+import { createFileStorage } from './implementations/file'
+import { createIssueStorage } from './implementations/issue'
+import type { Storage, StorageDeps, StorageFactory } from './types'
 
 export const storageFactories: Record<string, StorageFactory> = {
 	file: createFileStorage,

@@ -1,6 +1,6 @@
 import type { Config } from '../config'
-import type { GhOps } from '../utils/gh-ops.ts'
-import type { GitOps } from '../utils/git-ops.ts'
+import type { GhOps } from '../utils/gh-ops'
+import type { GitOps } from '../utils/git-ops'
 
 export type CreateChange = {
 	title: string

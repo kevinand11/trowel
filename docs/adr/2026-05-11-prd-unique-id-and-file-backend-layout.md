@@ -1,5 +1,7 @@
 # PRDs have unique ids; `file` backend uses a directory layout
 
+> **Superseded in part:** file-storage ids are now positive integers from a shared Change/Slice pool; paths are deterministic id-only directories; `store.json.id` must match the path id; and `slug` is no longer stored. See [2026-05-17-file-storage-deterministic-shared-ids.md](./2026-05-17-file-storage-deterministic-shared-ids.md).
+
 Every PRD carries a unique id, regardless of backend. For the `issue` backend the id is the GitHub issue number; for the `draft-pr` backend it is the PR number; for the `file` backend (renamed from `markdown` in the same session — see commit history) the id is a 6-character base-36 random string, collision-checked against existing PRD directories.
 
 The `file` backend's PRD lives as a directory at `<prdsDir>/<id>-<slug>/`, containing `README.md` (the PRD body authored during grilling), `store.json` (trowel-managed metadata: `id`, `slug`, `title`, `createdAt`, `closedAt`), and a `slices/` subdirectory (each slice mirrors this same `<id>-<slug>/README.md + store.json` shape; see ADR `slices-local-for-file-backend`). The directory pattern mirrors the `issue` backend's branch format `<id>-<slug>`, so users see a parallel structure across backends. Slugs are derived from titles but are *not* unique on their own — two PRDs with similar titles get distinct directories because the random id differs. The slug exists for human legibility (in branch names, slice markers, and `ls` output); the id is the load-bearing identifier.

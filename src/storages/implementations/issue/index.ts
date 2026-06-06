@@ -1,4 +1,4 @@
-import type { Change, Slice, StorageDeps, StorageFactory } from '../types.ts'
+import type { Change, Slice, StorageDeps, StorageFactory } from '../../types'
 
 type TrowelMetadata = Record<string, unknown>
 type IssueChangeArtifact = {
@@ -38,15 +38,24 @@ export const createIssueStorage: StorageFactory = (deps) => {
 	}
 
 	function metadataFromBody(body: string | null | undefined): TrowelMetadata {
-		const match = /<!--\s*trowel:(.*?)-->/s.exec(body ?? '')
-		const raw = match?.[1]?.trim() ?? null
-		if (!raw) return {}
+		const raw = metadataPayload(body)
+		return raw === null ? {} : parseMetadataPayload(raw)
+	}
+
+	function metadataPayload(body: string | null | undefined): string | null {
+		return /<!--\s*trowel:(.*?)-->/s.exec(body ?? '')?.[1]?.trim() || null
+	}
+
+	function parseMetadataPayload(raw: string): TrowelMetadata {
 		try {
-			const parsed = JSON.parse(raw) as unknown
-			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as TrowelMetadata
+			return metadataObject(JSON.parse(raw) as unknown)
 		} catch {
-			// Fall through to loud read/update failure below.
+			throw new Error('issue body contains invalid Trowel metadata JSON')
 		}
+	}
+
+	function metadataObject(value: unknown): TrowelMetadata {
+		if (value && typeof value === 'object' && !Array.isArray(value)) return value as TrowelMetadata
 		throw new Error('issue body contains invalid Trowel metadata JSON')
 	}
 
@@ -81,19 +90,48 @@ export const createIssueStorage: StorageFactory = (deps) => {
 	}
 
 	async function sliceFromSubIssue(issue: SubIssueArtifact): Promise<Slice> {
-		const totalBlockedBy = issue.issue_dependencies_summary?.total_blocked_by ?? 0
-		const blockedBy = totalBlockedBy === 0 ? [] : (await deps.gh.listBlockedBy(issue.number)).map((b) => String(b.number))
 		const source = `issue #${issue.number}`
 		return {
 			id: String(issue.number),
 			title: issue.title,
 			body: bodyWithoutMetadata(issue.body),
-			closedAt: issue.closed_at ?? issue.closedAt ?? null,
+			closedAt: issueClosedAt(issue),
 			implementedAt: optionalMetadataStringOrNull(issue.body, source, 'implementedAt'),
 			auditedAt: optionalMetadataStringOrNull(issue.body, source, 'auditedAt'),
 			sliceBranch: requiredMetadataStringOrNull(issue.body, source, 'sliceBranch'),
-			readyForAgent: issue.labels.some((l) => l.name === deps.labels.readyForAgent),
-			blockedBy,
+			readyForAgent: issueHasLabel(issue, deps.labels.readyForAgent),
+			blockedBy: await blockedByNumbers(issue),
+		}
+	}
+
+	function issueClosedAt(issue: SubIssueArtifact): string | null {
+		return issue.closed_at ?? issue.closedAt ?? null
+	}
+
+	function issueHasLabel(issue: SubIssueArtifact, label: string): boolean {
+		return issue.labels.some((l) => l.name === label)
+	}
+
+	async function blockedByNumbers(issue: SubIssueArtifact): Promise<string[]> {
+		const totalBlockedBy = issue.issue_dependencies_summary?.total_blocked_by ?? 0
+		return totalBlockedBy === 0 ? [] : (await deps.gh.listBlockedBy(issue.number)).map((b) => String(b.number))
+	}
+
+	async function currentBlockersByNumber(issueNumber: number): Promise<Map<string, number>> {
+		return new Map((await deps.gh.listBlockedBy(issueNumber)).map((b) => [String(b.number), b.id]))
+	}
+
+	async function removeDroppedBlockers(issueNumber: number, currentByNumber: Map<string, number>, target: Set<string>): Promise<void> {
+		for (const [number, internalId] of currentByNumber) {
+			if (!target.has(number)) await deps.gh.removeBlockedBy(issueNumber, internalId)
+		}
+	}
+
+	async function addNewBlockers(issueNumber: number, currentByNumber: Map<string, number>, blockedBy: string[]): Promise<void> {
+		for (const blockerId of blockedBy) {
+			if (currentByNumber.has(blockerId)) continue
+			const blocker = await deps.gh.viewIssue(entityIdToGhNumber(blockerId))
+			await deps.gh.addBlockedBy(issueNumber, blocker.internalId)
 		}
 	}
 
@@ -133,18 +171,10 @@ export const createIssueStorage: StorageFactory = (deps) => {
 			await deps.gh.editIssueLabels(entityIdToGhNumber(sliceId), opts)
 		},
 		setSliceBlockers: async (_changeId, sliceId, blockedBy) => {
-			const current = await deps.gh.listBlockedBy(entityIdToGhNumber(sliceId))
-			const currentByNumber = new Map(current.map((b) => [String(b.number), b.id]))
-			const target = new Set(blockedBy)
-			for (const [number, internalId] of currentByNumber) {
-				if (!target.has(number)) await deps.gh.removeBlockedBy(entityIdToGhNumber(sliceId), internalId)
-			}
-			for (const blockerId of blockedBy) {
-				const number = entityIdToGhNumber(blockerId)
-				if (currentByNumber.has(blockerId)) continue
-				const blocker = await deps.gh.viewIssue(number)
-				await deps.gh.addBlockedBy(entityIdToGhNumber(sliceId), blocker.internalId)
-			}
+			const issueNumber = entityIdToGhNumber(sliceId)
+			const currentByNumber = await currentBlockersByNumber(issueNumber)
+			await removeDroppedBlockers(issueNumber, currentByNumber, new Set(blockedBy))
+			await addNewBlockers(issueNumber, currentByNumber, blockedBy)
 		},
 		markSliceImplemented: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { implementedAt: at }),
 		markSliceAudited: async (_changeId, sliceId, at) => updateIssueMetadata(sliceId, { auditedAt: at }),
@@ -158,19 +188,19 @@ export const createIssueStorage: StorageFactory = (deps) => {
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { recordingGhOps } = await import('../../test-utils/gh-ops-recorder.ts')
-	const { noopGitOps } = await import('../../test-utils/git-ops-fixtures.ts')
+	const { recordingGhOps } = await import('../../../test-utils/gh-ops-recorder')
+	const { noopGitOps } = await import('../../../test-utils/git-ops-fixtures')
 
-	type GhOverrides = Partial<import('../../utils/gh-ops.ts').GhOps>
+	type GhOverrides = Partial<import('../../../utils/gh-ops').GhOps>
 	function trowelBody(body: string, metadata: Record<string, unknown>): string {
 		return `${body}\n\n<!-- trowel:${JSON.stringify(metadata)} -->`
 	}
 
-	function createdIssue(number: number, title: string): Awaited<ReturnType<import('../../utils/gh-ops.ts').GhOps['createIssue']>> {
+	function createdIssue(number: number, title: string): Awaited<ReturnType<import('../../../utils/gh-ops').GhOps['createIssue']>> {
 		return { number, internalId: number * 1000, title, url: `#${number}` }
 	}
 
-	function issueRecord(number: number, internalId: number): Awaited<ReturnType<import('../../utils/gh-ops.ts').GhOps['viewIssue']>> {
+	function issueRecord(number: number, internalId: number): Awaited<ReturnType<import('../../../utils/gh-ops').GhOps['viewIssue']>> {
 		return { internalId, number, title: `Issue ${number}`, state: 'open', body: '', createdAt: '', closedAt: null }
 	}
 
@@ -366,7 +396,7 @@ if (import.meta.vitest) {
 					readyForAgent: true,
 					blockedBy: [],
 					sliceBranch: 'change-42/slice-57-implement-parser',
-					},
+				},
 				{
 					id: '58',
 					title: 'Wire CLI',
@@ -377,7 +407,7 @@ if (import.meta.vitest) {
 					readyForAgent: false,
 					blockedBy: [],
 					sliceBranch: 'change-42/slice-58-wire-cli',
-					},
+				},
 			])
 		})
 
