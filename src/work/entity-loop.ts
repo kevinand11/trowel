@@ -24,22 +24,27 @@ export type EntityLoopDeps = {
 	projectRoot?: string
 }
 
+export type EntityLoopOptions = {
+	loop?: boolean
+	sleep?: (ms: number) => Promise<void>
+}
+
 /**
  * Top-level dispatch entry for `trowel change work`. Work never runs Close-out,
  * Change finalization, or Cleanup; it only runs open Change Slice work/finalization
  * and reports the next explicit Change-level action for non-open computed states.
  */
-export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps): Promise<void> {
-	await runChangeEntity(entity, deps)
+export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps, opts: EntityLoopOptions = {}): Promise<void> {
+	await runChangeEntity(entity, deps, opts)
 }
 
-async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
+async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps, opts: EntityLoopOptions): Promise<void> {
 	const initial = await readChangeWorkState(entity, deps)
 	if (reportIfNotOpen(initial, deps)) return
-	await runLoop(entity.id, loopDepsForChange(entity, deps))
+	await runLoop(entity.id, loopDepsForChange(entity, deps, opts))
 	const after = await readChangeWorkState(entity, deps)
 	if (reportIfNotOpen(after, deps)) return
-	if (after.slices.length === 0) deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
+	if (after.slices.length === 0 && !opts.loop) deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
 }
 
 type ChangeWorkState = { change: Change; slices: ClassifiedSlice[]; state: ChangeState }
@@ -82,7 +87,7 @@ function nonOpenChangeMessage(changeId: string, state: ChangeState): string {
 	}
 }
 
-function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): LoopDeps {
+function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps, opts: EntityLoopOptions): LoopDeps {
 	return {
 		storage: deps.storage,
 		git: deps.git,
@@ -92,7 +97,20 @@ function loopDepsForChange(entity: Extract<LoopEntity, { kind: 'change' }>, deps
 		log: deps.log,
 		config: deps.config,
 		projectRoot: deps.projectRoot,
+		idlePolling: opts.loop ? idlePollingFor(entity, deps, opts) : undefined,
 	}
+}
+
+function idlePollingFor(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps, opts: EntityLoopOptions): NonNullable<LoopDeps['idlePolling']> {
+	return {
+		pollSeconds: deps.config.loopPollSeconds,
+		sleep: opts.sleep ?? sleep,
+		shouldContinue: async () => (await readChangeWorkState(entity, deps)).state === 'open',
+	}
+}
+
+async function sleep(ms: number): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 if (import.meta.vitest) {
@@ -122,6 +140,7 @@ if (import.meta.vitest) {
 		perSliceBranches: true,
 		maxConcurrent: null,
 		mergeNoVerify: false,
+		loopPollSeconds: 30,
 	}
 
 	const doneSlice: ClassifiedSlice = {

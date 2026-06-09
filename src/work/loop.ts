@@ -16,7 +16,14 @@ export type LoopConfig = {
 	perSliceBranches: boolean
 	maxConcurrent: number | null
 	mergeNoVerify: boolean
+	loopPollSeconds: number
 	needsRevisionLabel?: string
+}
+
+export type LoopIdlePolling = {
+	pollSeconds: number
+	sleep: (ms: number) => Promise<void>
+	shouldContinue: () => Promise<boolean>
 }
 
 export type LoopDeps = {
@@ -28,6 +35,7 @@ export type LoopDeps = {
 	log: (msg: string) => void
 	config: LoopConfig
 	projectRoot?: string
+	idlePolling?: LoopIdlePolling
 }
 
 /**
@@ -104,8 +112,9 @@ export async function runLoop(changeId: string, deps: LoopDeps): Promise<void> {
 	const state = loopState(changeId, deps)
 	while (true) {
 		await fillClaimSlots(state)
-		if (await stopIfIdle(state)) return
+		if (await handleIdle(state)) return
 		if (state.running.size === 0) continue
+		state.idlePolls = 0
 		await Promise.race(state.running.values())
 	}
 }
@@ -121,6 +130,7 @@ type WorkerLoopState = {
 	config: ClassifySliceConfig
 	limit: number
 	claims: number
+	idlePolls: number
 }
 
 function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
@@ -142,6 +152,7 @@ function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 		config: { pr: config.pr, audit: config.audit, perSliceBranches: config.perSliceBranches },
 		limit: effectiveConcurrency(config.maxConcurrent),
 		claims: 0,
+		idlePolls: 0,
 	}
 }
 
@@ -169,7 +180,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 	}
 }
 
-async function stopIfIdle(state: WorkerLoopState): Promise<boolean> {
+async function handleIdle(state: WorkerLoopState): Promise<boolean> {
 	if (state.running.size > 0) return false
 	const remaining = await findNextActionableSlice(
 		state.fetchEnriched,
@@ -182,8 +193,24 @@ async function stopIfIdle(state: WorkerLoopState): Promise<boolean> {
 		state.deps.changeBranch,
 	)
 	if (remaining) return false
-	state.deps.log(`${state.tag} no actionable slices; exiting after ${state.claims} claim(s)`)
-	return true
+	const polling = state.deps.idlePolling
+	if (!polling) {
+		state.deps.log(`${state.tag} no actionable slices; exiting after ${state.claims} claim(s)`)
+		return true
+	}
+	if (!(await polling.shouldContinue())) return true
+	state.idlePolls += 1
+	logIdlePoll(state, polling.pollSeconds)
+	await polling.sleep(polling.pollSeconds * 1000)
+	return false
+}
+
+function logIdlePoll(state: WorkerLoopState, pollSeconds: number): void {
+	if (state.idlePolls === 1) {
+		state.deps.log(`${state.tag} no actionable slices; polling every ${pollSeconds}s`)
+	} else if (state.idlePolls % 10 === 0) {
+		state.deps.log(`${state.tag} still no actionable slices after ${state.idlePolls} polls`)
+	}
 }
 
 if (import.meta.vitest) {
@@ -312,7 +339,7 @@ if (import.meta.vitest) {
 			changeBranch: 'change-branch',
 			spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 			log: () => {},
-			config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+			config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 			...overrides,
 		}
 	}
@@ -331,7 +358,7 @@ if (import.meta.vitest) {
 					live--
 					return { verdict: 'partial', commits: 0 }
 				},
-				config: { pr: false, audit: false, perSliceBranches, maxConcurrent, mergeNoVerify: false },
+				config: { pr: false, audit: false, perSliceBranches, maxConcurrent, mergeNoVerify: false, loopPollSeconds: 30 },
 			}),
 		)
 		return peak
@@ -369,7 +396,7 @@ if (import.meta.vitest) {
 				makeDeps(storage, {
 					gh,
 					spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
-					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeDefined()
@@ -427,7 +454,7 @@ if (import.meta.vitest) {
 						expect(turnIn.feedback).toEqual([])
 						return { verdict: 'no-work-needed', commits: 0 }
 					},
-					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(roles).toEqual(['review'])
@@ -452,7 +479,7 @@ if (import.meta.vitest) {
 					log: (m) => {
 						logs.push(m)
 					},
-					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(spawnCalls).toBeGreaterThanOrEqual(2) // both slices were attempted
@@ -473,13 +500,40 @@ if (import.meta.vitest) {
 					log: (m) => {
 						if (/^\[work change-p1\] claim \d+:/.test(m)) claims++
 					},
-					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			// One claim: slice tried once, returned partial, added to skip set.
 			expect(claims).toBe(1)
 			const after = classifySlices(await storage.findSlices('p1'))
 			expect(after[0]!.state).toBe('open')
+		})
+
+		test('polling work mode preserves the partial skip set across idle polls', async () => {
+			const slice = makeSlice({ id: 's1' })
+			const storage = makeStorage({ slices: [slice] })
+			let spawnCalls = 0
+			let idleChecks = 0
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					spawnTurn: async () => {
+						spawnCalls += 1
+						return { verdict: 'partial', commits: 0 }
+					},
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
+					idlePolling: {
+						pollSeconds: 30,
+						sleep: async () => {},
+						shouldContinue: async () => {
+							idleChecks += 1
+							return idleChecks < 2
+						},
+					},
+				}),
+			)
+			expect(spawnCalls).toBe(1)
+			expect(idleChecks).toBe(2)
 		})
 
 		test('stuck slice (always partial) does not block sibling ready slices in subsequent iterations', async () => {
@@ -494,7 +548,7 @@ if (import.meta.vitest) {
 						calls.push(s.id)
 						return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
 					},
-					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(calls).toContain('fine')
@@ -522,7 +576,7 @@ if (import.meta.vitest) {
 						return { verdict: 'partial', commits: 0 }
 					},
 					log: (m) => logs.push(m),
-					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			// a fails in prepareImplement (no sandbox spawn); b spawns once and is skipped after partial.
@@ -552,7 +606,7 @@ if (import.meta.vitest) {
 						live -= 1
 						return { verdict: 'ready', commits: 1 }
 					},
-					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: 2, mergeNoVerify: false },
+					config: { pr: false, audit: false, perSliceBranches: false, maxConcurrent: 2, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(peak).toBe(1)
@@ -598,7 +652,7 @@ if (import.meta.vitest) {
 				makeDeps(storage, {
 					gh,
 					spawnTurn: workerPoolSpawnTurn(events, slowGate, releaseSlow),
-					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: 2, mergeNoVerify: false },
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: 2, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(events.indexOf('audit:fast:start')).toBeGreaterThan(events.indexOf('implement:fast:finish'))
@@ -624,7 +678,7 @@ if (import.meta.vitest) {
 						return { verdict: 'ready', commits: 0 }
 					},
 					gh,
-					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 
@@ -645,7 +699,7 @@ if (import.meta.vitest) {
 				makeDeps(storage, {
 					spawnTurn: async () => ({ verdict: 'ready', commits: 1 }),
 					gh,
-					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false },
+					config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
 				}),
 			)
 			expect(outcome).toBe('no-work')

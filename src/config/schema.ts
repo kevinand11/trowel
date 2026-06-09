@@ -53,6 +53,7 @@ export const partialConfigPipe = v.object({
 			perSliceBranches: v.optional(v.boolean()),
 			worktreeCleanupAge: v.optional(v.string()),
 			mergeNoVerify: v.optional(v.boolean()),
+			loopPollSeconds: v.optional(v.number().pipe(v.int()).pipe(v.gte(1)).pipe(v.lte(3600))),
 		}),
 	),
 })
@@ -107,6 +108,7 @@ export const defaultConfig: Config = {
 		perSliceBranches: true,
 		worktreeCleanupAge: '24h',
 		mergeNoVerify: false,
+		loopPollSeconds: 30,
 	},
 }
 
@@ -150,9 +152,10 @@ if (import.meta.vitest) {
 			expect(defaultConfig.agent.model).toBe('claude-opus-4-6')
 		})
 
-		test('work loop defaults: Auditing off, 24h worktree cleanup', () => {
+		test('work loop defaults: Auditing off, 24h worktree cleanup, 30s loop polling', () => {
 			expect(defaultConfig.work.audit).toBe(false)
 			expect(defaultConfig.work.worktreeCleanupAge).toBe('24h')
+			expect(defaultConfig.work.loopPollSeconds).toBe(30)
 		})
 
 		test('work.perSliceBranches defaults to true (slice-branches by default)', () => {
@@ -223,6 +226,17 @@ if (import.meta.vitest) {
 			expect(v.validate(partialConfigPipe, { work: { perSliceBranches: false } }).valid).toBe(true)
 		})
 
+		test('accepts bounded work.loopPollSeconds', () => {
+			expect(v.validate(partialConfigPipe, { work: { loopPollSeconds: 1 } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe, { work: { loopPollSeconds: 3600 } }).valid).toBe(true)
+		})
+
+		test('rejects invalid work.loopPollSeconds', () => {
+			expect(v.validate(partialConfigPipe, { work: { loopPollSeconds: 0 } }).valid).toBe(false)
+			expect(v.validate(partialConfigPipe, { work: { loopPollSeconds: 3601 } }).valid).toBe(false)
+			expect(v.validate(partialConfigPipe, { work: { loopPollSeconds: 1.5 } }).valid).toBe(false)
+		})
+
 		test('rejects work.audit when non-boolean', () => {
 			expect(v.validate(partialConfigPipe, { work: { audit: 'sometimes' } }).valid).toBe(false)
 		})
@@ -289,6 +303,13 @@ if (import.meta.vitest) {
 			}
 			const types = schema.properties.turn.properties.maxConcurrent.oneOf.map((b) => b.type)
 			expect(types).toEqual(expect.arrayContaining(['number', 'null']))
+		})
+
+		test('work.loopPollSeconds emits integer bounds', () => {
+			const schema = emitConfigJsonSchema() as {
+				properties: { work: { properties: { loopPollSeconds: { type: string; minimum: number; maximum: number } } } }
+			}
+			expect(schema.properties.work.properties.loopPollSeconds).toMatchObject({ type: 'integer', minimum: 1, maximum: 3600 })
 		})
 
 		test('top-level forbids additional properties (catches typos in editors)', () => {

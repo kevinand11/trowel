@@ -5,24 +5,24 @@ import { buildLoopWiring } from '../_loop-wiring.ts'
 
 type WorkRuntime = {
 	storage: Storage
-	runEntity: (entity: LoopEntity) => Promise<void>
+	runEntity: (entity: LoopEntity, opts?: { loop?: boolean }) => Promise<void>
 	stdout: (s: string) => void
 }
 
-async function runWork(id: string, rt: WorkRuntime): Promise<void> {
+async function runWork(id: string, rt: WorkRuntime, opts: { loop?: boolean } = {}): Promise<void> {
 	const change = await rt.storage.findChange(id)
 	if (!change) throw new Error(`Change '${id}' not found`)
-	await rt.runEntity({ kind: 'change', id, changeBranch: change.changeBranch, targetBranch: change.targetBranch, title: change.title })
+	await rt.runEntity({ kind: 'change', id, changeBranch: change.changeBranch, targetBranch: change.targetBranch, title: change.title }, { loop: opts.loop })
 }
 
-export async function work(id: string, opts: { storage?: string; harness?: HarnessKind }): Promise<void> {
+export async function work(id: string, opts: { storage?: string; harness?: HarnessKind; loop?: boolean }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
 		await runWork(id, {
 			storage: wiring.storage,
 			runEntity: wiring.runEntityLoopFor,
 			stdout: (s) => process.stdout.write(s),
-		})
+		}, { loop: opts.loop })
 	} catch (e) {
 		process.stderr.write(`trowel change work: ${(e as Error).message}\n`)
 		process.exit(1)
@@ -55,6 +55,13 @@ if (import.meta.vitest) {
 			const calls: LoopEntity[] = []
 			await runWork('abc123', { storage, runEntity: async (e) => { calls.push(e) }, stdout: () => {} })
 			expect(calls).toEqual([{ kind: 'change', id: 'abc123', changeBranch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' }])
+		})
+
+		test('passes loop mode to the entity loop', async () => {
+			const storage = makeStorage({ change: { id: 'abc123', changeBranch: 'change/abc123-feature', targetBranch: 'release/1.2', title: 'Feature' } })
+			const options: Array<{ loop?: boolean } | undefined> = []
+			await runWork('abc123', { storage, runEntity: async (_e, opts) => { options.push(opts) }, stdout: () => {} }, { loop: true })
+			expect(options).toEqual([{ loop: true }])
 		})
 
 		test('throws when Change is not found', async () => {

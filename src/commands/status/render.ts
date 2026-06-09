@@ -38,20 +38,6 @@ function stateGuidance(change: StatusChange): string {
 	}
 }
 
-export function renderStatusSlice(change: Change, slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string {
-	const lines: string[] = []
-	lines.push(`Slice ${slice.id}  ${slice.title}`)
-	lines.push(`Change:  ${change.id}  ${change.title}`)
-	lines.push(`State:   ${slice.state}`)
-	lines.push(`closed-at:       ${slice.closedAt ?? '(none)'}`)
-	lines.push(`implemented-at:  ${slice.implementedAt ?? '(none)'}`)
-	lines.push(`audited-at:      ${slice.auditedAt ?? '(none)'}`)
-	lines.push(`ready-for-agent: ${slice.readyForAgent}`)
-	lines.push(`needs-revision:  ${slice.needsRevision}`)
-	lines.push(...blockedByLines(slice, siblings))
-	return `${lines.join('\n')}\n`
-}
-
 function stateCountsFor(slices: ClassifiedSlice[]): Record<SliceState, number> {
 	const counts = emptySliceStateCounts()
 	for (const s of slices) counts[s.state]++
@@ -94,13 +80,3 @@ function unmetBlockers(s: ClassifiedSlice, byId: Map<string, ClassifiedSlice>): 
 	})
 }
 
-function blockedByLines(slice: ClassifiedSlice, siblings: ClassifiedSlice[]): string[] {
-	if (slice.blockedBy.length === 0) return []
-	const byId = bySliceId(siblings)
-	return ['', 'Blocked by:', ...slice.blockedBy.map((id) => blockedByLine(id, byId))]
-}
-
-function blockedByLine(id: string, byId: Map<string, ClassifiedSlice>): string {
-	const dep = byId.get(id)
-	return dep ? `  ${id.padEnd(6)}  ${dep.state.padEnd(14)}  ${dep.title}` : `  ${id.padEnd(6)}  (not found)`
-}

@@ -1,16 +1,13 @@
 import { Command } from 'commander'
 
 import { abortChange } from './commands/abort/index.ts'
-import { audit } from './commands/audit.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
-import { implement } from './commands/implement.ts'
 import { init } from './commands/init.ts'
 import { list } from './commands/list/index.ts'
-import { review } from './commands/review.ts'
 import { shipChange } from './commands/ship/index.ts'
 import { start } from './commands/start.ts'
-import { statusChange, statusSlice } from './commands/status/index.ts'
+import { statusChange } from './commands/status/index.ts'
 import { work } from './commands/work/index.ts'
 
 async function initialRequest(requestWords: string[]): Promise<string | undefined> {
@@ -73,6 +70,7 @@ export function run(): void {
 		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
+		.option('--loop', 'Keep polling for newly actionable Slice work')
 		.action(async (changeId: string, opts) => {
 			await work(changeId, opts)
 		})
@@ -93,51 +91,6 @@ export function run(): void {
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (changeId: string, opts) => {
 			await abortChange(changeId, opts)
-		})
-
-	const sliceCmd = program.command('slice').description('Manage Slices')
-
-	sliceCmd
-		.command('status')
-		.description("Show a single slice's state (parent Change, state, blockers)")
-		.argument('<change-id>')
-		.argument('<slice-id>')
-		.option('--storage <kind>', 'Override project storage')
-		.action(async (changeId: string, sliceId: string, opts) => {
-			await statusSlice(changeId, sliceId, opts)
-		})
-
-	sliceCmd
-		.command('implement')
-		.description('Run implementer on one slice')
-		.argument('<change-id>')
-		.argument('<slice-id>')
-		.option('--storage <kind>', 'Override project storage')
-		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (changeId: string, sliceId: string, opts) => {
-			await implement(changeId, sliceId, opts)
-		})
-
-	sliceCmd
-		.command('audit')
-		.description('Run auditor on one implemented slice')
-		.argument('<change-id>')
-		.argument('<slice-id>')
-		.option('--storage <kind>', 'Override project storage')
-		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (changeId: string, sliceId: string, opts) => {
-			await audit(changeId, sliceId, opts)
-		})
-
-	sliceCmd
-		.command('review')
-		.description("Run Reviewer on a slice with PR feedback marked needs-revision")
-		.argument('<change-id>')
-		.argument('<slice-id>')
-		.option('--storage <kind>', 'Override project storage')
-		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (changeId: string, sliceId: string, opts) => {
-			await review(changeId, sliceId, opts)
 		})
 
 	program

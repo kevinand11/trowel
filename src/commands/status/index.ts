@@ -1,6 +1,6 @@
 import path from 'node:path'
 
-import { renderStatus, renderStatusSlice } from './render.ts'
+import { renderStatus } from './render.ts'
 import { loadConfig } from '../../config'
 import { getStorage } from '../../storages/registry.ts'
 import type { Change, Slice, Storage, StorageDeps } from '../../storages/types.ts'
@@ -96,51 +96,6 @@ async function exitOnStatusError(fn: () => Promise<void>): Promise<void> {
 export async function statusChange(changeId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
 	const { storage, gh, git, pr, needsRevisionLabel } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
 	await exitOnStatusError(() => runStatus(changeId, statusRuntime(storage, gh, git, pr, deps.stdout, needsRevisionLabel)))
-}
-
-export async function statusSlice(changeId: string, sliceId: string, opts: { storage?: string }, deps: StatusCommandDeps = {}): Promise<void> {
-	const { storage, gh, git, pr, needsRevisionLabel } = await (deps.buildStatusStorage ?? buildStatusStorage)(opts)
-	await exitOnStatusError(() => runStatusSlice(changeId, sliceId, statusRuntime(storage, gh, git, pr, deps.stdout, needsRevisionLabel)))
-}
-
-type StatusSliceRuntime = {
-	storage: Storage
-	gh: GhOps
-	git: ReadOnlyGitFacts
-	pr: boolean
-	needsRevisionLabel?: string
-	stdout: (s: string) => void
-}
-
-type StatusSliceContext = { change: Change; target: ClassifiedSlice; siblings: ClassifiedSlice[] }
-
-async function runStatusSlice(changeId: string, sliceId: string, rt: StatusSliceRuntime): Promise<void> {
-	const context = await statusSliceContext(changeId, sliceId, rt)
-	writeStatusText(rt.stdout, renderStatusSlice(context.change, context.target, context.siblings))
-}
-
-async function statusSliceContext(changeId: string, sliceId: string, rt: StatusSliceRuntime): Promise<StatusSliceContext> {
-	const change = await findChangeForStatusSlice(sliceId, changeId, rt)
-	const siblings = await classifySlicesForChange({
-		storage: rt.storage,
-		gh: rt.gh,
-		changeId,
-		pr: rt.pr,
-		needsRevisionLabel: rt.needsRevisionLabel,
-	})
-	return { change, target: targetStatusSlice(changeId, sliceId, siblings), siblings }
-}
-
-async function findChangeForStatusSlice(sliceId: string, changeId: string, rt: StatusSliceRuntime): Promise<Change> {
-	const change = await rt.storage.findChange(changeId)
-	if (!change) throw new Error(`slice '${sliceId}' references missing Change '${changeId}'`)
-	return change
-}
-
-function targetStatusSlice(changeId: string, sliceId: string, siblings: ClassifiedSlice[]): ClassifiedSlice {
-	const target = siblings.find((s) => s.id === sliceId)
-	if (!target) throw new Error(`slice '${sliceId}' not found in Change '${changeId}'`)
-	return target
 }
 
 function writeStatusText(stdout: (s: string) => void, text: string): void {
@@ -312,45 +267,6 @@ if (import.meta.vitest) {
 			expect(buf).toContain('State:               open')
 		})
 
-		test('slice status completes while the Mutation lock is held elsewhere', async () => {
-			const rawSlice = rawStatusSlice()
-			const storage: Storage = {
-				createChange: async () => {
-					throw new Error('nyi')
-				},
-				findChange: async (id) => (id === change.id ? change : null),
-				listChanges: async () => [],
-				finalizeChange: async () => {},
-			abortChange: async () => {},
-				updateChangeMetadata: async () => {},
-				createSlice: async () => {
-					throw new Error('nyi')
-				},
-				findSlices: async () => [rawSlice],
-				setSliceReadyForAgent: async () => {},
-			setSliceBlockers: async () => {},
-			markSliceImplemented: async () => {},
-			markSliceAudited: async () => {},
-			finalizeSlice: async () => {},
-			abortSlice: async () => {},
-				updateSliceMetadata: async () => {},
-			}
-			const { gh } = recordingGhOps()
-			let buf = ''
-			await expectCompletesWhileMutationLockHeld(async (projectRoot) => {
-				await statusSlice(
-					change.id,
-					rawSlice.id,
-					{},
-					{
-						buildStatusStorage: async () => ({ storage, projectRoot, gh, git: unmergedGit(), pr: false }),
-						stdout: (s) => (buf += s),
-					},
-				)
-			})
-			expect(buf).toContain(`Slice ${rawSlice.id}  ${rawSlice.title}`)
-		})
-
 		test('change status uses branch-stable git facts without mutating the checkout', async () => {
 			const doneSlice = rawStatusSlice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })
 			const storage = fakeStorage({ change, rawSlices: [doneSlice] })
@@ -378,53 +294,6 @@ if (import.meta.vitest) {
 			expect(gitCalls).toContain(`fetch(${change.changeBranch})`)
 			expect(gitCalls).toContain('fetch(main)')
 			expect(gitCalls).toContain(`commitsAhead(origin/${change.changeBranch},origin/main)`)
-			expectNoBranchMutations(gitCalls)
-		})
-
-		test('slice status does not mutate branches while reading Slice state', async () => {
-			const rawSlice = rawStatusSlice()
-			const storage: Storage = {
-				createChange: async () => {
-					throw new Error('nyi')
-				},
-				findChange: async (id) => (id === change.id ? change : null),
-				listChanges: async () => [],
-				finalizeChange: async () => {},
-			abortChange: async () => {},
-				updateChangeMetadata: async () => {},
-				createSlice: async () => {
-					throw new Error('nyi')
-				},
-				findSlices: async () => [rawSlice],
-				setSliceReadyForAgent: async () => {},
-			setSliceBlockers: async () => {},
-			markSliceImplemented: async () => {},
-			markSliceAudited: async () => {},
-			finalizeSlice: async () => {},
-			abortSlice: async () => {},
-				updateSliceMetadata: async () => {},
-			}
-			const { gh } = recordingGhOps()
-			const gitCalls: string[] = []
-			let buf = ''
-
-			await statusSlice(
-				change.id,
-				rawSlice.id,
-				{},
-				{
-					buildStatusStorage: async () => ({
-						storage,
-						projectRoot: process.cwd(),
-						gh,
-						git: branchStableGitFacts(branchSensitiveGit(gitCalls)),
-						pr: false,
-					}),
-					stdout: (s) => (buf += s),
-				},
-			)
-
-			expect(buf).toContain(`Slice ${rawSlice.id}  ${rawSlice.title}`)
 			expectNoBranchMutations(gitCalls)
 		})
 
@@ -587,80 +456,6 @@ if (import.meta.vitest) {
 				slice({ id: 'r1', state: 'open', readyForAgent: true }),
 			])
 			expect(out).toContain('2 done · 1 open')
-		})
-	})
-
-	describe('runStatusSlice', () => {
-		function sliceStorage(change: Change, rawSlices: Slice[]): Storage {
-			return {
-				createChange: async () => ({ id: 'x', title: 'x' }),
-				findChange: async (id) => (id === change.id ? change : null),
-				listChanges: async () => [],
-				finalizeChange: async () => {},
-			abortChange: async () => {},
-				updateChangeMetadata: async () => {},
-				createSlice: async () => {
-					throw new Error('nyi')
-				},
-				findSlices: async () => rawSlices,
-				setSliceReadyForAgent: async () => {},
-			setSliceBlockers: async () => {},
-			markSliceImplemented: async () => {},
-			markSliceAudited: async () => {},
-			finalizeSlice: async () => {},
-			abortSlice: async () => {},
-				updateSliceMetadata: async () => {},
-			}
-		}
-
-		const rawSlice = (overrides: Partial<ClassifiedSlice>): ClassifiedSlice => ({
-			id: '42',
-			title: 'Implement tab parser',
-			body: '',
-			state: 'open',
-			closedAt: null,
-			implementedAt: null,
-			auditedAt: null,
-			readyForAgent: true,
-			needsRevision: false,
-			blockedBy: [],
-			sliceBranch: `change-ab12cd/slice-${overrides.id ?? 's1'}-a-slice`,
-			prState: null,
-			...overrides,
-		})
-
-		async function renderSliceStatus(slices: Slice[]): Promise<string> {
-			const storage = sliceStorage(change, slices)
-			const { gh } = recordingGhOps()
-			let buf = ''
-			await runStatusSlice(change.id, '42', { storage, gh, git: unmergedGit(), pr: false, stdout: (s) => (buf += s) })
-			return buf
-		}
-
-		test('renders slice header + parent Change ref + state', async () => {
-			const buf = await renderSliceStatus([rawSlice({ id: '42' })])
-			expect(buf).toContain('Slice 42  Implement tab parser')
-			expect(buf).toContain(`Change:  ${change.id}  ${change.title}`)
-			expect(buf).toContain('State:   open')
-		})
-
-		test('renders blockedBy with each blocker state', async () => {
-			const buf = await renderSliceStatus([
-				rawSlice({ id: '40', title: 'Migration', state: 'done', closedAt: 'x' }),
-				rawSlice({ id: '41', title: 'Constants', state: 'open', readyForAgent: true }),
-				rawSlice({ id: '42', title: 'Tab parser', state: 'blocked', blockedBy: ['40', '41'] }),
-			])
-			expect(buf).toContain('Blocked by:')
-			expect(buf).toMatch(/40.*done.*Migration/)
-			expect(buf).toMatch(/41.*open.*Constants/)
-		})
-
-		test('errors when slice id not found', async () => {
-			const storage = sliceStorage(change, [])
-			const { gh } = recordingGhOps()
-			await expect(runStatusSlice(change.id, '999', { storage, gh, git: unmergedGit(), pr: false, stdout: () => {} })).rejects.toThrow(
-				/slice '999' not found in Change 'ab12cd'/,
-			)
 		})
 	})
 }

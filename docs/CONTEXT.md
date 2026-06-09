@@ -32,6 +32,7 @@ A user-configurable behavior toggle. Current flags:
 - **`ship.mergeabilityPollSeconds`**: bounds how long Ship waits for GitHub to compute unknown PR mergeability before deciding whether to offer a merge prompt; default 30, max 600, and 0 disables polling.
 - **`work.audit`**: runs Auditing after implementation and before Slice integration or making a Slice PR ready.
 - **`work.perSliceBranches`**: each Slice gets its own stored **Slice branch** (`<changeId>/<sliceId>-<slug>` for new Slices). When false, each Slice stores the parent **Change branch** as its **Slice branch** and concurrency is one.
+- **`work.loopPollSeconds`**: the integer sleep interval used by **Polling work mode** between no-actionable-work refetches; default 30, min 1, max 3600.
 _Avoid_: Option, setting, usePrs, review.
 
 **Slice**:
@@ -71,7 +72,7 @@ The housekeeping step run by Abort and Ship that removes all trowel-managed Work
 _Avoid_: Close-out, reconciliation, garbage collection.
 
 **Entity read command**:
-A command that displays Change or Slice state without acquiring the **Mutation lock**, writing storage, or switching the main working tree branch. Entity read commands are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <change-id> <slice-id>`.
+A command that displays Change state without acquiring the **Mutation lock**, writing storage, or switching the main working tree branch. Entity read commands are `trowel change list` and `trowel change status <change-id>`. Slice state is inspected through Change status rather than a separate Slice command surface.
 _Avoid_: Refresh, reconcile, sync.
 
 **Finalization**:
@@ -98,7 +99,7 @@ _Avoid_: Read lock, status lock, Git lock, Storage lock, per-write lock.
 ### AFK loop
 
 **AFK loop**:
-The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `audit`, or `review`), releases the slot, then refetches effective state before the next claim. The loop exits successfully when no actionable Slices remain; if every Slice is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
+The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `audit`, or `review`), releases the slot, then refetches effective state before the next claim. By default, the loop exits successfully when no actionable Slices remain; in **Polling work mode**, it waits and refetches instead. If every Slice is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
 _Avoid_: Sandcastle, agent runner.
 
 **Agent harness**:
@@ -112,6 +113,10 @@ _Avoid_: Agent review, PR review, reviewing.
 **Implementer / Auditor / Reviewer**:
 The three agent roles inside the **AFK loop**. Implementer writes the first cut, Auditor performs **Auditing**, and Reviewer revises a Slice in response to PR review feedback when the Slice is in `needs-revision`.
 _Avoid_: Worker, Reviser, old PR-feedback role names.
+
+**Polling work mode**:
+The `trowel change work <id> --loop` mode where the **AFK loop** stays alive after finding no actionable **Slices**, sleeps for `work.loopPollSeconds`, then refetches effective Change and Slice state to look for newly actionable Slice work. Failed or partial Slices remain skipped for the lifetime of the running Polling work mode process; retrying them requires restarting the command.
+_Avoid_: Watch mode, pooling, daemon.
 
 **Turn**:
 The bounded execution of one agent role against one Slice. A Turn runs in a trowel-managed git worktree, receives `.trowel/turn-in.json`, and must write `.trowel/turn-out.json`.
@@ -150,7 +155,7 @@ _Avoid_: Checkout, sandbox directory.
 - Slice finalization runs in the work loop when it encounters a landed Slice; after finalization the loop refetches and may report the parent Change as ready in the same invocation. Status/list may report `landed` but do not finalize Slices.
 - For a Slice with a non-null **Slice branch**, a missing remote Slice branch is not a lifecycle signal; a merged Slice PR proves `landed`, and without merged-PR proof the missing branch is stale infrastructure rather than evidence of `landed` or `done`.
 - Only **Ship** runs **Finalization** for a landed **Change** after a merged Close-out PR; **Entity read commands** may report `landed` but never finalize.
-- **Entity read commands** are `trowel change list`, `trowel change status <change-id>`, and `trowel slice status <change-id> <slice-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
+- **Entity read commands** are `trowel change list` and `trowel change status <change-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
 - A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages, but that value may be `null` until first implementation preparation. `prepareImplement` fills null Slice branch metadata using current config: when per-slice branches are enabled it fetches the latest remote Change branch, creates and pushes a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, then stores it; when per-slice branches are disabled it stores the parent Change's Change branch.
 - When per-slice branches are enabled the Slice branch value is a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, and when per-slice branches are disabled the value is the parent Change's Change branch.
@@ -159,7 +164,7 @@ _Avoid_: Checkout, sandbox directory.
 - User-facing output and internal domain types use **state** for Change and Slice lifecycle classifications; the word "bucket" is retired from the codebase.
 - Internal Change types use `changeBranch`, not ambiguous `branch`, for the stored **Change branch** field.
 - Change list has no state filter; it lists all Changes newest-first by `createdAt`, with each Change's computed state.
-- Change status shows the computed Change state, Target branch, Change branch, state-based guidance, and every Slice with its computed Slice state.
+- Change status shows the computed Change state, Target branch, Change branch, state-based guidance, and every Slice with its computed Slice state; there is no separate Slice command surface.
 - A Slice's terminal raw storage field is `closedAt: string | null`, not `state: OPEN | CLOSED`; Slice finalization sets it once the Slice has landed. Slice process milestones are `implementedAt: string | null` and `auditedAt: string | null`; `needsRevision` is not stored on the Slice.
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
@@ -179,7 +184,7 @@ _Avoid_: Checkout, sandbox directory.
 - **Abort** marks an `open` or `ready` Change abandoned, closes any open Slice PRs without merging, then runs **Cleanup**; if the Change is `in-flight`, Abort requires exact-id confirmation, closes the Close-out PR without merging, marks the Change closed, then runs Cleanup; if the Change is `aborted`, Abort runs Cleanup only; if the Change is `landed` or `done`, Abort refuses and tells the user to run Ship.
 - **Abort** uses `abort.comment` when closing GitHub issues, Slice PRs, and in-flight Close-out PRs; if the comment is `null`, it closes silently.
 - **Ship** and **Abort** are Change-level operations only; individual Slices are not shipped or aborted directly, and there is no Slice abort command.
-- Slice phase commands remain as execution overrides: implement, audit, and review are not terminal lifecycle commands.
+- The **AFK loop** is the only primary orchestrator for Slice state transitions; individual Slice phase commands are removed rather than retained as execution overrides.
 - **Work** never runs Cleanup or Change-level Finalization; when a Change state is `ready`, `in-flight`, `landed`, `done`, or `aborted`, Work reports the state and exits.
 - **Cleanup** considers the Change's **Change branch** and all stored **Slice branches**, silently filters out any local branch equal to the **Target branch** before current-branch refusal, prompts, or deletion, removes all trowel-managed Worktrees, and never removes remote branches.
 - When a Change is `in-flight`, **Ship** may run worktree-only Cleanup while keeping local branches until the Close-out PR is merged.
