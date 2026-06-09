@@ -7,54 +7,127 @@ export const partialConfigPipe = v.object({
 	// File-only annotation. Editors use it to fetch a JSON Schema for
 	// autocomplete; runtime code never reads it. `trowel init` writes it
 	// pointing at ~/.trowel/schema.json.
-	$schema: v.optional(v.string()),
-	storage: v.optional(v.in(Object.keys(storageFactories))),
+	$schema: v.optional(v.meta(v.string(), {
+		description: 'Path to the generated JSON Schema file used by editors for Trowel config completion.',
+		examples: ['./schema.json'],
+	})),
+	storage: v.optional(v.meta(v.in(Object.keys(storageFactories)), {
+		description: 'Storage strategy for Change and Slice records.',
+		default: 'file',
+		examples: ['file', 'issue'],
+	})),
 	docs: v.optional(
-		v.object({
-			changesDir: v.optional(v.string()),
-		}),
+		v.meta(v.object({
+			changesDir: v.optional(v.meta(v.string(), {
+				description: 'Project-relative directory where file Storage writes Change and Slice artifacts.',
+				default: 'docs/changes',
+				examples: ['docs/changes'],
+			})),
+		}), { description: 'Documentation and file Storage paths.' }),
 	),
 	agent: v.optional(
-		v.object({
-			harness: v.optional(v.in(Object.keys(harnessFactories))),
-			model: v.optional(v.string()),
-		}),
+		v.meta(v.object({
+			harness: v.optional(v.meta(v.in(Object.keys(harnessFactories)), {
+				description: 'Agent harness used to run Turns.',
+				default: harnessFactories.claude.name,
+				examples: Object.keys(harnessFactories),
+			})),
+			model: v.optional(v.meta(v.string(), {
+				description: 'Model name passed to the selected Agent harness.',
+				default: harnessFactories.claude.defaultModel,
+				examples: [harnessFactories.claude.defaultModel],
+			})),
+		}), { description: 'Agent harness and model selection for Turns.' }),
 	),
 	labels: v.optional(
-		v.object({
-			readyForAgent: v.optional(v.string()),
-			needsRevision: v.optional(v.string()),
-			change: v.optional(v.string()),
-		}),
+		v.meta(v.object({
+			readyForAgent: v.optional(v.meta(v.string(), {
+				description: 'Label used by issue Storage to identify Slices ready for agent work.',
+				default: 'ready-for-agent',
+				examples: ['ready-for-agent'],
+			})),
+			needsRevision: v.optional(v.meta(v.string(), {
+				description: 'Label used on Slice PRs and Close-out PRs to mark requested revision work.',
+				default: 'needs-revision',
+				examples: ['needs-revision'],
+			})),
+			change: v.optional(v.meta(v.string(), {
+				description: 'Label used by issue Storage to identify Change issues.',
+				default: 'change',
+				examples: ['change'],
+			})),
+		}), { description: 'Labels Trowel uses when issue Storage and PR review surfaces are backed by GitHub.' }),
 	),
 	abort: v.optional(
-		v.object({
-			comment: v.optional(v.nullable(v.string())),
-			deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
-		}),
+		v.meta(v.object({
+			comment: v.optional(v.meta(v.nullable(v.string()), {
+				description: 'Comment written when Abort closes GitHub issues or PRs; null closes silently.',
+				default: 'Closed via trowel',
+				examples: ['Closed via trowel', null],
+			})),
+			deleteBranch: v.optional(v.meta(v.in(['always', 'never', 'prompt'] as const), {
+				description: 'Local branch deletion policy for Abort Cleanup.',
+				default: 'prompt',
+			})),
+		}), { description: 'Abort behavior for abandoning a Change and running Cleanup.' }),
 	),
 	ship: v.optional(
-		v.object({
-			pr: v.optional(v.boolean()),
-			mergeMethod: v.optional(v.in(['merge', 'squash', 'rebase'] as const)),
-			deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
-			mergeabilityPollSeconds: v.optional(v.number().pipe(v.int()).pipe(v.gte(0)).pipe(v.lte(600))),
-		}),
+		v.meta(v.object({
+			pr: v.optional(v.meta(v.boolean(), {
+				description: 'Ship a Change through a Close-out PR when true; host-merge the Change branch into the Target branch when false.',
+				default: true,
+			})),
+			mergeMethod: v.optional(v.meta(v.in(['merge', 'squash', 'rebase'] as const), {
+				description: 'GitHub merge method used when Ship merges Slice PRs or Close-out PRs.',
+				default: 'merge',
+			})),
+			deleteBranch: v.optional(v.meta(v.in(['always', 'never', 'prompt'] as const), {
+				description: 'Local branch deletion policy for Ship Cleanup after successful shipping.',
+				default: 'prompt',
+			})),
+			mergeabilityPollSeconds: v.optional(v.meta(v.number().pipe(v.int()).pipe(v.gte(0)).pipe(v.lte(600)), {
+				description: 'Seconds Ship waits for GitHub PR mergeability to become known; 0 disables polling.',
+				default: 30,
+			})),
+		}), { description: 'Ship and Close-out behavior for completing a Change.' }),
 	),
 	turn: v.optional(
-		v.object({
-			copyToWorktree: v.optional(v.array(v.string())),
-			maxConcurrent: v.optional(v.nullable(v.number())),
-		}),
+		v.meta(v.object({
+			copyToWorktree: v.optional(v.meta(v.array(v.string()), {
+				description: 'Project-relative files or directories copied into every Turn Worktree before the agent runs.',
+				default: [],
+				examples: [['.env.example']],
+			})),
+			maxConcurrent: v.optional(v.meta(v.nullable(v.number()), {
+				description: 'Maximum concurrent Slice Turns within one Change; null removes the numeric cap while branch safety still applies.',
+				default: 3,
+			})),
+		}), { description: 'Execution settings for agent Turns.' }),
 	),
 	work: v.optional(
-		v.object({
-			audit: v.optional(v.boolean()),
-			perSliceBranches: v.optional(v.boolean()),
-			worktreeCleanupAge: v.optional(v.string()),
-			mergeNoVerify: v.optional(v.boolean()),
-			loopPollSeconds: v.optional(v.number().pipe(v.int()).pipe(v.gte(1)).pipe(v.lte(3600))),
-		}),
+		v.meta(v.object({
+			audit: v.optional(v.meta(v.boolean(), {
+				description: 'Run Auditing after implementation and before Slice integration or Slice PR readiness.',
+				default: false,
+			})),
+			perSliceBranches: v.optional(v.meta(v.boolean(), {
+				description: 'Create a dedicated Slice branch for each Slice when true; use the Change branch directly when false.',
+				default: true,
+			})),
+			worktreeCleanupAge: v.optional(v.meta(v.string(), {
+				description: 'Minimum age for orphaned trowel Worktrees before doctor can sweep them.',
+				default: '24h',
+				examples: ['24h', '7d'],
+			})),
+			mergeNoVerify: v.optional(v.meta(v.boolean(), {
+				description: 'Bypass git hooks for host-owned local merges performed by Work or merge-mode Ship.',
+				default: false,
+			})),
+			loopPollSeconds: v.optional(v.meta(v.number().pipe(v.int()).pipe(v.gte(1)).pipe(v.lte(3600)), {
+				description: 'Seconds Polling work mode sleeps between no-actionable-work refetches.',
+				default: 30,
+			})),
+		}), { description: 'AFK loop behavior for Slice work and Close-out PR revision work.' }),
 	),
 })
 
@@ -119,8 +192,51 @@ export function emitConfigJsonSchema(): Record<string, unknown> {
 	}
 }
 
+export type ConfigReferenceEntry = {
+	path: string
+	description: string
+	default?: unknown
+	examples?: unknown[]
+}
+
+type SchemaNode = {
+	description?: string
+	default?: unknown
+	examples?: unknown[]
+	properties?: Record<string, SchemaNode>
+}
+
+export function configReferenceEntries(schema: Record<string, unknown> = emitConfigJsonSchema()): ConfigReferenceEntry[] {
+	return collectConfigReferenceEntries(schema as SchemaNode)
+}
+
+function collectConfigReferenceEntries(node: SchemaNode, prefix = ''): ConfigReferenceEntry[] {
+	const properties = node.properties ?? {}
+	return Object.entries(properties).flatMap(([key, child]) => {
+		const path = prefix ? `${prefix}.${key}` : key
+		const own = configReferenceEntry(path, child)
+		return own ? [own, ...collectConfigReferenceEntries(child, path)] : collectConfigReferenceEntries(child, path)
+	})
+}
+
+function configReferenceEntry(path: string, node: SchemaNode): ConfigReferenceEntry | null {
+	if (node.description === undefined) return null
+	const entry: ConfigReferenceEntry = { path, description: node.description }
+	if ('default' in node) entry.default = node.default
+	if (node.examples !== undefined) entry.examples = node.examples
+	return entry
+}
+
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
+
+	function collectMissingDescriptions(node: SchemaNode, prefix: string, missing: string[]): void {
+		for (const [key, child] of Object.entries(node.properties ?? {})) {
+			const path = prefix ? `${prefix}.${key}` : key
+			if (child.description === undefined) missing.push(path)
+			collectMissingDescriptions(child, path, missing)
+		}
+	}
 
 	describe('defaultConfig', () => {
 		test('uses file as the default storage', () => {
@@ -312,9 +428,44 @@ if (import.meta.vitest) {
 			expect(schema.properties.work.properties.loopPollSeconds).toMatchObject({ type: 'integer', minimum: 1, maximum: 3600 })
 		})
 
+		test('emits descriptions for every config property', () => {
+			const missing: string[] = []
+			collectMissingDescriptions(emitConfigJsonSchema() as SchemaNode, '', missing)
+			expect(missing).toEqual([])
+		})
+
+		test('emits descriptions and defaults for documented config keys', () => {
+			const schema = emitConfigJsonSchema() as {
+				properties: {
+					ship: { description: string; properties: { pr: { description: string; default: boolean } } }
+					work: { properties: { loopPollSeconds: { description: string; default: number } } }
+				}
+			}
+			expect(schema.properties.ship.description).toMatch(/Ship/)
+			expect(schema.properties.ship.properties.pr).toMatchObject({ default: true })
+			expect(schema.properties.ship.properties.pr.description).toMatch(/Close-out PR/)
+			expect(schema.properties.work.properties.loopPollSeconds).toMatchObject({ default: 30 })
+		})
+
+		test('emits examples where examples add value', () => {
+			const schema = emitConfigJsonSchema() as {
+				properties: { work: { properties: { worktreeCleanupAge: { examples: string[] } } } }
+			}
+			expect(schema.properties.work.properties.worktreeCleanupAge.examples).toEqual(['24h', '7d'])
+		})
+
 		test('top-level forbids additional properties (catches typos in editors)', () => {
 			const schema = emitConfigJsonSchema() as { additionalProperties: boolean }
 			expect(schema.additionalProperties).toBe(false)
+		})
+	})
+
+	describe('configReferenceEntries', () => {
+		test('lists config paths with descriptions, defaults, and examples from schema metadata', () => {
+			const entries = configReferenceEntries()
+			expect(entries).toContainEqual(expect.objectContaining({ path: 'ship.pr', default: true, description: expect.stringMatching(/Close-out PR/) }))
+			expect(entries).toContainEqual(expect.objectContaining({ path: 'work.loopPollSeconds', default: 30, description: expect.stringMatching(/Polling work mode/) }))
+			expect(entries).toContainEqual(expect.objectContaining({ path: 'work.worktreeCleanupAge', default: '24h', examples: ['24h', '7d'] }))
 		})
 	})
 }

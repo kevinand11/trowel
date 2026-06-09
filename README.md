@@ -23,11 +23,10 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
 | `trowel doctor` | Check local tool/config health. |
-| `trowel repair branch-metadata [--dry-run\|--apply]` | Patch legacy issue-storage records with required Target, Change, and Slice branch metadata. |
 | `trowel config` | Print resolved config. |
 | `trowel init [global\|project]` | Write a config layer. |
 
-`--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn.
+`--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn. Run `trowel config` for the effective config plus a generated config reference; `trowel init` also writes `.trowel/schema.json` for editor completion.
 
 ## States and workflow flags
 
