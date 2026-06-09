@@ -1,6 +1,6 @@
 import type { Change, DeleteBranchPolicy, ShipMergeMethod, Storage } from '../../storages/types.ts'
 import { classifyChange } from '../../utils/change-state.ts'
-import type { GhOps } from '../../utils/gh-ops.ts'
+import type { GhOps, PrMergeabilityFacts } from '../../utils/gh-ops.ts'
 import type { GitOps } from '../../utils/git-ops.ts'
 import { withMutationLock } from '../../utils/mutation-lock.ts'
 import type { ChangeState } from '../../work/change-types.ts'
@@ -19,11 +19,13 @@ type ShipRuntime = {
 	pr: boolean
 	mergeNoVerify: boolean
 	mergeMethod: ShipMergeMethod
+	mergeabilityPollSeconds: number
 	deleteBranchPolicy: DeleteBranchPolicy
 	interactive: boolean
 	confirm: (msg: string) => Promise<boolean>
 	stdout: (s: string) => void
 	listOpenPrs: (branch: string) => Promise<OpenPr[]>
+	sleep: (ms: number) => Promise<void>
 }
 
 type ShipContext = {
@@ -36,12 +38,13 @@ type ShipContext = {
 async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 	await requireCleanTree(rt)
 	const backTo = await rt.git.currentBranch()
-	const context = await loadShipContext(changeId, rt)
+	let context = await loadShipContext(changeId, rt)
 	assertPrCloseOutBranchTopology(context, rt)
-	if (shipMayRunCleanup(context.state))
-		await refuseCurrentCleanupBranch({ change: context.change, slices: context.slices, targetBranch: context.targetBranch, rt })
 	let shipSucceeded = false
 	try {
+		context = await offerSlicePrMergesBeforeCloseOut(context, rt)
+		if (shipMayRunCleanup(context.state))
+			await refuseCurrentCleanupBranch({ change: context.change, slices: context.slices, targetBranch: context.targetBranch, rt })
 		await shipByState(context, rt)
 		shipSucceeded = true
 	} finally {
@@ -174,7 +177,13 @@ async function shipViaPr(change: Change, targetBranch: string, rt: ShipRuntime):
 		},
 	)
 	const prNumber = await rt.gh.findPrNumberByHead(change.changeBranch)
-	if (!(await optionalConfirm(rt, `Merge Close-out PR #${prNumber} now? [y/N]`))) return false
+	if (!rt.interactive) return false
+	const mergeability = await waitForMergeablePr(prNumber, rt)
+	if (!mergeability.mergeable) {
+		rt.stdout(`[ship change-${change.id}] Close-out PR #${prNumber} is not mergeable: ${mergeability.reason}\n`)
+		return false
+	}
+	if (!(await optionalConfirm(rt, `Merge Close-out PR #${prNumber} for Change ${change.id} "${change.title}"? [y/N]`))) return false
 	await rt.gh.mergePr(prNumber, rt.mergeMethod)
 	return await branchCleanupAllowedAfterCloseOut(change.id, rt)
 }
@@ -186,6 +195,83 @@ async function branchCleanupAllowedAfterCloseOut(changeId: string, rt: ShipRunti
 		return true
 	}
 	return context.state === 'done'
+}
+
+async function offerSlicePrMergesBeforeCloseOut(context: ShipContext, rt: ShipRuntime): Promise<ShipContext> {
+	if (!rt.pr || !rt.interactive || context.state === 'aborted' || context.state === 'done' || context.state === 'landed') return context
+	const candidates = context.slices.filter((slice) => slice.state === 'awaiting-review' && slice.prState === 'ready' && slice.sliceBranch !== null)
+	if (candidates.length === 0) return context
+	for (const slice of candidates) await offerSlicePrMerge(context.change, slice, rt)
+	return loadShipContext(context.change.id, rt)
+}
+
+async function offerSlicePrMerge(change: Change, slice: ClassifiedSlice, rt: ShipRuntime): Promise<void> {
+	const branch = slice.sliceBranch
+	if (branch === null) return
+	const tag = `[ship change-${change.id} slice-${slice.id}]`
+	const prNumber = await rt.gh.findPrNumberByHead(branch)
+	const mergeability = await waitForMergeablePr(prNumber, rt)
+	if (!mergeability.mergeable) {
+		rt.stdout(`${tag} PR #${prNumber} is not mergeable: ${mergeability.reason}\n`)
+		return
+	}
+	if (!(await optionalConfirm(rt, `Merge Slice PR #${prNumber} for Slice ${slice.id} "${slice.title}"? [y/N]`))) return
+	await rt.gh.mergePr(prNumber, rt.mergeMethod)
+	rt.stdout(`${tag} merged PR #${prNumber}\n`)
+	await finalizeSliceAfterObservedMerge(change.id, slice, prNumber, rt)
+}
+
+async function finalizeSliceAfterObservedMerge(changeId: string, slice: ClassifiedSlice, prNumber: number, rt: ShipRuntime): Promise<void> {
+	const tag = `[ship change-${changeId} slice-${slice.id}]`
+	const observed = await waitForSliceMergedState(changeId, slice.id, rt)
+	if (observed?.state === 'done') return
+	if (observed?.state === 'landed') {
+		await rt.storage.finalizeSlice(changeId, slice.id)
+		rt.stdout(`${tag} finalized landed slice\n`)
+		return
+	}
+	rt.stdout(`${tag} merged PR #${prNumber} but Slice was not observed landed after ${rt.mergeabilityPollSeconds}s; leaving unfinalized\n`)
+}
+
+async function waitForSliceMergedState(changeId: string, sliceId: string, rt: ShipRuntime): Promise<ClassifiedSlice | null> {
+	const deadline = Date.now() + rt.mergeabilityPollSeconds * 1000
+	while (true) {
+		const slice = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr })).find((s) => s.id === sliceId) ?? null
+		if (slice?.state === 'landed' || slice?.state === 'done') return slice
+		const remaining = deadline - Date.now()
+		if (remaining <= 0) return slice
+		await rt.sleep(Math.min(1000, remaining))
+	}
+}
+
+type PrMergeability = { mergeable: true } | { mergeable: false; reason: string }
+type PrMergeabilityCheck = PrMergeability & { retryableUnknown?: boolean }
+
+async function waitForMergeablePr(prNumber: number, rt: ShipRuntime): Promise<PrMergeability> {
+	const deadline = Date.now() + rt.mergeabilityPollSeconds * 1000
+	while (true) {
+		const check = describePrMergeability(await rt.gh.viewPrMergeability(prNumber), rt.mergeabilityPollSeconds)
+		if (check.mergeable || !check.retryableUnknown) return check
+		const remaining = deadline - Date.now()
+		if (remaining <= 0) return { mergeable: false, reason: `mergeability unknown after ${rt.mergeabilityPollSeconds}s` }
+		await rt.sleep(Math.min(1000, remaining))
+	}
+}
+
+function describePrMergeability(facts: PrMergeabilityFacts, pollSeconds: number): PrMergeabilityCheck {
+	if (facts.state !== 'OPEN') return { mergeable: false, reason: `PR is ${facts.state.toLowerCase()}` }
+	if (facts.isDraft) return { mergeable: false, reason: 'draft' }
+	const mergeable = facts.mergeable ?? 'UNKNOWN'
+	const status = facts.mergeStateStatus ?? 'UNKNOWN'
+	if (mergeable === 'MERGEABLE' && status === 'CLEAN') return { mergeable: true }
+	if (mergeable === 'UNKNOWN' || status === 'UNKNOWN')
+		return { mergeable: false, reason: `mergeability unknown after ${pollSeconds}s`, retryableUnknown: true }
+	if (mergeable === 'CONFLICTING' || status === 'DIRTY') return { mergeable: false, reason: 'conflicts' }
+	if (status === 'DRAFT') return { mergeable: false, reason: 'draft' }
+	if (status === 'BLOCKED') return { mergeable: false, reason: 'blocked by branch protection or required review' }
+	if (status === 'BEHIND') return { mergeable: false, reason: 'branch is behind' }
+	if (status === 'UNSTABLE') return { mergeable: false, reason: 'required checks pending or failing' }
+	return { mergeable: false, reason: `GitHub reported ${status !== 'CLEAN' ? status : mergeable}` }
 }
 
 async function cleanupAfterShip(change: Change, targetBranch: string, rt: ShipRuntime, branchCleanupAllowed: boolean): Promise<void> {
@@ -256,13 +342,19 @@ async function buildShipRuntime(opts: { storage?: string }): Promise<{ base: Com
 			pr: base.config.ship.pr,
 			mergeNoVerify: base.config.work.mergeNoVerify,
 			mergeMethod: base.config.ship.mergeMethod,
+			mergeabilityPollSeconds: base.config.ship.mergeabilityPollSeconds,
 			deleteBranchPolicy: base.config.ship.deleteBranch,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 			confirm: (message) => confirm({ message, default: confirmDefault(message) }),
 			stdout: (s) => process.stdout.write(s),
 			listOpenPrs: listOpenPrsFor(base),
+			sleep,
 		},
 	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function confirmDefault(message: string): boolean {
@@ -376,11 +468,13 @@ if (import.meta.vitest) {
 				pr: false,
 				mergeNoVerify: false,
 				mergeMethod: 'merge',
+				mergeabilityPollSeconds: 0,
 				deleteBranchPolicy: 'never',
 				interactive: true,
 				confirm: async () => true,
 				stdout: (s) => out.push(s),
 				listOpenPrs: async () => [],
+				sleep: async () => {},
 				...args,
 			},
 			gitCalls,
@@ -577,6 +671,147 @@ if (import.meta.vitest) {
 			})
 			await runShip('3', rt)
 			expect(ghCalls).toContainEqual(['mergePr', 9, 'squash'])
+		})
+
+		test('PR mode skips Close-out merge prompt when GitHub says PR is not mergeable', async () => {
+			let confirmCalls = 0
+			const { gh, calls } = recordingGhOps({
+				findPrNumberByHead: async () => 9,
+				findAnyPrByHead: async () => null,
+				viewPrMergeability: async () => ({ state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED' }),
+			})
+			const { rt, out } = makeRt({
+				gh,
+				pr: true,
+				confirm: async () => {
+					confirmCalls += 1
+					return true
+				},
+			})
+
+			await runShip('3', rt)
+
+			expect(confirmCalls).toBe(0)
+			expect(calls.map((c) => c[0])).not.toContain('mergePr')
+			expect(out.join('')).toContain('Close-out PR #9 is not mergeable: blocked by branch protection or required review')
+		})
+
+		test('PR mode polls unknown Close-out mergeability before prompting', async () => {
+			let mergeabilityCalls = 0
+			const sleeps: number[] = []
+			const { gh, calls } = recordingGhOps({
+				findPrNumberByHead: async () => 9,
+				findAnyPrByHead: async () => null,
+				viewPrMergeability: async () => {
+					mergeabilityCalls += 1
+					return mergeabilityCalls === 1
+						? { state: 'OPEN', isDraft: false, mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' }
+						: { state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN' }
+				},
+			})
+			const { rt } = makeRt({
+				gh,
+				pr: true,
+				mergeabilityPollSeconds: 30,
+				sleep: async (ms) => {
+					sleeps.push(ms)
+				},
+				confirm: async (msg) => msg.startsWith('Merge Close-out PR'),
+			})
+
+			await runShip('3', rt)
+
+			expect(sleeps).toEqual([1000])
+			expect(calls).toContainEqual(['mergePr', 9, 'merge'])
+		})
+
+		test('PR mode prompts for mergeable Slice PRs, reclassifies, finalizes, then rechecks Change readiness', async () => {
+			const slice = fakeClassifiedSlice({ id: 's1', title: 'Parser', sliceBranch: 'change-3/slice-s1-parser', closedAt: null })
+			let slicePrMerged = false
+			const finalized: string[] = []
+			const storage = fakeSliceStorage([slice], '3', {
+				findChange: async (id) => fakeChange(id),
+				finalizeSlice: async (_changeId, sliceId) => {
+					finalized.push(sliceId)
+					slice.closedAt = '2026-06-09T00:00:00.000Z'
+				},
+			})
+			const { gh, calls } = recordingGhOps({
+				listOpenPrs: async () =>
+					slicePrMerged
+						? []
+						: [{ number: 12, headRefName: 'change-3/slice-s1-parser', isDraft: false, reviewDecision: 'APPROVED' }],
+				findPrNumberByHead: async (head) => (head === 'change-3/slice-s1-parser' ? 12 : 9),
+				findAnyPrByHead: async (head) => (head === 'change-3/slice-s1-parser' && slicePrMerged ? { number: 12, state: 'MERGED' } : null),
+				mergePr: async (prNumber) => {
+					if (prNumber === 12) slicePrMerged = true
+				},
+			})
+			const { rt, out } = makeRt({
+				storage,
+				gh,
+				pr: true,
+				confirm: async (msg) => msg.startsWith('Merge Slice PR'),
+			})
+
+			await runShip('3', rt)
+
+			expect(calls).toContainEqual(['mergePr', 12, 'merge'])
+			expect(calls).not.toContainEqual(['mergePr', 9, 'merge'])
+			expect(finalized).toEqual(['s1'])
+			expect(out.join('')).toContain('[ship change-3 slice-s1] finalized landed slice')
+		})
+
+		test('declining one Slice PR continues offering later mergeable Slice PRs, then reports remaining non-done slices', async () => {
+			const first = fakeClassifiedSlice({ id: 's1', title: 'Parser', sliceBranch: 'change-3/slice-s1-parser', closedAt: null })
+			const second = fakeClassifiedSlice({ id: 's2', title: 'Renderer', sliceBranch: 'change-3/slice-s2-renderer', closedAt: null })
+			let secondMerged = false
+			const finalized: string[] = []
+			const storage = fakeSliceStorage([first, second], '3', {
+				findChange: async (id) => fakeChange(id),
+				finalizeSlice: async (_changeId, sliceId) => {
+					finalized.push(sliceId)
+					if (sliceId === 's2') second.closedAt = '2026-06-09T00:00:00.000Z'
+				},
+			})
+			const { gh, calls } = recordingGhOps({
+				listOpenPrs: async () => [
+					{ number: 11, headRefName: 'change-3/slice-s1-parser', isDraft: false },
+					...(secondMerged ? [] : [{ number: 12, headRefName: 'change-3/slice-s2-renderer', isDraft: false }]),
+				],
+				findPrNumberByHead: async (head) => (head === 'change-3/slice-s1-parser' ? 11 : 12),
+				findAnyPrByHead: async (head) => (head === 'change-3/slice-s2-renderer' && secondMerged ? { number: 12, state: 'MERGED' } : null),
+				mergePr: async (prNumber) => {
+					if (prNumber === 12) secondMerged = true
+				},
+			})
+			const { rt } = makeRt({
+				storage,
+				gh,
+				pr: true,
+				confirm: async (msg) => msg.includes('Slice s2'),
+			})
+
+			await expect(runShip('3', rt)).rejects.toThrow(/s1 {2}awaiting-review {2}Parser/)
+
+			expect(calls).toContainEqual(['mergePr', 12, 'merge'])
+			expect(calls).not.toContainEqual(['mergePr', 11, 'merge'])
+			expect(finalized).toEqual(['s2'])
+		})
+
+		test('non-interactive PR mode does not merge Slice PRs automatically', async () => {
+			const slice = fakeClassifiedSlice({ id: 's1', title: 'Parser', sliceBranch: 'change-3/slice-s1-parser', closedAt: null })
+			const storage = fakeSliceStorage([slice], '3', { findChange: async (id) => fakeChange(id) })
+			const { gh, calls } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 12, headRefName: 'change-3/slice-s1-parser', isDraft: false }],
+				findPrNumberByHead: async () => 12,
+			})
+			const { rt } = makeRt({ storage, gh, pr: true, interactive: false })
+
+			await expect(runShip('3', rt)).rejects.toThrow(/s1 {2}awaiting-review {2}Parser/)
+
+			expect(calls.map((c) => c[0])).not.toContain('mergePr')
+			expect(calls.map((c) => c[0])).not.toContain('findPrNumberByHead')
 		})
 
 		test('PR mode in-flight Change uses the existing Close-out PR and keeps branches when not done', async () => {

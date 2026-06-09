@@ -353,6 +353,7 @@ if (import.meta.vitest) {
 			const schema = JSON.parse(await read(schemaPath, 'utf8'))
 			expect(schema.title).toBe('Trowel config')
 			expect(schema.properties).toMatchObject({ storage: expect.any(Object) })
+			expect(schema.properties.ship.properties.mergeabilityPollSeconds).toMatchObject({ type: 'integer', minimum: 0, maximum: 600 })
 		})
 
 		test('written config opens with $schema as the first key', async () => {
@@ -584,11 +585,15 @@ if (import.meta.vitest) {
 		test('preserves existing ship and work keys not covered by the wizard', async () => {
 			const configPath = path.join(f.project, '.trowel', 'config.json')
 			await mk(path.dirname(configPath), { recursive: true })
-			await write(configPath, JSON.stringify({ ship: { mergeMethod: 'squash' }, work: { perSliceBranches: false } }), 'utf8')
+			await write(
+				configPath,
+				JSON.stringify({ ship: { mergeMethod: 'squash', mergeabilityPollSeconds: 45 }, work: { perSliceBranches: false } }),
+				'utf8',
+			)
 
 			await runProjectInit(f, promptsForFile({ shipPr: async () => true, audit: async () => false }))
 			const written = JSON.parse(await read(configPath, 'utf8'))
-			expect(written.ship).toMatchObject({ pr: true, mergeMethod: 'squash' })
+			expect(written.ship).toMatchObject({ pr: true, mergeMethod: 'squash', mergeabilityPollSeconds: 45 })
 			expect(written.work).toMatchObject({ audit: false, perSliceBranches: false })
 		})
 	})

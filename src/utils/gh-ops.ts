@@ -104,6 +104,13 @@ export type PrSummary = {
 	reviewDecision?: 'CHANGES_REQUESTED' | 'APPROVED' | 'REVIEW_REQUIRED' | string | null
 }
 
+export type PrMergeabilityFacts = {
+	state: 'OPEN' | 'CLOSED' | 'MERGED' | string
+	isDraft: boolean
+	mergeable?: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' | string | null
+	mergeStateStatus?: 'CLEAN' | 'DIRTY' | 'UNKNOWN' | 'BLOCKED' | 'BEHIND' | 'UNSTABLE' | 'DRAFT' | 'HAS_HOOKS' | string | null
+}
+
 export type LineCommentRaw = {
 	user: { login: string }
 	created_at: string
@@ -156,6 +163,7 @@ export type GhOps = {
 	 * Used by state computation to detect that a Close-out PR has been merged on GitHub.
 	 */
 	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>
+	viewPrMergeability(prNumber: number): Promise<PrMergeabilityFacts>
 	closePr(prNumber: number, opts?: { comment?: string }): Promise<void>
 	mergePr(prNumber: number, method: ShipMergeMethod): Promise<void>
 
@@ -324,6 +332,10 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		async findAnyPrByHead(head) {
 			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state'])
 			return r.ok ? parseAnyPrByHeadList(r.stdout) : null
+		},
+		async viewPrMergeability(prNumber) {
+			const out = await ghOrThrow(['pr', 'view', String(prNumber), '--json', 'state,isDraft,mergeable,mergeStateStatus'])
+			return JSON.parse(out) as PrMergeabilityFacts
 		},
 		async closePr(prNumber, opts) {
 			if (opts?.comment !== undefined)
@@ -694,6 +706,19 @@ if (import.meta.vitest) {
 				['api', '-X', 'POST', 'repos/{owner}/{repo}/issues/12/comments', '-f', 'body=aborting'],
 				['api', '-X', 'PATCH', 'repos/{owner}/{repo}/pulls/12', '-f', 'state=closed'],
 			])
+		})
+
+		test('viewPrMergeability queries GitHub mergeability fields', async () => {
+			const { runner, calls } = makeRunner([
+				{ match: () => true, respond: ok('{"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}') },
+			])
+			expect(await createGh(runner).viewPrMergeability(12)).toEqual({
+				state: 'OPEN',
+				isDraft: false,
+				mergeable: 'MERGEABLE',
+				mergeStateStatus: 'CLEAN',
+			})
+			expect(calls[0]).toEqual(['pr', 'view', '12', '--json', 'state,isDraft,mergeable,mergeStateStatus'])
 		})
 
 		test('mergePr uses the PR merge API with the configured method', async () => {

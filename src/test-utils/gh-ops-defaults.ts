@@ -5,6 +5,12 @@ const emptyList = async (): Promise<never[]> => []
 const noop = async (): Promise<void> => undefined
 const zero = async (): Promise<number> => 0
 const defaultPr = async (): Promise<Awaited<ReturnType<GhOps['createDraftPr']>>> => ({ number: 0, headRefName: '', isDraft: true, url: '#0' })
+const defaultMergeability = async (): Promise<Awaited<ReturnType<GhOps['viewPrMergeability']>>> => ({
+	state: 'OPEN',
+	isDraft: false,
+	mergeable: 'MERGEABLE',
+	mergeStateStatus: 'CLEAN',
+})
 
 export const DEFAULT_GH_OPS: GhOps = {
 	detectVersion: async () => ({ installed: true, version: '0.0.0' }),
@@ -26,6 +32,7 @@ export const DEFAULT_GH_OPS: GhOps = {
 	findPrNumberByHead: zero,
 	listOpenPrs: emptyList,
 	findAnyPrByHead: nullValue,
+	viewPrMergeability: defaultMergeability,
 	closePr: noop,
 	mergePr: noop,
 	fetchPrLineComments: emptyList,

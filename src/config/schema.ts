@@ -38,6 +38,7 @@ export const partialConfigPipe = v.object({
 			pr: v.optional(v.boolean()),
 			mergeMethod: v.optional(v.in(['merge', 'squash', 'rebase'] as const)),
 			deleteBranch: v.optional(v.in(['always', 'never', 'prompt'] as const)),
+			mergeabilityPollSeconds: v.optional(v.number().pipe(v.int()).pipe(v.gte(0)).pipe(v.lte(600))),
 		}),
 	),
 	turn: v.optional(
@@ -95,6 +96,7 @@ export const defaultConfig: Config = {
 		pr: true,
 		mergeMethod: 'merge',
 		deleteBranch: 'prompt',
+		mergeabilityPollSeconds: 30,
 	},
 	turn: {
 		copyToWorktree: [],
@@ -132,10 +134,11 @@ if (import.meta.vitest) {
 			expect(defaultConfig.abort.comment).toBe('Closed via trowel')
 		})
 
-		test('ship defaults to PR mode, merge method, and prompt branch deletion', () => {
+		test('ship defaults to PR mode, merge method, prompt branch deletion, and bounded mergeability polling', () => {
 			expect(defaultConfig.ship.pr).toBe(true)
 			expect(defaultConfig.ship.mergeMethod).toBe('merge')
 			expect(defaultConfig.ship.deleteBranch).toBe('prompt')
+			expect(defaultConfig.ship.mergeabilityPollSeconds).toBe(30)
 		})
 
 		test('turn defaults to maxConcurrent: 3 and empty copyToWorktree', () => {
@@ -184,12 +187,15 @@ if (import.meta.vitest) {
 		})
 
 		test('accepts ship config values', () => {
-			expect(v.validate(partialConfigPipe, { ship: { pr: false, mergeMethod: 'squash', deleteBranch: 'always' } }).valid).toBe(true)
+			expect(v.validate(partialConfigPipe, { ship: { pr: false, mergeMethod: 'squash', deleteBranch: 'always', mergeabilityPollSeconds: 30 } }).valid).toBe(true)
 		})
 
 		test('rejects invalid ship config values', () => {
 			expect(v.validate(partialConfigPipe, { ship: { mergeMethod: 'fast-forward' } }).valid).toBe(false)
 			expect(v.validate(partialConfigPipe, { ship: { deleteBranch: 'maybe' } }).valid).toBe(false)
+			expect(v.validate(partialConfigPipe, { ship: { mergeabilityPollSeconds: -1 } }).valid).toBe(false)
+			expect(v.validate(partialConfigPipe, { ship: { mergeabilityPollSeconds: 601 } }).valid).toBe(false)
+			expect(v.validate(partialConfigPipe, { ship: { mergeabilityPollSeconds: 1.5 } }).valid).toBe(false)
 		})
 
 		test('accepts turn.maxConcurrent as a number or null', () => {
@@ -258,15 +264,23 @@ if (import.meta.vitest) {
 			expect(schema.properties.abort.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
 		})
 
-		test('ship properties emit pr plus enums', () => {
+		test('ship properties emit pr, enums, and mergeability polling bounds', () => {
 			const schema = emitConfigJsonSchema() as {
 				properties: {
-					ship: { properties: { pr: { type: string }; mergeMethod: { enum: string[] }; deleteBranch: { enum: string[] } } }
+					ship: {
+						properties: {
+							pr: { type: string }
+							mergeMethod: { enum: string[] }
+							deleteBranch: { enum: string[] }
+							mergeabilityPollSeconds: { type: string; minimum: number; maximum: number }
+						}
+					}
 				}
 			}
 			expect(schema.properties.ship.properties.pr.type).toBe('boolean')
 			expect(schema.properties.ship.properties.mergeMethod.enum).toEqual(['merge', 'squash', 'rebase'])
 			expect(schema.properties.ship.properties.deleteBranch.enum).toEqual(['always', 'never', 'prompt'])
+			expect(schema.properties.ship.properties.mergeabilityPollSeconds).toMatchObject({ type: 'integer', minimum: 0, maximum: 600 })
 		})
 
 		test('turn.maxConcurrent accepts number or null', () => {
