@@ -42,7 +42,7 @@ async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
 		pr: rt.pr,
 		needsRevisionLabel: rt.needsRevisionLabel,
 	})
-	const state = await classifyChange(change, slices, { gh: rt.gh, git: rt.git })
+	const state = await classifyChange(change, slices, { gh: rt.gh, git: rt.git, needsRevisionLabel: rt.needsRevisionLabel })
 	writeStatusText(rt.stdout, renderStatus({ ...change, state }, slices))
 }
 

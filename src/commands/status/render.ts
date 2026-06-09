@@ -29,8 +29,10 @@ function stateGuidance(change: StatusChange): string {
 			return `merged to Target branch but not finalized; run ${ship}`
 		case 'aborted':
 			return 'aborted; run cleanup again only if local worktrees/branches remain'
-		case 'in-flight':
-			return 'Close-out PR is open; merge it, then run status or ship again'
+		case 'needs-revision':
+			return `Close-out PR needs revision; run ${work}`
+		case 'awaiting-review':
+			return 'Close-out PR is awaiting review or merge; run ship when mergeable'
 		case 'ready':
 			return `all Slices are done; run ${ship}`
 		case 'open':

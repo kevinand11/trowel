@@ -1,5 +1,7 @@
 # Computed states and cleanup-owned housekeeping
 
+Amended by `2026-06-09-retire-in-flight-for-close-out-pr-review-states.md`, which retires the Change `in-flight` state in favor of `awaiting-review` and `needs-revision` for open Close-out PRs.
+
 Trowel will retire the public and internal **Bucket** concept and use lowercase computed **state** for both Changes and Slices. Slice state is computed from raw `closedAt`, `readyForAgent`, revision, blocker, and PR signals with priority `done → landed → needs-revision → in-flight → blocked → open → draft`; Change state is computed from raw `closedAt`, Slice states, Close-out PR state, and branch merge status with priority `done → landed → aborted → in-flight → ready → open`.
 
 The shared transient state is **`landed`**: repository merge has happened but the trowel record has not been finalized. The Slice work loop finalizes landed Slices by setting `closedAt` in file storage or closing the GitHub Slice issue; `change ship` finalizes landed Changes. `done` means merged and finalized; `aborted` means `closedAt` is set without the repository merge fact.

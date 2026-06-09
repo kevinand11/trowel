@@ -6,50 +6,62 @@ import type { ClassifiedSlice } from '../work/slice-types.ts'
 
 export type CloseOutPrState = 'OPEN' | 'CLOSED' | 'MERGED' | null
 
+export type CloseOutPrFacts = {
+	number: number
+	state: Exclude<CloseOutPrState, null>
+	labels?: Array<{ name: string }>
+	reviewDecision?: 'CHANGES_REQUESTED' | 'APPROVED' | 'REVIEW_REQUIRED' | string | null
+}
+
 export type ChangeStateFacts = {
-	closeOutPrState: CloseOutPrState
+	closeOutPr: CloseOutPrFacts | null
 	repositoryMerged: boolean
 }
 
 export type ChangeStateDeps = {
 	gh: GhOps
 	git: ReadOnlyGitFacts
+	needsRevisionLabel?: string
 }
 
 export async function classifyChange(change: Change, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeState> {
-	return computeChangeState(change, slices, await collectChangeStateFacts(change, slices, deps))
+	return computeChangeState(change, slices, await collectChangeStateFacts(change, slices, deps), { needsRevisionLabel: deps.needsRevisionLabel })
 }
 
 export async function collectChangeStateFacts(change: Change, slices: ClassifiedSlice[], deps: ChangeStateDeps): Promise<ChangeStateFacts> {
-	const closeOutPrState = await closeOutPrStateFor(change, deps.gh)
+	const closeOutPr = await closeOutPrFor(change, deps.gh)
 	return {
-		closeOutPrState,
-		repositoryMerged: await repositoryMergeProven(change, slices, deps, closeOutPrState),
+		closeOutPr,
+		repositoryMerged: await repositoryMergeProven(change, slices, deps, closeOutPr?.state ?? null),
 	}
 }
 
-export function computeChangeState(change: Pick<Change, 'closedAt'>, slices: ClassifiedSlice[], facts: ChangeStateFacts): ChangeState {
+export function computeChangeState(change: Pick<Change, 'closedAt'>, slices: ClassifiedSlice[], facts: ChangeStateFacts, opts: { needsRevisionLabel?: string } = {}): ChangeState {
 	const repositoryMerged = mergeFactApplies(change.closedAt, slices, facts)
 	if (change.closedAt !== null && repositoryMerged) return 'done'
 	if (change.closedAt === null && repositoryMerged) return 'landed'
 	if (change.closedAt !== null) return 'aborted'
-	if (facts.closeOutPrState === 'OPEN') return 'in-flight'
+	if (facts.closeOutPr?.state === 'OPEN') return closeOutPrNeedsRevision(facts.closeOutPr, opts.needsRevisionLabel) ? 'needs-revision' : 'awaiting-review'
 	if (allSlicesDone(slices)) return 'ready'
 	return 'open'
 }
 
+function closeOutPrNeedsRevision(pr: CloseOutPrFacts, label = 'needs-revision'): boolean {
+	return pr.reviewDecision === 'CHANGES_REQUESTED' || (pr.labels?.some((entry) => entry.name === label) ?? false)
+}
+
 function mergeFactApplies(closedAt: string | null, slices: ClassifiedSlice[], facts: ChangeStateFacts): boolean {
 	if (!facts.repositoryMerged) return false
-	return closedAt !== null || facts.closeOutPrState === 'MERGED' || allSlicesDone(slices)
+	return closedAt !== null || facts.closeOutPr?.state === 'MERGED' || allSlicesDone(slices)
 }
 
 function allSlicesDone(slices: ClassifiedSlice[]): boolean {
 	return slices.length > 0 && slices.every((slice) => slice.state === 'done')
 }
 
-async function closeOutPrStateFor(change: Change, gh: GhOps): Promise<CloseOutPrState> {
+async function closeOutPrFor(change: Change, gh: GhOps): Promise<CloseOutPrFacts | null> {
 	try {
-		return (await gh.findAnyPrByHead(change.changeBranch))?.state ?? null
+		return await gh.findAnyPrByHead(change.changeBranch)
 	} catch {
 		return null
 	}
@@ -116,19 +128,24 @@ if (import.meta.vitest) {
 	const doneSlice = () => slice({ state: 'done', closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })
 
 	describe('computeChangeState', () => {
-		test('priority is done → landed → aborted → in-flight → ready → open', () => {
-			expect(computeChangeState(change({ closedAt: 'x' }), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: true })).toBe('done')
-			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: true })).toBe('landed')
-			expect(computeChangeState(change({ closedAt: 'x' }), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: false })).toBe('aborted')
-			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: 'OPEN', repositoryMerged: false })).toBe('in-flight')
-			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: null, repositoryMerged: false })).toBe('ready')
-			expect(computeChangeState(change(), [slice()], { closeOutPrState: null, repositoryMerged: false })).toBe('open')
+		test('priority is done → landed → aborted → needs-revision → awaiting-review → ready → open', () => {
+			expect(computeChangeState(change({ closedAt: 'x' }), [doneSlice()], { closeOutPr: { number: 7, state: 'OPEN' }, repositoryMerged: true })).toBe('done')
+			expect(computeChangeState(change(), [doneSlice()], { closeOutPr: { number: 7, state: 'OPEN' }, repositoryMerged: true })).toBe('landed')
+			expect(computeChangeState(change({ closedAt: 'x' }), [doneSlice()], { closeOutPr: { number: 7, state: 'OPEN' }, repositoryMerged: false })).toBe('aborted')
+			expect(computeChangeState(change(), [doneSlice()], { closeOutPr: { number: 7, state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED' }, repositoryMerged: false })).toBe('needs-revision')
+			expect(computeChangeState(change(), [doneSlice()], { closeOutPr: { number: 7, state: 'OPEN' }, repositoryMerged: false })).toBe('awaiting-review')
+			expect(computeChangeState(change(), [doneSlice()], { closeOutPr: null, repositoryMerged: false })).toBe('ready')
+			expect(computeChangeState(change(), [slice()], { closeOutPr: null, repositoryMerged: false })).toBe('open')
+		})
+
+		test('configured needs-revision label yields needs-revision', () => {
+			expect(computeChangeState(change(), [doneSlice()], { closeOutPr: { number: 7, state: 'OPEN', labels: [{ name: 'revise-me' }] }, repositoryMerged: false }, { needsRevisionLabel: 'revise-me' })).toBe('needs-revision')
 		})
 
 		test('merged branch fact only yields landed for a closeable Change', () => {
-			expect(computeChangeState(change(), [], { closeOutPrState: null, repositoryMerged: true })).toBe('open')
-			expect(computeChangeState(change(), [slice()], { closeOutPrState: null, repositoryMerged: true })).toBe('open')
-			expect(computeChangeState(change(), [doneSlice()], { closeOutPrState: null, repositoryMerged: true })).toBe('landed')
+			expect(computeChangeState(change(), [], { closeOutPr: null, repositoryMerged: true })).toBe('open')
+			expect(computeChangeState(change(), [slice()], { closeOutPr: null, repositoryMerged: true })).toBe('open')
+			expect(computeChangeState(change(), [doneSlice()], { closeOutPr: null, repositoryMerged: true })).toBe('landed')
 		})
 	})
 

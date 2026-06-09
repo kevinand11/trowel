@@ -21,6 +21,7 @@ type ShipRuntime = {
 	mergeMethod: ShipMergeMethod
 	mergeabilityPollSeconds: number
 	deleteBranchPolicy: DeleteBranchPolicy
+	needsRevisionLabel?: string
 	interactive: boolean
 	confirm: (msg: string) => Promise<boolean>
 	stdout: (s: string) => void
@@ -54,7 +55,7 @@ async function runShip(changeId: string, rt: ShipRuntime): Promise<void> {
 }
 
 function shipMayRunCleanup(state: ChangeState): boolean {
-	return state === 'ready' || state === 'in-flight' || state === 'landed' || state === 'done'
+	return state === 'ready' || state === 'awaiting-review' || state === 'landed' || state === 'done'
 }
 
 function assertPrCloseOutBranchTopology(context: ShipContext, rt: ShipRuntime): void {
@@ -77,14 +78,16 @@ async function shipByState(context: ShipContext, rt: ShipRuntime): Promise<void>
 				await shipReadyChange(context.change, context.targetBranch, rt),
 			)
 			return
-		case 'in-flight':
+		case 'awaiting-review':
 			await cleanupAfterShip(
 				context.change,
 				context.targetBranch,
 				rt,
-				await shipInFlightChange(context.change, context.targetBranch, rt),
+				await shipAwaitingReviewChange(context.change, context.targetBranch, rt),
 			)
 			return
+		case 'needs-revision':
+			throw new Error(`Change ${context.change.id} Close-out PR needs revision. Run: trowel change work ${context.change.id}`)
 		case 'landed':
 			await finalizeLandedChange(context.change, rt)
 			await cleanupAfterShip(context.change, context.targetBranch, rt, true)
@@ -100,11 +103,11 @@ async function shipByState(context: ShipContext, rt: ShipRuntime): Promise<void>
 
 async function loadShipContext(changeId: string, rt: ShipRuntime): Promise<ShipContext> {
 	const change = await loadChange(changeId, rt)
-	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr })
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr, needsRevisionLabel: rt.needsRevisionLabel })
 	return {
 		change,
 		slices,
-		state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }),
+		state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git, needsRevisionLabel: rt.needsRevisionLabel }),
 		targetBranch: change.targetBranch,
 	}
 }
@@ -117,7 +120,7 @@ async function shipReadyChange(change: Change, targetBranch: string, rt: ShipRun
 	return rt.pr ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
-async function shipInFlightChange(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
+async function shipAwaitingReviewChange(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {
 	return rt.pr ? shipViaPr(change, targetBranch, rt) : shipViaMerge(change, targetBranch, rt)
 }
 
@@ -236,7 +239,7 @@ async function finalizeSliceAfterObservedMerge(changeId: string, slice: Classifi
 async function waitForSliceMergedState(changeId: string, sliceId: string, rt: ShipRuntime): Promise<ClassifiedSlice | null> {
 	const deadline = Date.now() + rt.mergeabilityPollSeconds * 1000
 	while (true) {
-		const slice = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr })).find((s) => s.id === sliceId) ?? null
+		const slice = (await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr, needsRevisionLabel: rt.needsRevisionLabel })).find((s) => s.id === sliceId) ?? null
 		if (slice?.state === 'landed' || slice?.state === 'done') return slice
 		const remaining = deadline - Date.now()
 		if (remaining <= 0) return slice
@@ -344,6 +347,7 @@ async function buildShipRuntime(opts: { storage?: string }): Promise<{ base: Com
 			mergeMethod: base.config.ship.mergeMethod,
 			mergeabilityPollSeconds: base.config.ship.mergeabilityPollSeconds,
 			deleteBranchPolicy: base.config.ship.deleteBranch,
+			needsRevisionLabel: base.config.labels.needsRevision,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 			confirm: (message) => confirm({ message, default: confirmDefault(message) }),
 			stdout: (s) => process.stdout.write(s),
@@ -814,7 +818,7 @@ if (import.meta.vitest) {
 			expect(calls.map((c) => c[0])).not.toContain('findPrNumberByHead')
 		})
 
-		test('PR mode in-flight Change uses the existing Close-out PR and keeps branches when not done', async () => {
+		test('PR mode awaiting-review Change uses the existing Close-out PR and keeps branches when not done', async () => {
 			const { gh, calls } = recordingGhOps({
 				findAnyPrByHead: async () => ({ number: 9, state: 'OPEN' }),
 				findPrNumberByHead: async () => 9,
@@ -834,7 +838,20 @@ if (import.meta.vitest) {
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
-		test('merge mode in-flight Change uses host-merge behavior instead of the existing Close-out PR', async () => {
+		test('needs-revision Change blocks with Work guidance before Cleanup', async () => {
+			const { gh, calls } = recordingGhOps({
+				findAnyPrByHead: async () => ({ number: 9, state: 'OPEN', labels: [{ name: 'needs-revision' }] }),
+				findPrNumberByHead: async () => 9,
+			})
+			const { rt, gitCalls } = makeRt({ gh, pr: true, deleteBranchPolicy: 'always' })
+
+			await expect(runShip('3', rt)).rejects.toThrow(/needs revision.*trowel change work 3/)
+
+			expect(calls.map((c) => c[0])).not.toContain('mergePr')
+			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
+		})
+
+		test('merge mode awaiting-review Change uses host-merge behavior instead of the existing Close-out PR', async () => {
 			const { gh, calls } = recordingGhOps({
 				findAnyPrByHead: async () => ({ number: 9, state: 'OPEN' }),
 				findPrNumberByHead: async () => 9,
@@ -850,7 +867,7 @@ if (import.meta.vitest) {
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
 
-		test('in-flight Change performs full cleanup only after the Close-out PR makes it done', async () => {
+		test('awaiting-review Change performs full cleanup only after the Close-out PR makes it done', async () => {
 			let merged = false
 			const { gh, calls } = recordingGhOps({
 				findAnyPrByHead: async () => ({ number: 9, state: merged ? 'MERGED' : 'OPEN' }),

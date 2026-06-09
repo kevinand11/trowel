@@ -162,7 +162,7 @@ export type GhOps = {
 	 * Look up the most recent PR for `head` regardless of state. Returns null when no PR exists.
 	 * Used by state computation to detect that a Close-out PR has been merged on GitHub.
 	 */
-	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null>
+	findAnyPrByHead(head: string): Promise<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED'; isDraft?: boolean; labels?: Array<{ name: string }>; reviewDecision?: 'CHANGES_REQUESTED' | 'APPROVED' | 'REVIEW_REQUIRED' | string | null } | null>
 	viewPrMergeability(prNumber: number): Promise<PrMergeabilityFacts>
 	closePr(prNumber: number, opts?: { comment?: string }): Promise<void>
 	mergePr(prNumber: number, method: ShipMergeMethod): Promise<void>
@@ -330,7 +330,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			return pr.number
 		},
 		async findAnyPrByHead(head) {
-			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state'])
+			const r = await runner(['pr', 'list', '--head', head, '--state', 'all', '--json', 'number,state,isDraft,labels,reviewDecision'])
 			return r.ok ? parseAnyPrByHeadList(r.stdout) : null
 		},
 		async viewPrMergeability(prNumber) {
@@ -373,12 +373,12 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 	}
 }
 
-type AnyPrByHead = { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' }
+type AnyPrByHead = { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED'; isDraft?: boolean; labels?: Array<{ name: string }>; reviewDecision?: 'CHANGES_REQUESTED' | 'APPROVED' | 'REVIEW_REQUIRED' | string | null }
 
 function parseAnyPrByHeadList(stdout: string): AnyPrByHead | null {
-	const prs = JSON.parse(stdout) as Array<{ number: number; state: string }>
+	const prs = JSON.parse(stdout) as Array<{ number: number; state: string; isDraft?: boolean; labels?: Array<{ name: string }>; reviewDecision?: string | null }>
 	const pr = prs[0]
-	return pr ? { number: pr.number, state: normalizePrState(pr.state) } : null
+	return pr ? { number: pr.number, state: normalizePrState(pr.state), isDraft: pr.isDraft, labels: pr.labels, reviewDecision: pr.reviewDecision } : null
 }
 
 function normalizePrState(state: string): AnyPrByHead['state'] {
@@ -694,9 +694,11 @@ if (import.meta.vitest) {
 		})
 
 		test('findAnyPrByHead parses the first structured PR across all states', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok(JSON.stringify([{ number: 12, state: 'MERGED' }])) }])
-			expect(await createGh(runner).findAnyPrByHead('feature/x')).toEqual({ number: 12, state: 'MERGED' })
-			expect(calls[0]).toEqual(['pr', 'list', '--head', 'feature/x', '--state', 'all', '--json', 'number,state'])
+			const { runner, calls } = makeRunner([
+				{ match: () => true, respond: ok(JSON.stringify([{ number: 12, state: 'MERGED', isDraft: false, labels: [{ name: 'needs-revision' }], reviewDecision: 'CHANGES_REQUESTED' }])) },
+			])
+			expect(await createGh(runner).findAnyPrByHead('feature/x')).toEqual({ number: 12, state: 'MERGED', isDraft: false, labels: [{ name: 'needs-revision' }], reviewDecision: 'CHANGES_REQUESTED' })
+			expect(calls[0]).toEqual(['pr', 'list', '--head', 'feature/x', '--state', 'all', '--json', 'number,state,isDraft,labels,reviewDecision'])
 		})
 
 		test('closePr comments when provided, then patches PR state closed', async () => {

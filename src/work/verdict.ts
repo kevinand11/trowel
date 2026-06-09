@@ -17,7 +17,8 @@ export type FeedbackEntry =
 	| { kind: 'thread'; author: string; createdAt: string; body: string }
 
 export type TurnIn = {
-	slice: { id: string; title: string; body: string }
+	slice?: { id: string; title: string; body: string }
+	change?: { id: string; title: string; body: string }
 	changeBranch?: string
 	pr?: { number: number; branch: string }
 	feedback?: FeedbackEntry[]

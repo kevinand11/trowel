@@ -57,7 +57,7 @@ export function run(): void {
 
 	changeCmd
 		.command('status')
-		.description("Show a Change's current state (done / in-flight / ready slices)")
+		.description("Show a Change's current state and Slice states")
 		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (changeId: string, opts) => {

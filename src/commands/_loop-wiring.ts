@@ -6,7 +6,7 @@ import type { Config } from '../config'
 import { buildStorage, loadCommandBase } from './runtime.ts'
 import { getHarness, type HarnessKind } from '../harnesses/registry.ts'
 import { loadPrompt, type Role } from '../prompts/load.ts'
-import type { Storage } from '../storages/types.ts'
+import type { Change, Storage } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
@@ -71,7 +71,7 @@ export async function buildLoopWiring(opts: { storage?: string; harness?: Harnes
 		return { commits }
 	}
 
-	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice: ClassifiedSlice; branch: string; turnIn: TurnIn }) =>
+	const makeSpawnTurnFor = (scopeId: string) => async (args: { role: Role; slice?: ClassifiedSlice; change?: Pick<Change, 'id' | 'title' | 'body'>; branch: string; turnIn: TurnIn }) =>
 		spawnTurn(args, {
 			changeId: scopeId,
 			projectRoot,

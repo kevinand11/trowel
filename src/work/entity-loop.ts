@@ -1,3 +1,4 @@
+import { runCloseOutReview } from './change-review.ts'
 import type { ChangeState } from './change-types.ts'
 import { createEffectiveSliceReader } from './effective-slices.ts'
 import { runLoop, type LoopConfig, type LoopDeps } from './loop.ts'
@@ -18,7 +19,7 @@ export type EntityLoopDeps = {
 	storage: Storage
 	git: GitOps
 	gh: GhOps
-	spawnTurn: (args: { role: Role; slice: ClassifiedSlice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
+	spawnTurn: (args: { role: Role; slice?: ClassifiedSlice; change?: Pick<Change, 'id' | 'title' | 'body'>; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
 	projectRoot?: string
@@ -29,22 +30,90 @@ export type EntityLoopOptions = {
 	sleep?: (ms: number) => Promise<void>
 }
 
+type ChangeLoopMemory = {
+	closeOutReviewAttempted: boolean
+	idlePolls: number
+}
+
 /**
  * Top-level dispatch entry for `trowel change work`. Work never runs Close-out,
- * Change finalization, or Cleanup; it only runs open Change Slice work/finalization
- * and reports the next explicit Change-level action for non-open computed states.
+ * Change finalization, or Cleanup; it runs open Change Slice work/finalization
+ * and Change-level Reviewer work for Close-out PR feedback, then reports the next explicit action.
  */
 export async function runEntityLoop(entity: LoopEntity, deps: EntityLoopDeps, opts: EntityLoopOptions = {}): Promise<void> {
 	await runChangeEntity(entity, deps, opts)
 }
 
 async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps, opts: EntityLoopOptions): Promise<void> {
-	const initial = await readChangeWorkState(entity, deps)
-	if (reportIfNotOpen(initial, deps)) return
+	const memory: ChangeLoopMemory = { closeOutReviewAttempted: false, idlePolls: 0 }
+	while (true) {
+		const current = await readChangeWorkState(entity, deps)
+		if (current.state === 'open') {
+			await runOpenSliceLoop(entity, deps, opts)
+			if (!opts.loop) return await reportAfterOpenLoop(entity, deps)
+			continue
+		}
+		if (current.state === 'needs-revision') {
+			if (!memory.closeOutReviewAttempted) {
+				memory.closeOutReviewAttempted = true
+				await runCloseOutReviewForChange(current.change, deps)
+				if (!opts.loop) return await reportAfterCloseOutReview(entity, deps)
+				continue
+			}
+			if (await pollNonActionableChangeState(entity, current.state, deps, opts, memory)) continue
+			reportIfNotOpen(current, deps)
+			return
+		}
+		if (current.state === 'awaiting-review' && await pollNonActionableChangeState(entity, current.state, deps, opts, memory)) continue
+		reportIfNotOpen(current, deps)
+		return
+	}
+}
+
+async function runOpenSliceLoop(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps, opts: EntityLoopOptions): Promise<void> {
 	await runLoop(entity.id, loopDepsForChange(entity, deps, opts))
+}
+
+async function reportAfterOpenLoop(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
 	const after = await readChangeWorkState(entity, deps)
 	if (reportIfNotOpen(after, deps)) return
-	if (after.slices.length === 0 && !opts.loop) deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
+	if (after.slices.length === 0) deps.log(`[work change-${entity.id}] no slices; nothing to ship`)
+}
+
+async function reportAfterCloseOutReview(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<void> {
+	const after = await readChangeWorkState(entity, deps)
+	reportIfNotOpen(after, deps)
+}
+
+async function runCloseOutReviewForChange(change: Change, deps: EntityLoopDeps): Promise<void> {
+	const outcome = await runCloseOutReview(change, {
+		git: deps.git,
+		gh: deps.gh,
+		spawnTurn: deps.spawnTurn,
+		log: deps.log,
+		needsRevisionLabel: deps.config.needsRevisionLabel,
+		projectRoot: deps.projectRoot,
+	})
+	if (outcome === 'partial') deps.log(`[work change-${change.id}] partial; skipping Close-out PR revision for the rest of this run`)
+}
+
+async function pollNonActionableChangeState(
+	entity: Extract<LoopEntity, { kind: 'change' }>,
+	state: ChangeState,
+	deps: EntityLoopDeps,
+	opts: EntityLoopOptions,
+	memory: ChangeLoopMemory,
+): Promise<boolean> {
+	if (!opts.loop) return false
+	memory.idlePolls += 1
+	logChangeIdlePoll(entity.id, state, deps, deps.config.loopPollSeconds, memory.idlePolls)
+	await (opts.sleep ?? sleep)(deps.config.loopPollSeconds * 1000)
+	return true
+}
+
+function logChangeIdlePoll(changeId: string, state: ChangeState, deps: EntityLoopDeps, pollSeconds: number, polls: number): void {
+	if (polls === 1) deps.log(`[work change-${changeId}] state=${state}; polling every ${pollSeconds}s`)
+	else if (polls % 10 === 0) deps.log(`[work change-${changeId}] still state=${state} after ${polls} polls`)
 }
 
 type ChangeWorkState = { change: Change; slices: ClassifiedSlice[]; state: ChangeState }
@@ -59,7 +128,7 @@ async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' 
 		needsRevisionLabel: deps.config.needsRevisionLabel,
 	})
 	const slices = await reader.findSlices(entity.id)
-	const state = await classifyChange(change, slices, { gh: deps.gh, git: deps.git })
+	const state = await classifyChange(change, slices, { gh: deps.gh, git: deps.git, needsRevisionLabel: deps.config.needsRevisionLabel })
 	return { change, slices, state }
 }
 
@@ -74,8 +143,10 @@ function nonOpenChangeMessage(changeId: string, state: ChangeState): string {
 	switch (state) {
 		case 'ready':
 			return `[work change-${changeId}] state=ready; all Slices are done; run: ${ship}`
-		case 'in-flight':
-			return `[work change-${changeId}] state=in-flight; awaiting shipping PR merge; after it merges, run: ${ship}`
+		case 'needs-revision':
+			return `[work change-${changeId}] state=needs-revision; Close-out PR needs revision; running Reviewer is required before shipping`
+		case 'awaiting-review':
+			return `[work change-${changeId}] state=awaiting-review; Close-out PR awaiting review or merge; run: ${ship}`
 		case 'landed':
 			return `[work change-${changeId}] non-work state=landed; merged to Target branch but not finalized; run: ${ship}`
 		case 'done':
@@ -166,6 +237,7 @@ if (import.meta.vitest) {
 		gh?: GhOps
 		spawnTurn?: EntityLoopDeps['spawnTurn']
 		finalizeSlice?: Storage['finalizeSlice']
+		options?: EntityLoopOptions
 	}
 
 	async function runLoopFixture(opts: LoopFixtureOpts = {}): Promise<{ changeClosed: boolean; logs: string[]; spawned: number }> {
@@ -204,6 +276,7 @@ if (import.meta.vitest) {
 				log: (msg) => logs.push(msg),
 				config: opts.config ?? baseConfig,
 			},
+			opts.options,
 		)
 		return { changeClosed, logs, spawned }
 	}
@@ -217,12 +290,66 @@ if (import.meta.vitest) {
 			expect(result.logs.join('\n')).toContain('trowel change ship 3')
 		})
 
-		test('in-flight Change → reports awaiting shipping PR merge and runs no Slice work', async () => {
+		test('awaiting-review Change → reports Close-out PR review guidance and runs no Slice work', async () => {
 			const { gh } = recordingGhOps({ findAnyPrByHead: async (head) => (head === '3-feat' ? { number: 12, state: 'OPEN' } : null) })
 			const result = await runLoopFixture({ slices: [doneSlice], gh, config: { ...baseConfig, pr: true } })
 			expect(result.spawned).toBe(0)
-			expect(result.logs.join('\n')).toContain('state=in-flight')
-			expect(result.logs.join('\n')).toContain('awaiting shipping PR merge')
+			expect(result.logs.join('\n')).toContain('state=awaiting-review')
+			expect(result.logs.join('\n')).toContain('Close-out PR awaiting review or merge')
+		})
+
+		test('needs-revision Change runs one Close-out Reviewer Turn and clears needs-revision label', async () => {
+			let labels = [{ name: 'needs-revision' }]
+			const gitCalls: string[] = []
+			const { gh, calls } = recordingGhOps({
+				findAnyPrByHead: async (head) => (head === '3-feat' ? { number: 12, state: 'OPEN', labels } : null),
+				findPrNumberByHead: async () => 12,
+				fetchPrReviews: async () => [{ author: { login: 'human' }, submittedAt: '2026-06-09T00:00:00.000Z', body: 'Fix it', state: 'CHANGES_REQUESTED' }],
+				editIssueLabels: async (_n, opts) => { labels = labels.filter((label) => !opts.remove?.includes(label.name)) },
+			})
+			const result = await runLoopFixture({
+				slices: [doneSlice],
+				gh,
+				git: unmergedGit({ push: async (branch) => { gitCalls.push(`push(${branch})`) } }),
+				config: { ...baseConfig, pr: true },
+				spawnTurn: async (args) => {
+					expect(args.change).toMatchObject({ id: '3', title: 'Feat' })
+					expect(args.slice).toBeUndefined()
+					expect(args.branch).toBe('3-feat')
+					expect(args.turnIn).toMatchObject({ change: { id: '3', title: 'Feat' }, pr: { number: 12, branch: '3-feat' } })
+					return { verdict: 'ready', commits: 1 }
+				},
+			})
+			expect(result.spawned).toBe(1)
+			expect(gitCalls).toEqual(['push(3-feat)'])
+			expect(calls).toContainEqual(['editIssueLabels', 12, { remove: ['needs-revision'] }])
+			expect(result.logs.join('\n')).toContain('state=awaiting-review')
+		})
+
+		test('polling mode does not rerun Close-out Reviewer after one attempted revision', async () => {
+			let open = true
+			const { gh } = recordingGhOps({
+				findAnyPrByHead: async (head) => (head === '3-feat' && open ? { number: 12, state: 'OPEN', labels: [{ name: 'needs-revision' }] } : null),
+				findPrNumberByHead: async () => 12,
+			})
+			let sleeps = 0
+			const result = await runLoopFixture({
+				slices: [doneSlice],
+				gh,
+				config: { ...baseConfig, pr: true, loopPollSeconds: 1 },
+				spawnTurn: async () => ({ verdict: 'ready', commits: 0 }),
+				options: {
+					loop: true,
+					sleep: async () => {
+						sleeps += 1
+						open = false
+					},
+				},
+			})
+			expect(result.spawned).toBe(1)
+			expect(sleeps).toBe(1)
+			expect(result.logs.join('\n')).toContain('state=needs-revision; polling every 1s')
+			expect(result.logs.join('\n')).toContain('state=ready')
 		})
 
 		test('landed Change → reports non-work state and does not finalize the Change', async () => {

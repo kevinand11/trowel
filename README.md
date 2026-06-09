@@ -8,9 +8,9 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 - **Slice** — one vertical cut of a Change that can be implemented and reviewed independently.
 - **Storage** — where Changes and Slices are tracked: local files or GitHub issues.
 - **Slice branch** — the durable branch a Slice Turn runs on. New Slices may store `null`; `prepareImplement` fills it lazily using `work.perSliceBranches`.
-- **Turn** — one agent run for one role (`implement`, `audit`, or `review`) against one Slice.
+- **Turn** — one agent run for one role (`implement`, `audit`, or `review`) against one Slice, or a Change-level Close-out PR revision.
 - **Auditing / Auditor** — the optional branch-diff quality gate after implementation. The Auditor compares the Slice branch against the Change branch, fixes and commits when possible, and records `auditedAt` when ready.
-- **Reviewer** — the PR-feedback response role. It runs only when an open Slice PR's review surface computes the Slice state as `needs-revision`, then responds to the feedback and clears that signal when ready.
+- **Reviewer** — the PR-feedback response role. It runs when an open Slice PR or Close-out PR computes as `needs-revision`, then responds to the feedback and clears that signal when ready.
 
 ## Common commands
 
@@ -19,7 +19,7 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel start [--storage <kind>] [--harness <kind>]` | Understand a user request by grilling, plan repository work, and create a Change when needed. |
 | `trowel change list [--storage <kind>]` | List all Changes newest first with computed state. |
 | `trowel change status <change-id> [--storage <kind>]` | Show one Change and its Slice states. |
-| `trowel change work <change-id> [--loop] [--storage <kind>] [--harness <kind>]` | Run the AFK loop for a Change; `--loop` keeps polling for newly actionable Slice work. |
+| `trowel change work <change-id> [--loop] [--storage <kind>] [--harness <kind>]` | Run the AFK loop for a Change; `--loop` keeps polling for newly actionable Slice or Close-out PR revision work. |
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
 | `trowel doctor` | Check local tool/config health. |
@@ -31,7 +31,9 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 
 ## States and workflow flags
 
-Slice states are computed from storage fields and PR review surfaces: `draft`, `open`, `blocked`, `in-flight`, `implemented`, `audited`, `awaiting-review`, `needs-revision`, `landed`, and `done`. `needs-revision` is derived from the Slice PR's review surface (for example the configured `labels.needsRevision`, default `needs-revision`, or a changes-requested review decision); it is not stored on the Slice.
+Change states are computed from storage fields, Slice states, branch merge facts, and Close-out PR review surfaces: `open`, `ready`, `awaiting-review`, `needs-revision`, `landed`, `done`, and `aborted`.
+
+Slice states are computed from storage fields and PR review surfaces: `draft`, `open`, `blocked`, `in-flight`, `implemented`, `audited`, `awaiting-review`, `needs-revision`, `landed`, and `done`. `needs-revision` is derived from the PR review surface (for example the configured `labels.needsRevision`, default `needs-revision`, or a changes-requested review decision); it is not stored on the Slice or Change.
 
 Key workflow flags:
 

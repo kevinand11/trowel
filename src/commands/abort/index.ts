@@ -20,6 +20,7 @@ type AbortRuntime = {
 	pr: boolean
 	deleteBranchPolicy: DeleteBranchPolicy
 	abortComment: string | null
+	needsRevisionLabel?: string
 	interactive?: boolean
 	confirm: (msg: string) => Promise<boolean>
 	confirmExact: (msg: string, expected: string) => Promise<boolean>
@@ -46,14 +47,14 @@ async function runAbortChange(changeId: string, rt: AbortRuntime): Promise<void>
 }
 
 function abortMayRunCleanup(state: ChangeState): boolean {
-	return state === 'open' || state === 'ready' || state === 'in-flight' || state === 'aborted'
+	return state === 'open' || state === 'ready' || state === 'awaiting-review' || state === 'needs-revision' || state === 'aborted'
 }
 
 async function classifiedChangeOrThrow(changeId: string, rt: AbortRuntime): Promise<ClassifiedChange> {
 	const change = await rt.storage.findChange(changeId)
 	if (!change) throw new Error(`Change '${changeId}' not found`)
 	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId, pr: rt.pr })
-	return { change, slices, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }) }
+	return { change, slices, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git, needsRevisionLabel: rt.needsRevisionLabel }) }
 }
 
 async function changeTargetBranch(change: Change, _rt: AbortRuntime): Promise<string> {
@@ -66,8 +67,9 @@ async function abortChangeByState(target: ClassifiedChange, targetBranch: string
 		case 'ready':
 			await abortOpenOrReadyChange(target.change, target.slices, targetBranch, rt)
 			return
-		case 'in-flight':
-			await abortInFlightChange(target.change, target.slices, targetBranch, rt)
+		case 'awaiting-review':
+		case 'needs-revision':
+			await abortCloseOutPrChange(target.change, target.slices, targetBranch, target.state, rt)
 			return
 		case 'aborted':
 			rt.stdout(`Change ${target.change.id} is already aborted; running cleanup.\n`)
@@ -93,8 +95,8 @@ async function abortOpenOrReadyChange(
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
-async function abortInFlightChange(change: Change, slices: ClassifiedSlice[], targetBranch: string, rt: AbortRuntime): Promise<void> {
-	if (!(await confirmAbortInFlightChange(change.id, rt))) return
+async function abortCloseOutPrChange(change: Change, slices: ClassifiedSlice[], targetBranch: string, state: ChangeState, rt: AbortRuntime): Promise<void> {
+	if (!(await confirmAbortCloseOutPrChange(change.id, state, rt))) return
 	await closeOpenCloseOutPr(change, rt)
 	await closeOpenSlicePrs(slices, rt)
 	await closeOpenSliceRecords(change.id, slices, rt)
@@ -102,11 +104,11 @@ async function abortInFlightChange(change: Change, slices: ClassifiedSlice[], ta
 	await cleanupAfterAbort(change, slices, targetBranch, rt)
 }
 
-async function confirmAbortInFlightChange(changeId: string, rt: AbortRuntime): Promise<boolean> {
+async function confirmAbortCloseOutPrChange(changeId: string, state: ChangeState, rt: AbortRuntime): Promise<boolean> {
 	if (rt.interactive === false)
-		throw new Error(`Change ${changeId} is in-flight; abort requires an interactive terminal and exact-id confirmation.`)
+		throw new Error(`Change ${changeId} is ${state}; abort requires an interactive terminal and exact-id confirmation.`)
 	const ok = await rt.confirmExact(
-		`Change ${changeId} is in-flight with an open Close-out PR. Type '${changeId}' to close it without merging and abort:`,
+		`Change ${changeId} is ${state} with an open Close-out PR. Type '${changeId}' to close it without merging and abort:`,
 		changeId,
 	)
 	if (ok) return true
@@ -182,6 +184,7 @@ async function buildAbortRuntime(opts: { storage?: string }): Promise<{ base: Co
 			pr: base.config.ship.pr,
 			deleteBranchPolicy: base.config.abort.deleteBranch,
 			abortComment: base.config.abort.comment,
+			needsRevisionLabel: base.config.labels.needsRevision,
 			interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
 			confirm: (msg) => inqConfirm({ message: msg, default: false }),
 			confirmExact: async (message, expected) => (await inqInput({ message })) === expected,
@@ -476,7 +479,7 @@ if (import.meta.vitest) {
 			expect(storageCalls.find((call) => call.startsWith('updateSlice'))).toBeUndefined()
 		})
 
-		test('in-flight Change: declining exact-id confirmation leaves PRs and records untouched', async () => {
+		test('awaiting-review Change: declining exact-id confirmation leaves PRs and records untouched', async () => {
 			const { storageCalls, ghCalls, stdout } = await runAbortChangeWith({
 				storageState: {
 					change: fakeChange(),
@@ -491,7 +494,7 @@ if (import.meta.vitest) {
 			expect(ghCalls.find((call) => call[0] === 'closePr')).toBeUndefined()
 		})
 
-		test('in-flight Change: exact-id confirmation closes Close-out and Slice PRs without merging before cleanup', async () => {
+		test('awaiting-review Change: exact-id confirmation closes Close-out and Slice PRs without merging before cleanup', async () => {
 			const slice = fakeSlice({ id: 's1', title: 'First Slice' })
 			const sliceBranch = 'change-42/slice-s1-first-slice'
 			const { storageCalls, ghCalls } = await runAbortChangeWith({

@@ -4,12 +4,13 @@ import path from 'node:path'
 import { parseVerdict, type TurnIn, type TurnOut } from './verdict.ts'
 import { ensureWorktree, resetWorktree, type TurnWorktree } from './worktrees.ts'
 import type { Role } from '../prompts/load.ts'
-import type { Slice } from '../storages/types.ts'
+import type { Change, Slice } from '../storages/types.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
 export type SpawnTurnArgs = {
 	role: Role
-	slice: Slice
+	slice?: Slice
+	change?: Pick<Change, 'id' | 'title' | 'body'>
 	branch: string
 	turnIn: TurnIn
 }
@@ -23,12 +24,18 @@ export type SpawnTurnDeps = {
 	log?: (m: string) => void
 }
 
+function turnTargetId(args: SpawnTurnArgs): string {
+	if (args.slice) return args.slice.id
+	if (args.change) return `change-${args.change.id}`
+	throw new Error('Turn target missing: expected slice or change')
+}
+
 export async function spawnTurn(args: SpawnTurnArgs, deps: SpawnTurnDeps): Promise<TurnOut> {
-	// One log file per (change, slice, role); each Turn appends a section header at start.
+	// One log file per (change, target, role); each Turn appends a section header at start.
 	// See ADR `2026-05-12-sandcastle-integration.md` — pre-pivot the path included a runId
 	// suffix because worktrees were also per-Turn; post-pivot worktrees are per-branch and
-	// logs follow the same one-per-(slice,role) shape.
-	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.changeId, `${args.slice.id}-${args.role}.log`)
+	// logs follow the same one-per-(target,role) shape.
+	const logPath = path.join(deps.projectRoot, '.trowel', 'logs', deps.changeId, `${turnTargetId(args)}-${args.role}.log`)
 
 	const worktree = await ensureWorktree({
 		changeId: deps.changeId,

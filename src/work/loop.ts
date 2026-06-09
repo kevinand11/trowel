@@ -5,7 +5,7 @@ import type { ClassifiedSlice } from './slice-types.ts'
 import type { ClassifySliceConfig } from './types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
-import type { Slice, Storage } from '../storages/types.ts'
+import type { Change, Slice, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 import { classifySlices } from '../utils/slice-state.ts'
@@ -31,7 +31,7 @@ export type LoopDeps = {
 	git: GitOps
 	gh: GhOps
 	changeBranch: string
-	spawnTurn: (args: { role: Role; slice: ClassifiedSlice; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
+	spawnTurn: (args: { role: Role; slice?: ClassifiedSlice; change?: Pick<Change, 'id' | 'title' | 'body'>; branch: string; turnIn: TurnIn }) => Promise<TurnOut>
 	log: (msg: string) => void
 	config: LoopConfig
 	projectRoot?: string
@@ -293,6 +293,7 @@ if (import.meta.vitest) {
 
 	function workerPoolSpawnTurn(events: string[], slowGate: Promise<void>, releaseSlow: () => void): LoopDeps['spawnTurn'] {
 		return async ({ role, slice }) => {
+			if (!slice) throw new Error('expected slice')
 			events.push(`${role}:${slice.id}:start`)
 			await waitForSlowSlice(slice, slowGate)
 			if (events.includes('audit:fast:start')) releaseSlow()
@@ -472,6 +473,7 @@ if (import.meta.vitest) {
 				'p1',
 				makeDeps(storage, {
 					spawnTurn: async ({ slice }) => {
+						if (!slice) throw new Error('expected slice')
 						spawnCalls++
 						if (slice.id === 'stuck') throw new Error('verdict file missing (.trowel/turn-out.json)')
 						return { verdict: 'ready', commits: 1 }
@@ -545,6 +547,7 @@ if (import.meta.vitest) {
 				'p1',
 				makeDeps(storage, {
 					spawnTurn: async ({ slice: s }) => {
+						if (!s) throw new Error('expected slice')
 						calls.push(s.id)
 						return s.id === 'stuck' ? { verdict: 'partial', commits: 0 } : { verdict: 'ready', commits: 1 }
 					},
@@ -572,6 +575,7 @@ if (import.meta.vitest) {
 				makeDeps(storage, {
 					git,
 					spawnTurn: async ({ slice: s }) => {
+						if (!s) throw new Error('expected slice')
 						calls.push(s.id)
 						return { verdict: 'partial', commits: 0 }
 					},

@@ -8,14 +8,14 @@ import { classifySlicesForChange } from '../../work/slice-states.ts'
 import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 import { buildStorage, loadCommandBase } from '../runtime.ts'
 
-type ListRuntime = { storage: Storage; pr: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts }
+type ListRuntime = { storage: Storage; pr: boolean; gh: ReturnType<typeof createGh>; git: ReadOnlyGitFacts; needsRevisionLabel?: string }
 type ChangeListRow = Change & { state: ChangeState; slices: ClassifiedSlice[] }
 
 export async function list(opts: { storage?: string } = {}): Promise<void> {
 	const base = await loadCommandBase('change list')
 	const git = branchStableGitOps(base.git)
 	const storage = buildStorage({ ...base, git }, opts.storage ?? base.config.storage)
-	const rows = await listChangeRows({ storage, pr: base.config.ship.pr, gh: base.gh, git: branchStableGitFacts(git) })
+	const rows = await listChangeRows({ storage, pr: base.config.ship.pr, gh: base.gh, git: branchStableGitFacts(git), needsRevisionLabel: base.config.labels.needsRevision })
 	for (const row of rows) process.stdout.write(`${formatChangeRow(row)}\n`)
 }
 
@@ -43,8 +43,8 @@ async function listChangeRows(rt: ListRuntime): Promise<ChangeListRow[]> {
 }
 
 async function listChangeRow(rt: ListRuntime, change: Change): Promise<ChangeListRow> {
-	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: change.id, pr: rt.pr })
-	return { ...change, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git }), slices }
+	const slices = await classifySlicesForChange({ storage: rt.storage, gh: rt.gh, changeId: change.id, pr: rt.pr, needsRevisionLabel: rt.needsRevisionLabel })
+	return { ...change, state: await classifyChange(change, slices, { gh: rt.gh, git: rt.git, needsRevisionLabel: rt.needsRevisionLabel }), slices }
 }
 
 if (import.meta.vitest) {
