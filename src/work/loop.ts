@@ -55,18 +55,18 @@ async function findNextActionableSlice(
 			const branchKey = schedulerBranchKey(slice, { perSliceBranches: config.perSliceBranches, changeBranch })
 			if (failed.has(slice.id)) return false
 			if (running.has(slice.id)) return false
-			if (runningBranches.has(branchKey)) return false
+			if (branchKey !== null && runningBranches.has(branchKey)) return false
 			if (claimedThisFill.has(slice.id)) return false
-			if (claimedBranchesThisFill.has(branchKey)) return false
+			if (branchKey !== null && claimedBranchesThisFill.has(branchKey)) return false
 			const resume = classify(slice, config, changeBranch)
 			return resume !== 'done' && resume !== 'blocked'
 		}) ?? null
 	)
 }
 
-function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>, opts: { perSliceBranches: boolean; changeBranch: string }): string {
+function schedulerBranchKey(slice: Pick<Slice, 'sliceBranch'>, opts: { perSliceBranches: boolean; changeBranch: string }): string | null {
 	if (slice.sliceBranch !== null) return slice.sliceBranch
-	return opts.perSliceBranches ? '__unassigned-slice-branch__' : opts.changeBranch
+	return opts.perSliceBranches ? null : opts.changeBranch
 }
 
 function launchClaim(
@@ -78,10 +78,10 @@ function launchClaim(
 	runningBranches: Set<string>,
 ): void {
 	const branchKey = schedulerBranchKey(slice, { perSliceBranches: deps.config.perSliceBranches, changeBranch: deps.changeBranch })
-	runningBranches.add(branchKey)
+	if (branchKey !== null) runningBranches.add(branchKey)
 	const task = processClaim(changeId, slice, deps, failed).finally(() => {
 		running.delete(slice.id)
-		runningBranches.delete(branchKey)
+		if (branchKey !== null) runningBranches.delete(branchKey)
 	})
 	running.set(slice.id, task)
 }
@@ -161,9 +161,8 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 		)
 		if (!slice) return
 		claimedThisFill.add(slice.id)
-		claimedBranchesThisFill.add(
-			schedulerBranchKey(slice, { perSliceBranches: state.config.perSliceBranches, changeBranch: state.deps.changeBranch }),
-		)
+		const branchKey = schedulerBranchKey(slice, { perSliceBranches: state.config.perSliceBranches, changeBranch: state.deps.changeBranch })
+		if (branchKey !== null) claimedBranchesThisFill.add(branchKey)
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
 		launchClaim(state.changeId, slice, state.deps, state.failed, state.running, state.runningBranches)
@@ -557,6 +556,11 @@ if (import.meta.vitest) {
 				}),
 			)
 			expect(peak).toBe(1)
+		})
+
+		test('scheduler parallelizes unassigned Slices in per-Slice branch mode', async () => {
+			const slices = ['1', '2', '3'].map((id) => makeSlice({ id, sliceBranch: null }))
+			expect(await peakConcurrentImplementers(slices, 2, true)).toBe(2)
 		})
 
 		test('scheduler honors config.maxConcurrent for distinct stored Slice branches', async () => {
