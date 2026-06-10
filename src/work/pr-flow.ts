@@ -105,8 +105,20 @@ export type ReviewFeedback = {
 
 export async function fetchFreshnessMarkedPrFeedback(gh: GhOps, git: GitOps, prNumber: number, branch: string): Promise<ReviewFeedback> {
 	const [feedback, headCommitTime] = await Promise.all([fetchPrFeedback(gh, prNumber), prHeadCommitTime(git, branch)])
-	const marked = feedback.map((entry) => ({ ...entry, fresh: entry.createdAt >= headCommitTime }))
+	const headTime = parseTimestamp(headCommitTime, 'PR branch head commit time')
+	const marked = feedback.map((entry) => ({ ...entry, fresh: parseOptionalTimestamp(entry.createdAt) >= headTime }))
 	return { feedback: marked, hasFreshFeedback: marked.some((entry) => entry.fresh), headCommitTime }
+}
+
+function parseTimestamp(value: string, label: string): number {
+	const time = Date.parse(value)
+	if (!Number.isFinite(time)) throw new Error(`invalid ${label}: ${value}`)
+	return time
+}
+
+function parseOptionalTimestamp(value: string): number {
+	const time = Date.parse(value)
+	return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY
 }
 
 async function prHeadCommitTime(git: GitOps, branch: string): Promise<string> {
@@ -303,6 +315,18 @@ if (import.meta.vitest) {
 				['same', true],
 				['new', true],
 			])
+		})
+
+		test('compares feedback and head commit timestamps by instant, not ISO string order', async () => {
+			const { gh } = recordingGhOps({
+				fetchPrLineComments: async () => [],
+				fetchPrReviews: async () => [],
+				fetchPrThread: async () => [{ author: { login: 'reviewer' }, createdAt: '2026-06-10T10:30:00Z', body: 'new in UTC' }],
+			})
+			const git = noopGitOps({ commitDate: async () => '2026-06-10T12:00:00+02:00' })
+			const out = await fetchFreshnessMarkedPrFeedback(gh, git, 168, 'feature')
+			expect(out.feedback).toMatchObject([{ body: 'new in UTC', fresh: true }])
+			expect(out.hasFreshFeedback).toBe(true)
 		})
 
 		test('drops review summaries with empty body', async () => {

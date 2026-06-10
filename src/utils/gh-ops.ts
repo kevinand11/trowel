@@ -355,10 +355,10 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 		},
 
 		async fetchPrLineComments(prNumber) {
-			return ghJson<LineCommentRaw[]>(['api', `repos/{owner}/{repo}/pulls/${prNumber}/comments`])
+			return ghPaginatedArray<LineCommentRaw>(['api', '--paginate', '--slurp', `repos/{owner}/{repo}/pulls/${prNumber}/comments`])
 		},
 		async fetchPrReviews(prNumber) {
-			const reviews = await ghJson<ApiReview[]>(['api', `repos/{owner}/{repo}/pulls/${prNumber}/reviews`])
+			const reviews = await ghPaginatedArray<ApiReview>(['api', '--paginate', '--slurp', `repos/{owner}/{repo}/pulls/${prNumber}/reviews`])
 			return reviews.map((review) => ({
 				author: { login: review.user.login },
 				submittedAt: review.submitted_at,
@@ -367,7 +367,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			}))
 		},
 		async fetchPrThread(prNumber) {
-			const comments = await ghJson<ApiIssueComment[]>(['api', `repos/{owner}/{repo}/issues/${prNumber}/comments`])
+			const comments = await ghPaginatedArray<ApiIssueComment>(['api', '--paginate', '--slurp', `repos/{owner}/{repo}/issues/${prNumber}/comments`])
 			return comments.map((comment) => ({ author: { login: comment.user.login }, createdAt: comment.created_at, body: comment.body }))
 		},
 	}
@@ -731,10 +731,10 @@ if (import.meta.vitest) {
 	})
 
 	describe('createGh: feedback methods', () => {
-		test('fetchPrLineComments hits the pulls/{n}/comments endpoint', async () => {
+		test('fetchPrLineComments paginates the pulls/{n}/comments endpoint', async () => {
 			const { runner, calls } = makeRunner([{ match: () => true, respond: ok('[]') }])
 			await createGh(runner).fetchPrLineComments(168)
-			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/pulls/168/comments'])
+			expect(calls[0]).toEqual(['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/pulls/168/comments'])
 		})
 
 		test('fetchPrReviews maps pull review API fields', async () => {
@@ -746,7 +746,7 @@ if (import.meta.vitest) {
 			])
 			const out = await createGh(runner).fetchPrReviews(168)
 			expect(out).toEqual([{ author: { login: 'r' }, submittedAt: 't', body: 'b', state: 'COMMENTED' }])
-			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/pulls/168/reviews'])
+			expect(calls[0]).toEqual(['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/pulls/168/reviews'])
 		})
 
 		test('fetchPrThread maps issue comment API fields', async () => {
@@ -755,7 +755,7 @@ if (import.meta.vitest) {
 			])
 			const out = await createGh(runner).fetchPrThread(168)
 			expect(out).toEqual([{ author: { login: 'r' }, createdAt: 't', body: 'b' }])
-			expect(calls[0]).toEqual(['api', 'repos/{owner}/{repo}/issues/168/comments'])
+			expect(calls[0]).toEqual(['api', '--paginate', '--slurp', 'repos/{owner}/{repo}/issues/168/comments'])
 		})
 	})
 }
