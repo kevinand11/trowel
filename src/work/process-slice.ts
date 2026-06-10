@@ -8,6 +8,7 @@ import {
 	prepareAudit,
 	prepareImplement,
 	prepareReview,
+	shouldRunReviewTurn,
 	type PhaseDeps,
 } from './phases.ts'
 import type { ClassifiedSlice } from './slice-types.ts'
@@ -16,7 +17,7 @@ import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 
-export type ProcessOutcome = 'done' | 'partial' | 'no-work'
+export type ProcessOutcome = 'done' | 'partial' | 'no-work' | 'skipped'
 
 type LoopPhaseCtx = { changeId: string; changeBranch: string; config: ClassifySliceConfig }
 type SliceStepResult = { outcome: ProcessOutcome } | { outcome: 'progress' }
@@ -28,6 +29,7 @@ const PROCESS_OUTCOME_BY_PHASE: Record<PhaseOutcome, ProcessOutcome | null> = {
 	'no-work': 'no-work',
 	partial: 'partial',
 	progress: null,
+	skipped: 'skipped',
 }
 
 export async function processSlice(changeId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {
@@ -61,6 +63,7 @@ async function processSliceStep(slice: ClassifiedSlice, ctx: LoopPhaseCtx, tag: 
 	if (state === 'finalize') return finalizeLandedSlice(slice, ctx, tag, deps)
 	if (state === 'integrate') return integrateImplementedSlice(slice, ctx, tag, deps)
 	if (!TURN_ROLES.has(state)) return unexpectedStateOutcome(state, tag, deps)
+	if (state === 'review' && !(await shouldRunReviewTurn(phaseDepsFor(deps), slice, ctx))) return { outcome: 'skipped' }
 	const outcome = await runSlicePhase(state as Role, slice, ctx, tag, deps)
 	const processOutcome = PROCESS_OUTCOME_BY_PHASE[outcome]
 	return { outcome: processOutcome ?? 'progress' }

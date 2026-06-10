@@ -6,6 +6,7 @@ const fakeBaseBranch = async (): Promise<string> => 'fake-base'
 const trueAsync = async (): Promise<boolean> => true
 const falseAsync = async (): Promise<boolean> => false
 const zeroAsync = async (): Promise<number> => 0
+const fakeCommitDate = async (): Promise<string> => '2026-01-01T00:00:00.000Z'
 const emptyWorktreeList = async (): Promise<Awaited<ReturnType<GitOps['worktreeList']>>> => []
 const emptyBranchList = async (): Promise<string[]> => []
 const installedGit = async (): Promise<Awaited<ReturnType<GitOps['detectVersion']>>> => ({ installed: true, version: '0.0.0' })
@@ -49,6 +50,7 @@ export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 		mergeAbort: noop,
 		mergeAbortIn: noop,
 		commitsAhead: zeroAsync,
+		commitDate: fakeCommitDate,
 		detectVersion: installedGit,
 		...overrides,
 	}

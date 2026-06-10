@@ -331,6 +331,7 @@ if (import.meta.vitest) {
 			const { gh } = recordingGhOps({
 				findAnyPrByHead: async (head) => (head === '3-feat' && open ? { number: 12, state: 'OPEN', labels: [{ name: 'needs-revision' }] } : null),
 				findPrNumberByHead: async () => 12,
+				fetchPrThread: async () => [{ author: { login: 'reviewer' }, createdAt: '2026-01-01T00:00:00.000Z', body: 'please revise' }],
 			})
 			let sleeps = 0
 			const result = await runLoopFixture({

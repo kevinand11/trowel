@@ -2,6 +2,7 @@ import type { ClassifiedSlice, SlicePrState } from './slice-types.ts'
 import type { FeedbackEntry } from './verdict.ts'
 import type { Slice } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
+import type { GitOps } from '../utils/git-ops.ts'
 
 type EnrichedSlice = Slice & Pick<ClassifiedSlice, 'prState' | 'needsRevision'>
 
@@ -96,6 +97,23 @@ function hasNeedsRevisionPrLabel(pr: OpenPrForState, label: string): boolean {
  * comments, PR-level review summaries, and PR thread comments — three `gh`
  * round-trips, mapped to the shared `FeedbackEntry` shape.
  */
+export type ReviewFeedback = {
+	feedback: FeedbackEntry[]
+	hasFreshFeedback: boolean
+	headCommitTime: string
+}
+
+export async function fetchFreshnessMarkedPrFeedback(gh: GhOps, git: GitOps, prNumber: number, branch: string): Promise<ReviewFeedback> {
+	const [feedback, headCommitTime] = await Promise.all([fetchPrFeedback(gh, prNumber), prHeadCommitTime(git, branch)])
+	const marked = feedback.map((entry) => ({ ...entry, fresh: entry.createdAt >= headCommitTime }))
+	return { feedback: marked, hasFreshFeedback: marked.some((entry) => entry.fresh), headCommitTime }
+}
+
+async function prHeadCommitTime(git: GitOps, branch: string): Promise<string> {
+	await git.fetch(branch)
+	return git.commitDate(`origin/${branch}`)
+}
+
 export async function fetchPrFeedback(gh: GhOps, prNumber: number): Promise<FeedbackEntry[]> {
 	const [lineRaw, reviewsRaw, threadRaw] = await Promise.all([
 		gh.fetchPrLineComments(prNumber),
@@ -111,6 +129,7 @@ export async function fetchPrFeedback(gh: GhOps, prNumber: number): Promise<Feed
 		path: c.path,
 		line: c.line,
 		resolved: false,
+		fresh: true,
 	}))
 	const reviewEntries: FeedbackEntry[] = reviewsRaw
 		.filter((r) => r.body.length > 0)
@@ -120,12 +139,14 @@ export async function fetchPrFeedback(gh: GhOps, prNumber: number): Promise<Feed
 			createdAt: r.submittedAt,
 			body: r.body,
 			state: r.state,
+			fresh: true,
 		}))
 	const threadEntries: FeedbackEntry[] = threadRaw.map((c) => ({
 		kind: 'thread',
 		author: c.author.login,
 		createdAt: c.createdAt,
 		body: c.body,
+		fresh: true,
 	}))
 	return [...lineEntries, ...reviewEntries, ...threadEntries].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
@@ -133,6 +154,7 @@ export async function fetchPrFeedback(gh: GhOps, prNumber: number): Promise<Feed
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
 	const { recordingGhOps } = await import('../test-utils/gh-ops-recorder.ts')
+	const { noopGitOps } = await import('../test-utils/git-ops-fixtures.ts')
 
 	describe('enrichSlicesFromOpenPrs', () => {
 		const makeSlice = (overrides: Partial<Slice> = {}): Slice => ({
@@ -242,7 +264,7 @@ if (import.meta.vitest) {
 				fetchPrReviews: async () => [],
 				fetchPrThread: async () => [{ author: { login: 'reviewer-c' }, createdAt: '2026-05-11T12:00:00Z', body: 'free-form thread comment' }],
 			})
-			expect(await fetchPrFeedback(gh, 168)).toEqual([{ kind: 'thread', author: 'reviewer-c', createdAt: '2026-05-11T12:00:00Z', body: 'free-form thread comment' }])
+			expect(await fetchPrFeedback(gh, 168)).toEqual([{ kind: 'thread', author: 'reviewer-c', createdAt: '2026-05-11T12:00:00Z', body: 'free-form thread comment', fresh: true }])
 		})
 
 		test('returns review summaries as `review` entries (with state)', async () => {
@@ -251,7 +273,7 @@ if (import.meta.vitest) {
 				fetchPrReviews: async () => [{ author: { login: 'reviewer-b' }, submittedAt: '2026-05-11T11:00:00Z', body: 'overall approach is wrong', state: 'CHANGES_REQUESTED' }],
 				fetchPrThread: async () => [],
 			})
-			expect(await fetchPrFeedback(gh, 168)).toEqual([{ kind: 'review', author: 'reviewer-b', createdAt: '2026-05-11T11:00:00Z', body: 'overall approach is wrong', state: 'CHANGES_REQUESTED' }])
+			expect(await fetchPrFeedback(gh, 168)).toEqual([{ kind: 'review', author: 'reviewer-b', createdAt: '2026-05-11T11:00:00Z', body: 'overall approach is wrong', state: 'CHANGES_REQUESTED', fresh: true }])
 		})
 
 		test('returns line comments as `line` entries', async () => {
@@ -261,6 +283,26 @@ if (import.meta.vitest) {
 				fetchPrThread: async () => [],
 			})
 			expect(await fetchPrFeedback(gh, 168)).toMatchObject([{ kind: 'line', author: 'reviewer-a', createdAt: '2026-05-11T10:00:00Z', body: 'extract this into a helper', path: 'src/foo.ts', line: 42 }])
+		})
+
+		test('marks feedback fresh when created at or after branch head commit time', async () => {
+			const { gh } = recordingGhOps({
+				fetchPrLineComments: async () => [],
+				fetchPrReviews: async () => [],
+				fetchPrThread: async () => [
+					{ author: { login: 'old' }, createdAt: '2026-05-11T09:59:59Z', body: 'old' },
+					{ author: { login: 'same' }, createdAt: '2026-05-11T10:00:00Z', body: 'same' },
+					{ author: { login: 'new' }, createdAt: '2026-05-11T10:00:01Z', body: 'new' },
+				],
+			})
+			const git = noopGitOps({ commitDate: async () => '2026-05-11T10:00:00Z' })
+			const out = await fetchFreshnessMarkedPrFeedback(gh, git, 168, 'feature')
+			expect(out.hasFreshFeedback).toBe(true)
+			expect(out.feedback.map((entry) => [entry.body, entry.fresh])).toEqual([
+				['old', false],
+				['same', true],
+				['new', true],
+			])
 		})
 
 		test('drops review summaries with empty body', async () => {

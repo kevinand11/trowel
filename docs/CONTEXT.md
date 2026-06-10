@@ -138,6 +138,10 @@ _Avoid_: Feature branch, task branch, computed branch.
 A pull request from a **Slice branch** into its parent **Change branch**, used as the human review and merge surface before a Slice lands.
 _Avoid_: slices PR, sub-issue PR, task PR.
 
+**Fresh PR feedback**:
+PR feedback created at or after the current head commit time of the PR branch. Reviewer Turns receive both fresh and stale PR feedback with a `fresh` marker on each feedback entry, so they can focus on Fresh PR feedback while retaining historical context. Reviewer scheduling depends on Fresh PR feedback; a needs-revision label or requested-changes review without Fresh PR feedback keeps the entity in `needs-revision` but is not enough to schedule another Reviewer Turn, so Work skips it with guidance to add fresh review feedback. If the PR branch head commit time cannot be determined, Work skips Reviewer rather than treating stale feedback as fresh.
+_Avoid_: New comments, already comments, latest comments.
+
 **Mergeable PR**:
 A pull request that GitHub currently permits Trowel to offer for merging: open, not draft, conflict-free, and not blocked by required review, checks, or branch protection.
 _Avoid_: Available PR, maybe-mergeable PR.

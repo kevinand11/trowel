@@ -1,5 +1,5 @@
 import { MERGE_SLICE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from './merge-worktree.ts'
-import { fetchPrFeedback } from './pr-flow.ts'
+import { fetchFreshnessMarkedPrFeedback } from './pr-flow.ts'
 import type { ClassifiedSlice } from './slice-types.ts'
 import type { PhaseCtx, PhaseOutcome, PreparedPhase } from './types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
@@ -252,20 +252,29 @@ async function landAuditLocked(deps: PhaseDeps, slice: Slice, verdict: TurnOut, 
 }
 
 /**
- * Prepare the Reviewer Turn. Requires an open PR (calls `findPrNumber` + `fetchPrFeedback`;
+ * Prepare the Reviewer Turn. Requires an open PR (calls `findPrNumber` + freshness-marked feedback fetches;
  * both throw if no PR exists for the Slice branch).
  *
  * Reviewer work is tied to PR review feedback: the loop dispatches `review` when PR enrichment
  * computes the Slice state as `needs-revision`.
  */
+export async function shouldRunReviewTurn(deps: PhaseDeps, slice: ClassifiedSlice, ctx: PhaseCtx): Promise<boolean> {
+	const branch = sliceBranchFor(slice)
+	const prNumber = await deps.gh.findPrNumberByHead(branch)
+	const reviewFeedback = await fetchFreshnessMarkedPrFeedback(deps.gh, deps.git, prNumber, branch)
+	if (reviewFeedback.hasFreshFeedback) return true
+	deps.log(`[work change-${ctx.changeId} slice-${slice.id}] state=needs-revision; no Fresh PR feedback after latest commit; awaiting new review comment`)
+	return false
+}
+
 export async function prepareReview(deps: PhaseDeps, slice: ClassifiedSlice, _ctx: PhaseCtx): Promise<PreparedPhase> {
 	const branch = sliceBranchFor(slice)
 	const prNumber = await deps.gh.findPrNumberByHead(branch)
-	const feedback = await fetchPrFeedback(deps.gh, prNumber)
+	const reviewFeedback = await fetchFreshnessMarkedPrFeedback(deps.gh, deps.git, prNumber, branch)
 	const turnIn: TurnIn = {
 		slice: { id: slice.id, title: slice.title, body: slice.body },
 		pr: { number: prNumber, branch },
-		feedback,
+		feedback: reviewFeedback.feedback,
 	}
 	return { branch, turnIn }
 }
@@ -370,6 +379,10 @@ if (import.meta.vitest) {
 			commitsAhead: async (branch, base) => {
 				calls.push({ method: 'commitsAhead', args: [branch, base] })
 				return overrides.commitsAhead ?? 0
+			},
+			commitDate: async (ref, worktreePath) => {
+				calls.push({ method: 'commitDate', args: [ref, worktreePath] })
+				return '2026-06-04T00:00:00.000Z'
 			},
 			listLocalBranches: async () => [],
 			deleteBranch: recorded('deleteBranch'),

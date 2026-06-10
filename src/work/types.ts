@@ -8,7 +8,7 @@ import type { TurnIn } from './verdict.ts'
  * - `'partial'` — agent reported partial / coerced from invalid verdict; loop stops here for this run.
  * - `'no-work'` — agent reported nothing to do; loop drops it (slice mutation already applied).
  */
-export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work'
+export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work' | 'skipped'
 
 /**
  * Returned by `prepare<Role>` — the branch the Turn should run on, and the `TurnIn` payload.

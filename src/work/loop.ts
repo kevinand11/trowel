@@ -101,6 +101,7 @@ async function processClaim(changeId: string, slice: ClassifiedSlice, deps: Loop
 			deps.log(`[work change-${changeId} slice-${slice.id}] partial; skipping for the rest of this run`)
 			failed.add(slice.id)
 		}
+		if (outcome === 'skipped') failed.add(slice.id)
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error)
 		deps.log(`[work change-${changeId} slice-${slice.id}] error: ${msg}; skipping for the rest of this run`)
@@ -441,6 +442,7 @@ if (import.meta.vitest) {
 					},
 				],
 				findPrNumberByHead: async () => 5,
+				fetchPrThread: async () => [{ author: { login: 'reviewer' }, createdAt: '2026-01-01T00:00:00.000Z', body: 'please revise' }],
 				editIssueLabels: async (_id, patch) => {
 					if (patch.remove?.includes('needs-revision')) needsRevision = false
 				},
@@ -452,7 +454,7 @@ if (import.meta.vitest) {
 					gh,
 					spawnTurn: async ({ role, turnIn }) => {
 						roles.push(role)
-						expect(turnIn.feedback).toEqual([])
+						expect(turnIn.feedback).toEqual([{ kind: 'thread', author: 'reviewer', createdAt: '2026-01-01T00:00:00.000Z', body: 'please revise', fresh: true }])
 						return { verdict: 'no-work-needed', commits: 0 }
 					},
 					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
@@ -461,6 +463,37 @@ if (import.meta.vitest) {
 			expect(roles).toEqual(['review'])
 			expect(calls).toContainEqual(['editIssueLabels', 5, { remove: ['needs-revision'] }])
 			expect(needsRevision).toBe(false)
+		})
+
+		test('needs-revision without Fresh PR feedback skips Reviewer for the run', async () => {
+			const slice = makeSlice({
+				id: 's1',
+				readyForAgent: false,
+				implementedAt: '2026-06-04T00:00:00.000Z',
+				auditedAt: '2026-06-04T00:01:00.000Z',
+			})
+			const storage = makeStorage({ slices: [slice] })
+			const logs: string[] = []
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 5, headRefName: 'change-p1/slice-s1-a', isDraft: false, labels: [{ name: 'needs-revision' }] }],
+				findPrNumberByHead: async () => 5,
+				fetchPrThread: async () => [{ author: { login: 'reviewer' }, createdAt: '2025-12-31T23:59:59.000Z', body: 'old revise' }],
+			})
+			let spawnCalls = 0
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					gh,
+					spawnTurn: async () => {
+						spawnCalls += 1
+						return { verdict: 'ready', commits: 0 }
+					},
+					log: (m) => logs.push(m),
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 30 },
+				}),
+			)
+			expect(spawnCalls).toBe(0)
+			expect(logs.join('\n')).toContain('no Fresh PR feedback after latest commit')
 		})
 
 		test('spawnTurn throws → loop catches, logs the error, returns partial (one bad slice does not abort the batch)', async () => {

@@ -11,10 +11,12 @@ export type TurnOut = {
 	commits: number
 }
 
+type FeedbackFreshness = { fresh: boolean }
+
 export type FeedbackEntry =
-	| { kind: 'line'; author: string; createdAt: string; body: string; path: string; line: number; resolved: boolean }
-	| { kind: 'review'; author: string; createdAt: string; body: string; state: 'COMMENTED' | 'CHANGES_REQUESTED' | 'APPROVED' }
-	| { kind: 'thread'; author: string; createdAt: string; body: string }
+	| ({ kind: 'line'; author: string; createdAt: string; body: string; path: string; line: number; resolved: boolean } & FeedbackFreshness)
+	| ({ kind: 'review'; author: string; createdAt: string; body: string; state: 'COMMENTED' | 'CHANGES_REQUESTED' | 'APPROVED' } & FeedbackFreshness)
+	| ({ kind: 'thread'; author: string; createdAt: string; body: string } & FeedbackFreshness)
 
 export type TurnIn = {
 	slice?: { id: string; title: string; body: string }

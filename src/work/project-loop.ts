@@ -194,6 +194,7 @@ async function processSliceClaim(state: ProjectLoopState, claim: Extract<Claim, 
 			state.deps.log(`[work change-${claim.change.id} slice-${claim.slice.id}] partial; skipping for the rest of this run`)
 			state.failedSlices.add(claim.key)
 		}
+		if (outcome === 'skipped') state.failedSlices.add(claim.key)
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error)
 		state.deps.log(`[work change-${claim.change.id} slice-${claim.slice.id}] error: ${msg}; skipping for the rest of this run`)
@@ -421,6 +422,7 @@ if (import.meta.vitest) {
 			const { gh } = recordingGhOps({
 				findAnyPrByHead: async (head) => (head === 'change-3' ? { number: 12, state: 'OPEN', labels: [{ name: 'needs-revision' }] } : null),
 				findPrNumberByHead: async () => 12,
+				fetchPrThread: async () => [{ author: { login: 'reviewer' }, createdAt: '2026-01-01T00:00:00.000Z', body: 'please revise' }],
 			})
 			const calls: string[] = []
 			await runProjectLoop(deps({
@@ -434,6 +436,30 @@ if (import.meta.vitest) {
 				},
 			}))
 			expect(calls).toEqual(['3:review:3:change-3'])
+		})
+
+		test('skips Close-out Reviewer when revision signals have no Fresh PR feedback', async () => {
+			const c = change({ id: '3', changeBranch: 'change-3' })
+			const logs: string[] = []
+			const { gh } = recordingGhOps({
+				findAnyPrByHead: async (head) => (head === 'change-3' ? { number: 12, state: 'OPEN', labels: [{ name: 'needs-revision' }] } : null),
+				findPrNumberByHead: async () => 12,
+				fetchPrThread: async () => [{ author: { login: 'reviewer' }, createdAt: '2025-12-31T23:59:59.000Z', body: 'old revise' }],
+			})
+			let spawnCalls = 0
+			await runProjectLoop(deps({
+				storage: storage([c], { 3: [slice({ closedAt: '2026-06-04T00:00:00.000Z', readyForAgent: false })] }),
+				git: noopGitOps({ commitsAhead: async () => 1 }),
+				gh,
+				log: (m) => logs.push(m),
+				config: { pr: true, audit: false, perSliceBranches: true, maxConcurrent: 1, mergeNoVerify: false, loopPollSeconds: 30 },
+				spawnTurn: async () => {
+					spawnCalls += 1
+					return { verdict: 'ready', commits: 0 }
+				},
+			}))
+			expect(spawnCalls).toBe(0)
+			expect(logs.join('\n')).toContain('no Fresh PR feedback after latest commit')
 		})
 	})
 }

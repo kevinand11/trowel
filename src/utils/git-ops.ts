@@ -31,6 +31,7 @@ export type GitOps = {
 	localBranchExists(branch: string): Promise<boolean>
 	isMerged(branch: string, baseBranch: string): Promise<boolean>
 	commitsAhead(branch: string, baseBranch: string): Promise<number>
+	commitDate(ref: string, worktreePath?: string): Promise<string>
 	listLocalBranches(): Promise<string[]>
 	deleteBranch(branch: string): Promise<void>
 	resolveRef(ref: string, worktreePath?: string): Promise<string>
@@ -89,6 +90,7 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		localBranchExists: git.localBranchExists,
 		isMerged: git.isMerged,
 		commitsAhead: git.commitsAhead,
+		commitDate: git.commitDate,
 		listLocalBranches: git.listLocalBranches,
 		deleteBranch: forbiddenGitMutation('deleteBranch'),
 		resolveRef: git.resolveRef,
@@ -206,6 +208,7 @@ export function createRepoGit(projectRoot: string): GitOps {
 			const n = parseInt(r.stdout.trim(), 10)
 			return Number.isFinite(n) ? n : 0
 		},
+		commitDate: async (ref, worktreePath) => (await gitOrThrow(['log', '-1', '--format=%cI', ref], worktreePath)).trim(),
 		listLocalBranches: async () => {
 			const r = await tryExec('git', ['-C', projectRoot, 'branch', '--format=%(refname:short)'])
 			if (!r.ok) return []

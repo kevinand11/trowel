@@ -1,4 +1,4 @@
-import { fetchPrFeedback } from './pr-flow.ts'
+import { fetchFreshnessMarkedPrFeedback } from './pr-flow.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Change } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
@@ -14,16 +14,20 @@ export type ChangeReviewDeps = {
 	projectRoot?: string
 }
 
-export type ChangeReviewOutcome = 'progress' | 'partial' | 'no-work'
+export type ChangeReviewOutcome = 'progress' | 'partial' | 'no-work' | 'skipped'
 
 export async function runCloseOutReview(change: Change, deps: ChangeReviewDeps): Promise<ChangeReviewOutcome> {
 	const tag = `[work change-${change.id}]`
 	const prNumber = await deps.gh.findPrNumberByHead(change.changeBranch)
-	const feedback = await fetchPrFeedback(deps.gh, prNumber)
+	const reviewFeedback = await fetchFreshnessMarkedPrFeedback(deps.gh, deps.git, prNumber, change.changeBranch)
+	if (!reviewFeedback.hasFreshFeedback) {
+		deps.log(`${tag} state=needs-revision; no Fresh PR feedback after latest commit; awaiting new review comment`)
+		return 'skipped'
+	}
 	const turnIn: TurnIn = {
 		change: { id: change.id, title: change.title, body: change.body },
 		pr: { number: prNumber, branch: change.changeBranch },
-		feedback,
+		feedback: reviewFeedback.feedback,
 	}
 	deps.log(`${tag} state=needs-revision action=Reviewer: "${change.title}"`)
 	deps.log(`${tag} spawning Reviewer Turn on ${change.changeBranch}`)
