@@ -6,7 +6,7 @@ import type { ClassifiedSlice } from './slice-types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { Change, Slice, Storage } from '../storages/types.ts'
-import { classifyChange } from '../utils/change-state.ts'
+import { collectChangeStateFacts, computeChangeState, type ChangeStateFacts } from '../utils/change-state.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
@@ -60,11 +60,11 @@ async function runChangeEntity(entity: Extract<LoopEntity, { kind: 'change' }>, 
 				if (!opts.loop) return await reportAfterCloseOutReview(entity, deps)
 				continue
 			}
-			if (await pollNonActionableChangeState(entity, current.state, deps, opts, memory)) continue
+			if (await pollNonActionableChangeState(entity, current, deps, opts, memory)) continue
 			reportIfNotOpen(current, deps)
 			return
 		}
-		if (current.state === 'awaiting-review' && await pollNonActionableChangeState(entity, current.state, deps, opts, memory)) continue
+		if (current.state === 'awaiting-review' && await pollNonActionableChangeState(entity, current, deps, opts, memory)) continue
 		reportIfNotOpen(current, deps)
 		return
 	}
@@ -99,24 +99,30 @@ async function runCloseOutReviewForChange(change: Change, deps: EntityLoopDeps):
 
 async function pollNonActionableChangeState(
 	entity: Extract<LoopEntity, { kind: 'change' }>,
-	state: ChangeState,
+	workState: ChangeWorkState,
 	deps: EntityLoopDeps,
 	opts: EntityLoopOptions,
 	memory: ChangeLoopMemory,
 ): Promise<boolean> {
 	if (!opts.loop) return false
 	memory.idlePolls += 1
-	logChangeIdlePoll(entity.id, state, deps, deps.config.loopPollSeconds, memory.idlePolls)
+	logChangeIdlePoll(entity.id, workState, deps, deps.config.loopPollSeconds, memory.idlePolls)
 	await (opts.sleep ?? sleep)(deps.config.loopPollSeconds * 1000)
 	return true
 }
 
-function logChangeIdlePoll(changeId: string, state: ChangeState, deps: EntityLoopDeps, pollSeconds: number, polls: number): void {
+function logChangeIdlePoll(changeId: string, workState: ChangeWorkState, deps: EntityLoopDeps, pollSeconds: number, polls: number): void {
+	const state = workState.state
+	const closeOutPr = workState.facts.closeOutPr
+	if (polls === 1 && state === 'awaiting-review' && closeOutPr?.isDraft) {
+		deps.log(`[work change-${changeId}] state=awaiting-review; existing draft Close-out PR #${closeOutPr.number}; make it ready or close it before retrying; polling every ${pollSeconds}s`)
+		return
+	}
 	if (polls === 1) deps.log(`[work change-${changeId}] state=${state}; polling every ${pollSeconds}s`)
 	else if (polls % 10 === 0) deps.log(`[work change-${changeId}] still state=${state} after ${polls} polls`)
 }
 
-type ChangeWorkState = { change: Change; slices: ClassifiedSlice[]; state: ChangeState }
+type ChangeWorkState = { change: Change; slices: ClassifiedSlice[]; state: ChangeState; facts: ChangeStateFacts }
 
 async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' }>, deps: EntityLoopDeps): Promise<ChangeWorkState> {
 	const change = await deps.storage.findChange(entity.id)
@@ -128,24 +134,29 @@ async function readChangeWorkState(entity: Extract<LoopEntity, { kind: 'change' 
 		needsRevisionLabel: deps.config.needsRevisionLabel,
 	})
 	const slices = await reader.findSlices(entity.id)
-	const state = await classifyChange(change, slices, { gh: deps.gh, git: deps.git, needsRevisionLabel: deps.config.needsRevisionLabel })
-	return { change, slices, state }
+	const facts = await collectChangeStateFacts(change, slices, { gh: deps.gh, git: deps.git, needsRevisionLabel: deps.config.needsRevisionLabel })
+	const state = computeChangeState(change, slices, facts, { needsRevisionLabel: deps.config.needsRevisionLabel })
+	return { change, slices, state, facts }
 }
 
 function reportIfNotOpen(workState: ChangeWorkState, deps: EntityLoopDeps): boolean {
 	if (workState.state === 'open') return false
-	deps.log(nonOpenChangeMessage(workState.change.id, workState.state))
+	deps.log(nonOpenChangeMessage(workState))
 	return true
 }
 
-function nonOpenChangeMessage(changeId: string, state: ChangeState): string {
+function nonOpenChangeMessage(workState: ChangeWorkState): string {
+	const changeId = workState.change.id
+	const state = workState.state
 	const ship = `trowel change ship ${changeId}`
+	const closeOutPr = workState.facts.closeOutPr
 	switch (state) {
 		case 'ready':
 			return `[work change-${changeId}] state=ready; all Slices are done; run: ${ship}`
 		case 'needs-revision':
 			return `[work change-${changeId}] state=needs-revision; Close-out PR needs revision; running Reviewer is required before shipping`
 		case 'awaiting-review':
+			if (closeOutPr?.isDraft) return `[work change-${changeId}] state=awaiting-review; existing draft Close-out PR #${closeOutPr.number}; make it ready or close it before retrying`
 			return `[work change-${changeId}] state=awaiting-review; Close-out PR awaiting review or merge; run: ${ship}`
 		case 'landed':
 			return `[work change-${changeId}] non-work state=landed; merged to Target branch but not finalized; run: ${ship}`

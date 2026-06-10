@@ -1,5 +1,7 @@
 # Gh-free sandbox; host owns all GitHub side effects; file-IPC verdict channel
 
+> **Amended by:** [2026-06-10-create-prs-non-draft.md](./2026-06-10-create-prs-non-draft.md) — Trowel now creates PRs as non-draft directly and treats existing draft PRs as human-owned blockers.
+
 The **Sandbox** does not run `gh`. Every GitHub-side-effecting operation — creating the **Slice branch** (`gh issue develop`), creating the draft PR (`gh pr create --draft`), flipping labels (`gh issue edit --add-label` / `--remove-label`), marking a PR ready (`gh pr ready`), fetching PR review feedback for the **Addresser**, and closing a sub-issue after merge — happens on the **host**, either before the sandbox launches or after it exits.
 
 The agent inside the sandbox is restricted to local operations: read the slice spec, edit code, run tests/formatters, `git add`, `git commit`. It does not `git push` (host pushes post-sandbox), it does not call `gh` (host calls `gh`), and it does not need GitHub credentials.

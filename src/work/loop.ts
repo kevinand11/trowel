@@ -50,6 +50,7 @@ function effectiveConcurrency(configCap: number | null): number {
 async function findNextActionableSlice(
 	fetchEnriched: () => Promise<ClassifiedSlice[]>,
 	failed: Set<string>,
+	deferred: Set<string>,
 	running: Map<string, Promise<void>>,
 	runningBranches: Set<string>,
 	claimedThisFill: Set<string>,
@@ -62,6 +63,7 @@ async function findNextActionableSlice(
 		slices.find((slice) => {
 			const branchKey = schedulerBranchKey(slice, { perSliceBranches: config.perSliceBranches, changeBranch })
 			if (failed.has(slice.id)) return false
+			if (deferred.has(slice.id)) return false
 			if (running.has(slice.id)) return false
 			if (branchKey !== null && runningBranches.has(branchKey)) return false
 			if (claimedThisFill.has(slice.id)) return false
@@ -82,19 +84,20 @@ function launchClaim(
 	slice: ClassifiedSlice,
 	deps: LoopDeps,
 	failed: Set<string>,
+	deferred: Set<string>,
 	running: Map<string, Promise<void>>,
 	runningBranches: Set<string>,
 ): void {
 	const branchKey = schedulerBranchKey(slice, { perSliceBranches: deps.config.perSliceBranches, changeBranch: deps.changeBranch })
 	if (branchKey !== null) runningBranches.add(branchKey)
-	const task = processClaim(changeId, slice, deps, failed).finally(() => {
+	const task = processClaim(changeId, slice, deps, failed, deferred).finally(() => {
 		running.delete(slice.id)
 		if (branchKey !== null) runningBranches.delete(branchKey)
 	})
 	running.set(slice.id, task)
 }
 
-async function processClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>): Promise<void> {
+async function processClaim(changeId: string, slice: ClassifiedSlice, deps: LoopDeps, failed: Set<string>, deferred: Set<string>): Promise<void> {
 	try {
 		const outcome = await processSlice(changeId, slice, deps)
 		if (outcome === 'partial') {
@@ -102,6 +105,7 @@ async function processClaim(changeId: string, slice: ClassifiedSlice, deps: Loop
 			failed.add(slice.id)
 		}
 		if (outcome === 'skipped') failed.add(slice.id)
+		if (outcome === 'deferred') deferred.add(slice.id)
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error)
 		deps.log(`[work change-${changeId} slice-${slice.id}] error: ${msg}; skipping for the rest of this run`)
@@ -125,6 +129,7 @@ type WorkerLoopState = {
 	tag: string
 	deps: LoopDeps
 	failed: Set<string>
+	deferred: Set<string>
 	running: Map<string, Promise<void>>
 	runningBranches: Set<string>
 	fetchEnriched: () => Promise<ClassifiedSlice[]>
@@ -147,6 +152,7 @@ function loopState(changeId: string, deps: LoopDeps): WorkerLoopState {
 		tag: `[work change-${changeId}]`,
 		deps,
 		failed: new Set<string>(),
+		deferred: new Set<string>(),
 		running: new Map<string, Promise<void>>(),
 		runningBranches: new Set<string>(),
 		fetchEnriched: () => effectiveSlices.findSlices(changeId),
@@ -164,6 +170,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 		const slice = await findNextActionableSlice(
 			state.fetchEnriched,
 			state.failed,
+			state.deferred,
 			state.running,
 			state.runningBranches,
 			claimedThisFill,
@@ -177,7 +184,7 @@ async function fillClaimSlots(state: WorkerLoopState): Promise<void> {
 		if (branchKey !== null) claimedBranchesThisFill.add(branchKey)
 		state.claims += 1
 		state.deps.log(`${state.tag} claim ${state.claims}: slice ${slice.id}`)
-		launchClaim(state.changeId, slice, state.deps, state.failed, state.running, state.runningBranches)
+		launchClaim(state.changeId, slice, state.deps, state.failed, state.deferred, state.running, state.runningBranches)
 	}
 }
 
@@ -186,6 +193,7 @@ async function handleIdle(state: WorkerLoopState): Promise<boolean> {
 	const remaining = await findNextActionableSlice(
 		state.fetchEnriched,
 		state.failed,
+		state.deferred,
 		state.running,
 		state.runningBranches,
 		new Set(),
@@ -203,6 +211,7 @@ async function handleIdle(state: WorkerLoopState): Promise<boolean> {
 	state.idlePolls += 1
 	logIdlePoll(state, polling.pollSeconds)
 	await polling.sleep(polling.pollSeconds * 1000)
+	state.deferred.clear()
 	return false
 }
 
@@ -387,11 +396,11 @@ if (import.meta.vitest) {
 			const slice = makeSlice({ id: 's1' })
 			const storage = makeStorage({ slices: [slice] })
 			const { gh, calls } = recordingGhOps({
-				createDraftPr: async ({ head }) => {
-					slice.prState = 'draft'
-					return { number: 1, headRefName: head, isDraft: true, url: '#1' }
+				createPr: async ({ head }) => {
+					slice.prState = 'ready'
+					return { number: 1, headRefName: head, isDraft: false, url: '#1' }
 				},
-				listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: true }],
+				listOpenPrs: async () => [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: false }],
 			})
 			await runLoop(
 				'p1',
@@ -402,6 +411,42 @@ if (import.meta.vitest) {
 				}),
 			)
 			expect(calls.find((c) => c[0] === 'listOpenPrs')).toBeDefined()
+		})
+
+		test('draft Slice PR defers until the next poll instead of tight-looping', async () => {
+			const slice = makeSlice({ id: 's1', implementedAt: '2026-06-04T00:00:00.000Z', auditedAt: '2026-06-04T00:01:00.000Z', sliceBranch: 'change-p1/slice-s1-a' })
+			const state = { slices: [slice] }
+			const storage = makeStorage(state)
+			let draftExists = true
+			let readyExists = false
+			let createCalls = 0
+			let sleeps = 0
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => draftExists ? [{ number: 1, headRefName: 'change-p1/slice-s1-a', isDraft: true }] : readyExists ? [{ number: 2, headRefName: 'change-p1/slice-s1-a', isDraft: false }] : [],
+				findPrNumberByHead: async () => 1,
+				createPr: async ({ head }) => {
+					createCalls += 1
+					readyExists = true
+					return { number: 2, headRefName: head, isDraft: false, url: '#2' }
+				},
+			})
+			await runLoop(
+				'p1',
+				makeDeps(storage, {
+					gh,
+					config: { pr: true, audit: true, perSliceBranches: true, maxConcurrent: null, mergeNoVerify: false, loopPollSeconds: 1 },
+					idlePolling: {
+						pollSeconds: 1,
+						shouldContinue: async () => sleeps === 0,
+						sleep: async () => {
+							sleeps += 1
+							draftExists = false
+						},
+					},
+				}),
+			)
+			expect(sleeps).toBe(1)
+			expect(createCalls).toBe(1)
 		})
 
 		test('ready slice: runs implementer, lands done, exits with empty actionable queue', async () => {
@@ -672,16 +717,13 @@ if (import.meta.vitest) {
 				releaseSlow = resolve
 			})
 			const { gh } = recordingGhOps({
-				createDraftPr: async ({ head }) => {
+				createPr: async ({ head }) => {
 					const id = head.includes('fast') ? 'fast' : 'slow'
 					const slice = state.slices.find((s) => s.id === id)
-					if (slice) slice.prState = 'draft'
-					return { number: 1, headRefName: head, isDraft: true, url: '#1' }
+					if (slice) slice.prState = 'ready'
+					return { number: 1, headRefName: head, isDraft: false, url: '#1' }
 				},
 				findPrNumberByHead: async () => 1,
-				markPrReady: async () => {
-					state.slices.find((s) => s.id === 'fast')!.prState = 'ready'
-				},
 				listOpenPrs: async () => openPrsForSlices(state.slices),
 			})
 			await runLoop(

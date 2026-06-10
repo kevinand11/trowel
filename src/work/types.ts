@@ -7,8 +7,9 @@ import type { TurnIn } from './verdict.ts'
  * - `'progress'` — phase moved forward; loop refetches and continues the inner step-cap loop.
  * - `'partial'` — agent reported partial / coerced from invalid verdict; loop stops here for this run.
  * - `'no-work'` — agent reported nothing to do; loop drops it (slice mutation already applied).
+ * - `'deferred'` — external state blocks action for now; polling may retry after sleeping.
  */
-export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work' | 'skipped'
+export type PhaseOutcome = 'done' | 'progress' | 'partial' | 'no-work' | 'skipped' | 'deferred'
 
 /**
  * Returned by `prepare<Role>` — the branch the Turn should run on, and the `TurnIn` payload.

@@ -4,7 +4,7 @@ import { renderStatus } from './render.ts'
 import { loadConfig } from '../../config'
 import { getStorage } from '../../storages/registry.ts'
 import type { Change, Slice, Storage, StorageDeps } from '../../storages/types.ts'
-import { classifyChange } from '../../utils/change-state.ts'
+import { collectChangeStateFacts, computeChangeState } from '../../utils/change-state.ts'
 import { createGh, type GhOps } from '../../utils/gh-ops.ts'
 import { branchStableGitFacts, branchStableGitOps, createRepoGit, type GitOps, type ReadOnlyGitFacts } from '../../utils/git-ops.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
@@ -42,8 +42,9 @@ async function runStatus(changeId: string, rt: StatusRuntime): Promise<void> {
 		pr: rt.pr,
 		needsRevisionLabel: rt.needsRevisionLabel,
 	})
-	const state = await classifyChange(change, slices, { gh: rt.gh, git: rt.git, needsRevisionLabel: rt.needsRevisionLabel })
-	writeStatusText(rt.stdout, renderStatus({ ...change, state }, slices))
+	const facts = await collectChangeStateFacts(change, slices, { gh: rt.gh, git: rt.git, needsRevisionLabel: rt.needsRevisionLabel })
+	const state = computeChangeState(change, slices, facts, { needsRevisionLabel: rt.needsRevisionLabel })
+	writeStatusText(rt.stdout, renderStatus({ ...change, state, closeOutPr: facts.closeOutPr }, slices))
 }
 
 async function buildStatusStorage(opts: {

@@ -1,5 +1,7 @@
 # Agent review is opt-in; `work.review` defaults to false; independent of `work.usePrs`
 
+> **Amended by:** [2026-06-10-create-prs-non-draft.md](./2026-06-10-create-prs-non-draft.md) — Trowel now creates PRs as non-draft directly and treats existing draft PRs as human-owned blockers.
+
 `config.work.review: boolean` (default `false`) gates the **Reviewer** and **Addresser** sandboxes inside the **AFK loop**. PR creation remains controlled by `config.work.usePrs` (default `true`, see ADR `optional-pr-flow-on-issue-backend`). The two knobs are independent — they control different things and the user can set them in any combination.
 
 The behavior matrix on the issue backend:

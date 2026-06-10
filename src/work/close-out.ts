@@ -6,8 +6,8 @@ import type { GitOps } from '../utils/git-ops.ts'
 /**
  * Terminal step that ships a closeable Change. Branches on `config.ship.pr`:
  *
- * - `pr: true` — opens a PR from the entity branch against the entity's targetBranch (if one
- *   doesn't already exist), then marks it ready. The Change remains unfinalized until Ship later
+ * - `pr: true` — opens a non-draft PR from the entity branch against the entity's targetBranch
+ *   (if one doesn't already exist). The Change remains unfinalized until Ship later
  *   observes the merged PR as a landed state and runs Finalization.
  * - `pr: false` — host-merges the entity branch into the entity's targetBranch from a
  *   reserved detached merge worktree when projectRoot is available, then runs Finalization
@@ -48,30 +48,26 @@ export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): P
 async function closeOutViaPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
 	const prNumber = await ensureCloseOutPr(entity, deps, targetBranch, tag)
 	if (prNumber === null) return
-	await markCloseOutPrReady(prNumber, deps, tag)
-	deps.log(`${tag} marked PR #${prNumber} ready; awaiting merge`)
+	deps.log(`${tag} PR #${prNumber} awaiting review or merge`)
 }
 
 async function ensureCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number | null> {
 	const existing = await deps.gh.findAnyPrByHead(entity.changeBranch).catch(() => null)
 	if (!existing) return createCloseOutPr(entity, deps, targetBranch, tag)
-	if (existing.state !== 'OPEN') {
-		deps.log(`${tag} PR #${existing.number} state ${existing.state}; nothing to mark ready`)
+	if (existing.state === 'OPEN' && existing.isDraft) {
+		deps.log(`${tag} existing draft Close-out PR #${existing.number}; make it ready or close it before retrying`)
 		return null
 	}
-	return existing.number
+	if (existing.state === 'OPEN') return existing.number
+	if (existing.state === 'CLOSED') return createCloseOutPr(entity, deps, targetBranch, tag)
+	deps.log(`${tag} PR #${existing.number} state ${existing.state}; nothing to open`)
+	return null
 }
 
 async function createCloseOutPr(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<number> {
-	const pr = await deps.gh.createDraftPr({ title: entity.title, head: entity.changeBranch, base: targetBranch, body: bodyFor(entity) })
+	const pr = await deps.gh.createPr({ title: entity.title, head: entity.changeBranch, base: targetBranch, body: bodyFor(entity) })
 	deps.log(`${tag} opened PR #${pr.number} ${entity.changeBranch} → ${targetBranch}`)
 	return pr.number
-}
-
-async function markCloseOutPrReady(prNumber: number, deps: CloseOutDeps, tag: string): Promise<void> {
-	await deps.gh.markPrReady(prNumber).catch((e: Error) => {
-		deps.log(`${tag} markPrReady #${prNumber} failed (already ready or no permission): ${e.message}`)
-	})
 }
 
 async function closeOutViaMerge(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string, tag: string): Promise<void> {
@@ -220,19 +216,48 @@ if (import.meta.vitest) {
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
 
-		test('Change + pr:true, PR does not exist: creates draft against targetBranch then marks ready', async () => {
+		test('Change + pr:true, existing draft PR logs guidance and does not create or ready it', async () => {
+			const { storage } = fakeStorage()
+			const { git } = fakeGit()
+			const logs: string[] = []
+			const { gh, calls } = recordingGhOps({
+				findAnyPrByHead: async () => ({ number: 21, state: 'OPEN', isDraft: true }),
+			})
+			await runCloseOut(
+				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ storage, git, gh, log: (m) => logs.push(m), config: { pr: true, deleteBranch: 'never', mergeNoVerify: false } },
+			)
+			expect(calls.map((c) => c[0])).not.toContain('createPr')
+			expect(logs.join('\n')).toContain('existing draft Close-out PR #21')
+		})
+
+		test('Change + pr:true, closed unmerged PR exists: creates a new non-draft PR', async () => {
 			const { storage } = fakeStorage()
 			const { git } = fakeGit()
 			const { gh, calls } = recordingGhOps({
-				findAnyPrByHead: async () => null,
-				createDraftPr: async ({ head }) => ({ number: 22, headRefName: head, isDraft: true, url: '#22' }),
+				findAnyPrByHead: async () => ({ number: 21, state: 'CLOSED' }),
+				createPr: async ({ head }) => ({ number: 22, headRefName: head, isDraft: false, url: '#22' }),
 			})
 			await runCloseOut(
 				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
 				{ storage, git, gh, log: () => {}, config: { pr: true, deleteBranch: 'never', mergeNoVerify: false } },
 			)
-			expect(calls.find((c) => c[0] === 'createDraftPr')).toEqual([
-				'createDraftPr',
+			expect(calls.find((c) => c[0] === 'createPr')).toBeDefined()
+		})
+
+		test('Change + pr:true, PR does not exist: creates non-draft PR against targetBranch', async () => {
+			const { storage } = fakeStorage()
+			const { git } = fakeGit()
+			const { gh, calls } = recordingGhOps({
+				findAnyPrByHead: async () => null,
+				createPr: async ({ head }) => ({ number: 22, headRefName: head, isDraft: false, url: '#22' }),
+			})
+			await runCloseOut(
+				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ storage, git, gh, log: () => {}, config: { pr: true, deleteBranch: 'never', mergeNoVerify: false } },
+			)
+			expect(calls.find((c) => c[0] === 'createPr')).toEqual([
+				'createPr',
 				{
 					title: 'Feat',
 					head: '3-feat',
@@ -240,7 +265,7 @@ if (import.meta.vitest) {
 					body: 'Closes Change 3',
 				},
 			])
-			expect(calls).toContainEqual(['markPrReady', 22])
+			expect(calls.filter((c) => c[0] === 'createPr')).toHaveLength(1)
 		})
 	})
 }

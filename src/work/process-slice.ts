@@ -17,7 +17,7 @@ import type { TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import { withMutationLock } from '../utils/mutation-lock.ts'
 
-export type ProcessOutcome = 'done' | 'partial' | 'no-work' | 'skipped'
+export type ProcessOutcome = 'done' | 'partial' | 'no-work' | 'skipped' | 'deferred'
 
 type LoopPhaseCtx = { changeId: string; changeBranch: string; config: ClassifySliceConfig }
 type SliceStepResult = { outcome: ProcessOutcome } | { outcome: 'progress' }
@@ -30,6 +30,7 @@ const PROCESS_OUTCOME_BY_PHASE: Record<PhaseOutcome, ProcessOutcome | null> = {
 	partial: 'partial',
 	progress: null,
 	skipped: 'skipped',
+	deferred: 'deferred',
 }
 
 export async function processSlice(changeId: string, initial: ClassifiedSlice, deps: LoopDeps): Promise<ProcessOutcome> {

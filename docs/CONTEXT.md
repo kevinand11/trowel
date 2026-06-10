@@ -15,7 +15,7 @@ The canonical unique identifier for a **Change**. Form depends on **Storage**: G
 _Avoid_: PRD id, slug, name.
 
 **Change state**:
-A lowercase computed Change lifecycle classification with values `open`, `ready`, `awaiting-review`, `needs-revision`, `landed`, `done`, and `aborted`. `awaiting-review` means a Close-out PR is open and waiting for human review or merge, including draft PRs; `needs-revision` means the open Close-out PR has requested changes before merge; `landed` means the Change has merged to the Target branch but has not been finalized; `done` means Finalization has set `closedAt` after merge; `aborted` means `closedAt` is set without merge.
+A lowercase computed Change lifecycle classification with values `open`, `ready`, `awaiting-review`, `needs-revision`, `landed`, `done`, and `aborted`. `awaiting-review` means a Close-out PR is open and waiting for human review or merge, including draft PRs; draft Close-out PRs require human action before Trowel can continue PR-based shipping. `needs-revision` means the open Close-out PR has requested changes before merge; `landed` means the Change has merged to the Target branch but has not been finalized; `done` means Finalization has set `closedAt` after merge; `aborted` means `closedAt` is set without merge.
 _Avoid_: Bucket, raw state, status, closed reason, uppercase lifecycle enums.
 
 **Grill**:
@@ -208,7 +208,7 @@ _Avoid_: Checkout, sandbox directory.
 ## Example dialogue
 
 > **Dev:** "When a Slice PR is still draft after implementation, should `trowel change work` treat it as waiting on a human?"
-> **Domain expert:** "No. That Slice is **implemented**: the loop can still run **Auditing** or mark the draft PR ready. Once the PR is non-draft, the Slice becomes **awaiting-review** and waits for a human to review or merge it."
+> **Domain expert:** "No. That Slice is **implemented**: the loop can still run **Auditing**, but Trowel will not make the draft PR ready. Once the PR is non-draft, the Slice becomes **awaiting-review** and waits for a human to review or merge it."
 >
 > **Dev:** "When `trowel change status` sees that the **Close-out** PR was merged, should it finalize the **Change** or switch branches to inspect it?"
 > **Domain expert:** "No. `status` is an **Entity read command**: it may report the **Change state** as `landed`, but only **Ship** runs **Finalization** for the **Change** and then runs **Cleanup**."

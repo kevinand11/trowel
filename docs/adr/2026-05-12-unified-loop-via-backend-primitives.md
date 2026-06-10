@@ -1,5 +1,7 @@
 # Unified AFK loop driver; Backend exposes per-role primitives
 
+> **Amended by:** [2026-06-10-create-prs-non-draft.md](./2026-06-10-create-prs-non-draft.md) — Trowel now creates PRs as non-draft directly and treats existing draft PRs as human-owned blockers.
+
 > **Supersedes:** [2026-05-11-afk-loop-asymmetric-across-backends.md](./2026-05-11-afk-loop-asymmetric-across-backends.md).
 >
 > **Superseded by:** [2026-05-13-storage-behavior-separation.md](./2026-05-13-storage-behavior-separation.md). The per-role primitives (`prepare<Role>` / `land<Role>` / `classifySlice` / `reconcileSlices`) move off the **Backend** (renamed **Storage**) into the loop driver itself; storage becomes pure persistence. The "throw on unsupported phase" runtime invariant goes away because storages no longer expose phase methods at all — phase enablement is driven by user **Flags** gated by storage **Capabilities** (`prFlow`). The text below describes the previous design.

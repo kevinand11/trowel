@@ -9,6 +9,7 @@ export type CloseOutPrState = 'OPEN' | 'CLOSED' | 'MERGED' | null
 export type CloseOutPrFacts = {
 	number: number
 	state: Exclude<CloseOutPrState, null>
+	isDraft?: boolean
 	labels?: Array<{ name: string }>
 	reviewDecision?: 'CHANGES_REQUESTED' | 'APPROVED' | 'REVIEW_REQUIRED' | string | null
 }

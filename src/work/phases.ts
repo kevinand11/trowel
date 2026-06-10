@@ -217,13 +217,16 @@ async function openReadySlicePr(deps: PhaseDeps, slice: ClassifiedSlice, ctx: Ph
 	const tag = `[work change-${ctx.changeId} slice-${slice.id}]`
 	if (slice.prState === 'draft') {
 		const prNumber = await deps.gh.findPrNumberByHead(branch)
-		await deps.gh.markPrReady(prNumber)
-		deps.log(`${tag} marked existing draft PR #${prNumber} for ${branch} ready for merge`)
-		return 'progress'
+		deps.log(`${tag} existing draft Slice PR #${prNumber}; make it ready or close it before retrying`)
+		return 'deferred'
 	}
-	const pr = await deps.gh.createDraftPr({ title: slice.title, head: branch, base: ctx.changeBranch, body: `Closes #${slice.id}` })
-	await deps.gh.markPrReady(pr.number)
-	deps.log(`${tag} opened PR #${pr.number} for ${branch} and marked it ready for merge`)
+	if (slice.prState === 'ready') {
+		const prNumber = await deps.gh.findPrNumberByHead(branch)
+		deps.log(`${tag} Slice PR #${prNumber} already awaits review or merge`)
+		return 'done'
+	}
+	const pr = await deps.gh.createPr({ title: slice.title, head: branch, base: ctx.changeBranch, body: `Closes #${slice.id}` })
+	deps.log(`${tag} opened PR #${pr.number} for ${branch}; awaiting review or merge`)
 	return 'progress'
 }
 
@@ -448,9 +451,9 @@ if (import.meta.vitest) {
 			},
 		}
 		const gh: GhOps = {
-			createDraftPr: async (opts) => {
-				calls.push({ method: 'createDraftPr', args: [opts] })
-				return { number: 132, headRefName: opts.head, isDraft: true, url: '#132' }
+			createPr: async (opts) => {
+				calls.push({ method: 'createPr', args: [opts] })
+				return { number: 132, headRefName: opts.head, isDraft: false, url: '#132' }
 			},
 			findPrNumberByHead: async (head) => {
 				calls.push({ method: 'findPrNumberByHead', args: [head] })
@@ -458,9 +461,6 @@ if (import.meta.vitest) {
 			},
 			editIssueLabels: async (id, patch) => {
 				calls.push({ method: 'editIssueLabels', args: [id, patch] })
-			},
-			markPrReady: async (prNumber) => {
-				calls.push({ method: 'markPrReady', args: [prNumber] })
 			},
 		} as GhOps
 		const deps: PhaseDeps = {
@@ -646,28 +646,27 @@ if (import.meta.vitest) {
 	})
 
 	describe('integrateSlice: Slice PR readiness', () => {
-		test('ship.pr true opens a draft Slice PR and marks it ready for a distinct Slice branch', async () => {
+		test('ship.pr true opens a non-draft Slice PR for a distinct Slice branch', async () => {
 			const { deps, calls, storageState } = makePhaseDeps()
 			const outcome = await integrateSlice(deps, slice, { ...ctx, config: { pr: true, audit: false, perSliceBranches: true } })
 			expect(outcome).toBe('progress')
 			expect(calls).toContainEqual({
-				method: 'createDraftPr',
+				method: 'createPr',
 				args: [{ title: 'A slice', head: 'change-pid/slice-42-a-slice', base: 'change-branch', body: 'Closes #42' }],
 			})
-			expect(calls).toContainEqual({ method: 'markPrReady', args: [132] })
+			expect(calls.filter((c) => c.method === 'createPr')).toHaveLength(1)
 			expect(storageState.closedAt).toBeNull()
 		})
 
-		test('ship.pr true readies an existing draft Slice PR instead of creating a duplicate', async () => {
+		test('ship.pr true defers an existing draft Slice PR instead of creating a duplicate', async () => {
 			const { deps, calls, storageState } = makePhaseDeps()
 			const outcome = await integrateSlice(
 				deps,
 				{ ...slice, prState: 'draft' },
 				{ ...ctx, config: { pr: true, audit: true, perSliceBranches: true } },
 			)
-			expect(outcome).toBe('progress')
-			expect(calls.map((c) => c.method)).not.toContain('createDraftPr')
-			expect(calls).toContainEqual({ method: 'markPrReady', args: [132] })
+			expect(outcome).toBe('deferred')
+			expect(calls.map((c) => c.method)).not.toContain('createPr')
 			expect(storageState.closedAt).toBeNull()
 		})
 	})

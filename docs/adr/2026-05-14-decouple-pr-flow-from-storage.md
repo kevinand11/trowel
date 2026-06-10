@@ -1,5 +1,7 @@
 # Decouple PR-flow from Storage; retire `Capability`; software preconditions move to `trowel doctor`
 
+> **Amended by:** [2026-06-10-create-prs-non-draft.md](./2026-06-10-create-prs-non-draft.md) — Trowel now creates PRs as non-draft directly and treats existing draft PRs as human-owned blockers.
+
 > **Amends:** [2026-05-13-storage-behavior-separation.md](./2026-05-13-storage-behavior-separation.md). The storage / behavior split it introduced stays; the `Capability` primitive and `capabilities.prFlow` field it introduced retire.
 
 The `2026-05-13` pivot split the `Backend` god-class into a thin `Storage` (pure persistence) and a fat loop driver. PR-flow operations (`openDraftPr`, `markPrReady`, `fetchPrFeedback`, `getPrState`) moved into free utility functions under `src/work/pr-flow.ts`. To stop the user from enabling `usePrs: true` against a storage that has no PR/review surface (the `file` storage), the same ADR introduced a `capabilities.prFlow: boolean` primitive on `Storage`, gated `config.work.usePrs` and `config.work.review` at config load against it, and added defensive `requirePrFlow` throws in the reviewer/addresser phases.

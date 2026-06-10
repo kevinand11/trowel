@@ -1,9 +1,10 @@
 import type { Change } from '../../storages/types.ts'
+import type { CloseOutPrFacts } from '../../utils/change-state.ts'
 import { emptySliceStateCounts, formatSliceStateCounts, SLICE_STATE_ORDER } from '../../utils/slice-state-format.ts'
 import type { ChangeState } from '../../work/change-types.ts'
 import type { ClassifiedSlice, SliceState } from '../../work/slice-types.ts'
 
-export type StatusChange = Change & { state: ChangeState }
+export type StatusChange = Change & { state: ChangeState; closeOutPr?: CloseOutPrFacts | null }
 
 export function renderStatus(change: StatusChange, slices: ClassifiedSlice[]): string {
 	const counts = stateCountsFor(slices)
@@ -32,6 +33,7 @@ function stateGuidance(change: StatusChange): string {
 		case 'needs-revision':
 			return `Close-out PR needs revision; run ${work}`
 		case 'awaiting-review':
+			if (change.closeOutPr?.isDraft) return `Close-out PR #${change.closeOutPr.number} is draft; make it ready or close it before retrying`
 			return 'Close-out PR is awaiting review or merge; run ship when mergeable'
 		case 'ready':
 			return `all Slices are done; run ${ship}`
@@ -79,6 +81,28 @@ function unmetBlockers(s: ClassifiedSlice, byId: Map<string, ClassifiedSlice>): 
 	return s.blockedBy.filter((id) => {
 		const dep = byId.get(id)
 		return !dep || dep.state !== 'done'
+	})
+}
+
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest
+
+	describe('renderStatus', () => {
+		const change: StatusChange = {
+			id: '26',
+			title: 'Parser',
+			body: '',
+			createdAt: '2026-01-01T00:00:00.000Z',
+			closedAt: null,
+			targetBranch: 'main',
+			changeBranch: 'change-26-parser',
+			state: 'awaiting-review',
+		}
+
+		test('shows draft Close-out PR guidance when available', () => {
+			const out = renderStatus({ ...change, closeOutPr: { number: 130, state: 'OPEN', isDraft: true } }, [])
+			expect(out).toContain('Close-out PR #130 is draft; make it ready or close it before retrying')
+		})
 	})
 }
 

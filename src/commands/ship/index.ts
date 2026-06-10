@@ -179,7 +179,12 @@ async function shipViaPr(change: Change, targetBranch: string, rt: ShipRuntime):
 			config: { pr: true, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify },
 		},
 	)
-	const prNumber = await rt.gh.findPrNumberByHead(change.changeBranch)
+	const existing = await rt.gh.findAnyPrByHead(change.changeBranch)
+	if (existing?.state === 'OPEN' && existing.isDraft) {
+		rt.stdout(`[ship change-${change.id}] Close-out PR #${existing.number} is draft; make it ready or close it before retrying\n`)
+		return false
+	}
+	const prNumber = existing?.state === 'OPEN' ? existing.number : await rt.gh.findPrNumberByHead(change.changeBranch)
 	if (!rt.interactive) return false
 	const mergeability = await waitForMergeablePr(prNumber, rt)
 	if (!mergeability.mergeable) {
@@ -202,10 +207,19 @@ async function branchCleanupAllowedAfterCloseOut(changeId: string, rt: ShipRunti
 
 async function offerSlicePrMergesBeforeCloseOut(context: ShipContext, rt: ShipRuntime): Promise<ShipContext> {
 	if (!rt.pr || !rt.interactive || context.state === 'aborted' || context.state === 'done' || context.state === 'landed') return context
+	const draftPrs = context.slices.filter((slice) => slice.prState === 'draft' && slice.sliceBranch !== null)
+	for (const slice of draftPrs) await reportDraftSlicePr(context.change, slice, rt)
 	const candidates = context.slices.filter((slice) => slice.state === 'awaiting-review' && slice.prState === 'ready' && slice.sliceBranch !== null)
 	if (candidates.length === 0) return context
 	for (const slice of candidates) await offerSlicePrMerge(context.change, slice, rt)
 	return loadShipContext(context.change.id, rt)
+}
+
+async function reportDraftSlicePr(change: Change, slice: ClassifiedSlice, rt: ShipRuntime): Promise<void> {
+	const branch = slice.sliceBranch
+	if (branch === null) return
+	const prNumber = await rt.gh.findPrNumberByHead(branch)
+	rt.stdout(`[ship change-${change.id} slice-${slice.id}] Slice PR #${prNumber} is draft; make it ready or close it before retrying\n`)
 }
 
 async function offerSlicePrMerge(change: Change, slice: ClassifiedSlice, rt: ShipRuntime): Promise<void> {
@@ -523,7 +537,7 @@ if (import.meta.vitest) {
 			})
 
 			await expect(runShip('3', rt)).rejects.toThrow(/ship\.pr: true.*Change branch 'main' equals Target branch 'main'/)
-			expect(ghCalls.map((call) => call[0])).not.toContain('createDraftPr')
+			expect(ghCalls.map((call) => call[0])).not.toContain('createPr')
 		})
 
 		test('open Changes fail with non-done slice details and no cleanup', async () => {
@@ -578,7 +592,7 @@ if (import.meta.vitest) {
 
 			await expect(runShip('3', rt)).rejects.toThrow(/Switch branches first/)
 			expect(confirmCalls).toBe(0)
-			expect(ghCalls.map((call) => call[0])).not.toContain('createDraftPr')
+			expect(ghCalls.map((call) => call[0])).not.toContain('createPr')
 			expect(current).toBe('change-3-x')
 		})
 
@@ -632,7 +646,7 @@ if (import.meta.vitest) {
 			await runShip('3', rt)
 
 			expect(confirmCalls).toBe(1)
-			expect(ghCalls.map((call) => call[0])).toContain('createDraftPr')
+			expect(ghCalls.map((call) => call[0])).toContain('createPr')
 			expect(current).toBe('change-3-x')
 		})
 
@@ -664,7 +678,7 @@ if (import.meta.vitest) {
 			})
 			await runShip('3', rt)
 			expect(gitCalls).toContain('pushSetUpstream(change-3-x)')
-			expect(ghCalls.map((c) => c[0])).toContain('createDraftPr')
+			expect(ghCalls.map((c) => c[0])).toContain('createPr')
 		})
 
 		test('PR mode optional merge uses configured method', async () => {
@@ -818,6 +832,32 @@ if (import.meta.vitest) {
 			expect(calls.map((c) => c[0])).not.toContain('findPrNumberByHead')
 		})
 
+		test('PR mode reports draft Close-out PR guidance instead of merging', async () => {
+			const { gh } = recordingGhOps({
+				findAnyPrByHead: async () => ({ number: 9, state: 'OPEN', isDraft: true }),
+				findPrNumberByHead: async () => 9,
+			})
+			const { rt, out } = makeRt({ gh, pr: true })
+
+			await runShip('3', rt)
+
+			expect(out.join('')).toContain('Close-out PR #9 is draft; make it ready or close it before retrying')
+		})
+
+		test('PR mode reports draft Slice PR guidance before refusing an open Change', async () => {
+			const slice = fakeClassifiedSlice({ id: 's1', title: 'Parser', sliceBranch: 'change-3/slice-s1-parser', implementedAt: '2026-06-04T00:00:00.000Z', prState: 'draft', closedAt: null })
+			const storage = fakeSliceStorage([slice], '3', { findChange: async (id) => fakeChange(id) })
+			const { gh } = recordingGhOps({
+				listOpenPrs: async () => [{ number: 12, headRefName: 'change-3/slice-s1-parser', isDraft: true }],
+				findPrNumberByHead: async () => 12,
+			})
+			const { rt, out } = makeRt({ storage, gh, pr: true })
+
+			await expect(runShip('3', rt)).rejects.toThrow(/s1/)
+
+			expect(out.join('')).toContain('Slice PR #12 is draft; make it ready or close it before retrying')
+		})
+
 		test('PR mode awaiting-review Change uses the existing Close-out PR and keeps branches when not done', async () => {
 			const { gh, calls } = recordingGhOps({
 				findAnyPrByHead: async () => ({ number: 9, state: 'OPEN' }),
@@ -832,8 +872,8 @@ if (import.meta.vitest) {
 
 			await runShip('3', rt)
 
-			expect(calls.map((c) => c[0])).not.toContain('createDraftPr')
-			expect(calls).toContainEqual(['markPrReady', 9])
+			expect(calls.map((c) => c[0])).not.toContain('createPr')
+			expect(calls.map((c) => c[0])).not.toContain('createPr')
 			expect(calls.map((c) => c[0])).not.toContain('mergePr')
 			expect(gitCalls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 		})
@@ -860,7 +900,7 @@ if (import.meta.vitest) {
 
 			await runShip('3', rt)
 
-			expect(calls.map((c) => c[0])).not.toContain('markPrReady')
+			expect(calls.map((c) => c[0])).not.toContain('createPr')
 			expect(calls.map((c) => c[0])).not.toContain('mergePr')
 			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
 			expect(closed).toEqual(['3'])
@@ -1009,7 +1049,7 @@ if (import.meta.vitest) {
 			expect(stdout).toContain('has landed; finalized before cleanup')
 			expect(stdout).not.toContain('already done')
 			expect(gitCalls).not.toContain('mergeNoFf(change-3-x)')
-			expect(calls.map((c) => c[0])).not.toContain('createDraftPr')
+			expect(calls.map((c) => c[0])).not.toContain('createPr')
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})
 	})

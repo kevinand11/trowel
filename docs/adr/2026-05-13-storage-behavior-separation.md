@@ -1,5 +1,7 @@
 # Storage / behavior separation; PR-flow as utility functions; capability primitives
 
+> **Amended by:** [2026-06-10-create-prs-non-draft.md](./2026-06-10-create-prs-non-draft.md) — Trowel now creates PRs as non-draft directly and treats existing draft PRs as human-owned blockers.
+
 > **Supersedes (when implementation lands):** [2026-05-12-unified-loop-via-backend-primitives.md](./2026-05-12-unified-loop-via-backend-primitives.md), [2026-05-11-backend-owns-slice-bucket-classification.md](./2026-05-11-backend-owns-slice-bucket-classification.md), [2026-05-11-optional-pr-flow-on-issue-backend.md](./2026-05-11-optional-pr-flow-on-issue-backend.md).
 >
 > **Amended by:** [2026-05-14-decouple-pr-flow-from-storage.md](./2026-05-14-decouple-pr-flow-from-storage.md). The `Capability` primitive (`capabilities.prFlow`) introduced here retires; PR-flow is now driven by `config.work.*` flags alone, uniformly across every storage. Other elements (storage / loop split, free PR-flow utility functions, `perSliceBranches` flag promotion, `Slice` shape simplification) stand.

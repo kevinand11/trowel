@@ -154,8 +154,7 @@ export type GhOps = {
 	removeBlockedBy(issueNumber: number, internalId: number): Promise<void>
 
 	// PRs
-	createDraftPr(opts: { title: string; head: string; base: string; body: string }): Promise<CreatedPr>
-	markPrReady(prNumber: number): Promise<void>
+	createPr(opts: { title: string; head: string; base: string; body: string }): Promise<CreatedPr>
 	findPrNumberByHead(head: string): Promise<number>
 	listOpenPrs(opts?: { base?: string }): Promise<PrSummary[]>
 	/**
@@ -301,7 +300,7 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 			await ghOrThrow(['api', '-X', 'DELETE', `repos/{owner}/{repo}/issues/${issueId}/dependencies/blocked_by/${internalId}`])
 		},
 
-		async createDraftPr({ title, head, base, body }) {
+		async createPr({ title, head, base, body }) {
 			const pr = await ghJson<ApiPull>([
 				'api',
 				'-X',
@@ -315,13 +314,8 @@ export function createGh(runner: GhRunner = (args) => tryExec('gh', args)): GhOp
 				`base=${base}`,
 				'-f',
 				`body=${body}`,
-				'-F',
-				'draft=true',
 			])
 			return { number: pr.number, headRefName: pr.head?.ref ?? '', isDraft: pr.draft ?? false, url: pr.html_url ?? `#${pr.number}` }
-		},
-		async markPrReady(prNumber) {
-			await ghOrThrow(['pr', 'ready', String(prNumber)])
 		},
 		async findPrNumberByHead(head) {
 			const prs = await ghJson<Array<{ number: number }>>(['pr', 'list', '--head', head, '--json', 'number'])
@@ -617,14 +611,14 @@ if (import.meta.vitest) {
 	})
 
 	describe('createGh: PR methods', () => {
-		test('createDraftPr POSTs through gh api and returns structured PR data', async () => {
+		test('createPr POSTs through gh api and returns structured PR data', async () => {
 			const { runner, calls } = makeRunner([
 				{
 					match: () => true,
 					respond: ok(
 						JSON.stringify({
 							number: 12,
-							draft: true,
+							draft: false,
 							html_url: 'https://github.com/o/r/pull/12',
 							head: { ref: 'h' },
 							state: 'open',
@@ -632,8 +626,8 @@ if (import.meta.vitest) {
 					),
 				},
 			])
-			const pr = await createGh(runner).createDraftPr({ title: 'T', head: 'h', base: 'b', body: 'body' })
-			expect(pr).toEqual({ number: 12, headRefName: 'h', isDraft: true, url: 'https://github.com/o/r/pull/12' })
+			const pr = await createGh(runner).createPr({ title: 'T', head: 'h', base: 'b', body: 'body' })
+			expect(pr).toEqual({ number: 12, headRefName: 'h', isDraft: false, url: 'https://github.com/o/r/pull/12' })
 			expect(calls[0]).toEqual([
 				'api',
 				'-X',
@@ -647,15 +641,7 @@ if (import.meta.vitest) {
 				'base=b',
 				'-f',
 				'body=body',
-				'-F',
-				'draft=true',
 			])
-		})
-
-		test('markPrReady stringifies the number', async () => {
-			const { runner, calls } = makeRunner([{ match: () => true, respond: ok() }])
-			await createGh(runner).markPrReady(168)
-			expect(calls[0]).toEqual(['pr', 'ready', '168'])
 		})
 
 		test('findPrNumberByHead parses structured gh pr list JSON', async () => {

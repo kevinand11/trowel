@@ -7,7 +7,7 @@ import type { ClassifySliceConfig } from './types.ts'
 import type { TurnIn, TurnOut } from './verdict.ts'
 import type { Role } from '../prompts/load.ts'
 import type { Change, Slice, Storage } from '../storages/types.ts'
-import { classifyChange } from '../utils/change-state.ts'
+import { collectChangeStateFacts, computeChangeState, type ChangeStateFacts } from '../utils/change-state.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
@@ -44,6 +44,7 @@ type ProjectLoopState = {
 	deps: ProjectLoopDeps
 	opts: ProjectLoopOptions
 	failedSlices: Set<string>
+	deferredSlices: Set<string>
 	attemptedCloseOutReviews: Set<string>
 	running: Map<string, Promise<void>>
 	runningBranches: Set<string>
@@ -52,7 +53,7 @@ type ProjectLoopState = {
 	idlePolls: number
 }
 
-type ChangeWorkSnapshot = { change: Change; slices: ClassifiedSlice[]; state: Awaited<ReturnType<typeof classifyChange>> }
+type ChangeWorkSnapshot = { change: Change; slices: ClassifiedSlice[]; state: ReturnType<typeof computeChangeState>; facts: ChangeStateFacts }
 
 export async function runProjectLoop(deps: ProjectLoopDeps, opts: ProjectLoopOptions = {}): Promise<void> {
 	const state = projectLoopState(deps, opts)
@@ -73,6 +74,7 @@ function projectLoopState(deps: ProjectLoopDeps, opts: ProjectLoopOptions): Proj
 		deps,
 		opts,
 		failedSlices: new Set(),
+		deferredSlices: new Set(),
 		attemptedCloseOutReviews: new Set(),
 		running: new Map(),
 		runningBranches: new Set(),
@@ -120,23 +122,25 @@ async function readProjectSnapshots(deps: ProjectLoopDeps): Promise<ChangeWorkSn
 	const snapshots: ChangeWorkSnapshot[] = []
 	for (const change of changes) {
 		const slices = await reader.findSlices(change.id)
-		snapshots.push({ change, slices, state: await classifyChange(change, slices, { gh: deps.gh, git: deps.git, needsRevisionLabel: deps.config.needsRevisionLabel }) })
+		const facts = await collectChangeStateFacts(change, slices, { gh: deps.gh, git: deps.git, needsRevisionLabel: deps.config.needsRevisionLabel })
+		snapshots.push({ change, slices, facts, state: computeChangeState(change, slices, facts, { needsRevisionLabel: deps.config.needsRevisionLabel }) })
 	}
 	return snapshots
 }
 
 function actionableClaimForSnapshot(state: ProjectLoopState, snapshot: ChangeWorkSnapshot, claimed: Set<string>, claimedBranches: Set<string>): Claim | null {
-	if (snapshot.state === 'needs-revision') return closeOutReviewClaim(state, snapshot.change, claimed, claimedBranches)
+	if (snapshot.state === 'needs-revision') return closeOutReviewClaim(state, snapshot, claimed, claimedBranches)
 	if (snapshot.state === 'open') return sliceClaim(state, snapshot.change, snapshot.slices, claimed, claimedBranches)
-	reportProjectState(state, snapshot.change, snapshot.state)
+	reportProjectState(state, snapshot)
 	return null
 }
 
-function closeOutReviewClaim(state: ProjectLoopState, change: Change, claimed: Set<string>, claimedBranches: Set<string>): Claim | null {
+function closeOutReviewClaim(state: ProjectLoopState, snapshot: ChangeWorkSnapshot, claimed: Set<string>, claimedBranches: Set<string>): Claim | null {
+	const change = snapshot.change
 	const key = closeOutReviewKey(change.id)
 	const branchKey = change.changeBranch
 	if (state.attemptedCloseOutReviews.has(change.id)) {
-		reportProjectState(state, change, 'needs-revision')
+		reportProjectState(state, snapshot)
 		return null
 	}
 	if (!claimAvailable(state, key, branchKey, claimed, claimedBranches)) return null
@@ -149,6 +153,7 @@ function sliceClaim(state: ProjectLoopState, change: Change, slices: ClassifiedS
 		const key = sliceKey(change.id, slice.id)
 		const branchKey = schedulerBranchKey(slice, { perSliceBranches: state.deps.config.perSliceBranches, changeBranch: change.changeBranch })
 		if (state.failedSlices.has(key)) continue
+		if (state.deferredSlices.has(key)) continue
 		if (!claimAvailable(state, key, branchKey, claimed, claimedBranches)) continue
 		const resume = classify(slice, config, change.changeBranch)
 		if (resume === 'done' || resume === 'blocked') continue
@@ -195,6 +200,7 @@ async function processSliceClaim(state: ProjectLoopState, claim: Extract<Claim, 
 			state.failedSlices.add(claim.key)
 		}
 		if (outcome === 'skipped') state.failedSlices.add(claim.key)
+		if (outcome === 'deferred') state.deferredSlices.add(claim.key)
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error)
 		state.deps.log(`[work change-${claim.change.id} slice-${claim.slice.id}] error: ${msg}; skipping for the rest of this run`)
@@ -246,6 +252,7 @@ async function handleProjectIdle(state: ProjectLoopState): Promise<boolean> {
 	state.idlePolls += 1
 	logIdlePoll(state)
 	await (state.opts.sleep ?? sleep)(state.deps.config.loopPollSeconds * 1000)
+	state.deferredSlices.clear()
 	return true
 }
 
@@ -258,14 +265,19 @@ function logIdlePoll(state: ProjectLoopState): void {
 	else if (state.idlePolls % 10 === 0) state.deps.log(`[work] still no actionable work after ${state.idlePolls} polls`)
 }
 
-function reportProjectState(state: ProjectLoopState, change: Change, changeState: ChangeWorkSnapshot['state']): void {
-	const previous = state.reportedStates.get(change.id)
-	if (previous === changeState) return
-	state.reportedStates.set(change.id, changeState)
-	state.deps.log(projectStateMessage(change, changeState))
+function reportProjectState(state: ProjectLoopState, snapshot: ChangeWorkSnapshot): void {
+	const closeOutPr = snapshot.facts.closeOutPr
+	const stateKey = `${snapshot.state}:${closeOutPr?.isDraft ? `draft:${closeOutPr.number}` : ''}`
+	const previous = state.reportedStates.get(snapshot.change.id)
+	if (previous === stateKey) return
+	state.reportedStates.set(snapshot.change.id, stateKey)
+	state.deps.log(projectStateMessage(snapshot))
 }
 
-function projectStateMessage(change: Change, state: ChangeWorkSnapshot['state']): string {
+function projectStateMessage(snapshot: ChangeWorkSnapshot): string {
+	const change = snapshot.change
+	const state = snapshot.state
+	const closeOutPr = snapshot.facts.closeOutPr
 	const ship = `trowel change ship ${change.id}`
 	switch (state) {
 		case 'ready':
@@ -273,6 +285,7 @@ function projectStateMessage(change: Change, state: ChangeWorkSnapshot['state'])
 		case 'needs-revision':
 			return `[work change-${change.id}] state=needs-revision; Close-out PR needs revision; restart work to retry Reviewer if needed`
 		case 'awaiting-review':
+			if (closeOutPr?.isDraft) return `[work change-${change.id}] state=awaiting-review; existing draft Close-out PR #${closeOutPr.number}; make it ready or close it before retrying`
 			return `[work change-${change.id}] state=awaiting-review; Close-out PR awaiting review or merge; run: ${ship}`
 		case 'landed':
 			return `[work change-${change.id}] non-work state=landed; merged to Target branch but not finalized; run: ${ship}`

@@ -8,7 +8,7 @@ type EnrichedSlice = Slice & Pick<ClassifiedSlice, 'prState' | 'needsRevision'>
 
 /**
  * PR-flow orchestration that sits above `GhOps`. Single-call `gh` primitives
- * (`openDraftPr`, `markPrReady`, `findPrNumber`) used to live here; they now live as
+ * (`createPr`, `findPrNumber`) used to live here; they now live as
  * typed methods on `GhOps` and callers invoke them directly. What remains is
  * multi-step orchestration: PR-state enrichment, slice-branch naming, and feedback merging.
  */

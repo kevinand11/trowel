@@ -4,7 +4,7 @@ const nullValue = async (): Promise<null> => null
 const emptyList = async (): Promise<never[]> => []
 const noop = async (): Promise<void> => undefined
 const zero = async (): Promise<number> => 0
-const defaultPr = async (): Promise<Awaited<ReturnType<GhOps['createDraftPr']>>> => ({ number: 0, headRefName: '', isDraft: true, url: '#0' })
+const defaultPr = async (): Promise<Awaited<ReturnType<GhOps['createPr']>>> => ({ number: 0, headRefName: '', isDraft: false, url: '#0' })
 const defaultMergeability = async (): Promise<Awaited<ReturnType<GhOps['viewPrMergeability']>>> => ({
 	state: 'OPEN',
 	isDraft: false,
@@ -27,8 +27,7 @@ export const DEFAULT_GH_OPS: GhOps = {
 	listBlockedBy: emptyList,
 	addBlockedBy: noop,
 	removeBlockedBy: noop,
-	createDraftPr: defaultPr,
-	markPrReady: noop,
+	createPr: defaultPr,
 	findPrNumberByHead: zero,
 	listOpenPrs: emptyList,
 	findAnyPrByHead: nullValue,
