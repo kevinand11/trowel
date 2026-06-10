@@ -124,10 +124,10 @@ export const partialConfigPipe = v.object({
 				default: false,
 			})),
 			loopPollSeconds: v.optional(v.meta(v.number().pipe(v.int()).pipe(v.gte(1)).pipe(v.lte(3600)), {
-				description: 'Seconds Polling work mode sleeps between no-actionable-work refetches.',
+				description: 'Seconds Polling work mode sleeps between no-actionable-work refetches for scoped Change work and Project work.',
 				default: 30,
 			})),
-		}), { description: 'AFK loop behavior for Slice work and Close-out PR revision work.' }),
+		}), { description: 'AFK loop behavior for scoped Change work and Project work.' }),
 	),
 })
 

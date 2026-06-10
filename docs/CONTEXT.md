@@ -93,13 +93,13 @@ The branch the user was on when they invoked a command that switches branches. C
 _Avoid_: Original branch, prior branch.
 
 **Mutation lock**:
-A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by orchestrators around the smallest coherent operation that mutates Change/Slice state. Storage does not acquire the Mutation lock; it assumes callers have already locked when a mutation must be serialized. Entity read commands do not acquire it.
+A project-wide advisory lock at `<projectRoot>/.trowel/lock` acquired by orchestrators around the smallest coherent operation that mutates Change/Slice state. Storage does not acquire the Mutation lock; it assumes callers have already locked when a mutation must be serialized. Entity read commands do not acquire it. Work commands do not hold the Mutation lock while scanning, sleeping, or running Turns.
 _Avoid_: Read lock, status lock, Git lock, Storage lock, per-write lock.
 
 ### AFK loop
 
 **AFK loop**:
-The auto-iterating agent flow run by `trowel change work <id>`. A shared worker pool claims one actionable Slice, runs exactly one phase step (`implement`, `audit`, or `review`), releases the slot, then refetches effective state before the next claim. By default, the loop exits successfully when no actionable Slices remain; in **Polling work mode**, it waits and refetches instead. If every Slice is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
+The auto-iterating agent flow run by `trowel change work <id>` or **Project work**. A shared worker pool claims actionable Slice work or Close-out PR revision work, runs exactly one phase step or Reviewer Turn, releases the slot, then refetches effective state before the next claim. By default, the loop exits successfully when no actionable work remains; in **Polling work mode**, it waits and refetches instead. If every Slice in a scoped Change is `done`, it prints `trowel change ship <id>` guidance instead of running Close-out.
 _Avoid_: Sandcastle, agent runner.
 
 **Agent harness**:
@@ -114,8 +114,12 @@ _Avoid_: Agent review, PR review, reviewing.
 The three agent roles inside the **AFK loop**. Implementer writes the first cut, Auditor performs **Auditing**, and Reviewer responds to PR review feedback. Reviewer revises a Slice for Slice PR feedback, or revises a Change for Close-out PR feedback.
 _Avoid_: Worker, Reviser, old PR-feedback role names.
 
+**Project work**:
+The project-wide **AFK loop** invoked by `trowel work`. It discovers Changes in the current **Project root** and schedules actionable work across them oldest-first by Change creation time, while `trowel change work <id>` remains the scoped command for one Change. One-shot Project work drains currently actionable work until a full project scan finds none. Project work logs non-actionable Change guidance once per Change state transition. Project work runs Slice work and Close-out PR revision work; it does not run Ship, prompt for PR merges, run Cleanup, or finalize Changes.
+_Avoid_: Project daemon, global work, all-changes work.
+
 **Polling work mode**:
-The `trowel change work <id> --loop` mode where the **AFK loop** stays alive after finding no actionable work, sleeps for `work.loopPollSeconds`, then refetches effective Change and Slice state to look for newly actionable work. Failed or partial Slices and attempted Close-out PR revisions remain skipped for the lifetime of the running Polling work mode process; retrying them requires restarting the command.
+The `trowel change work <id> --loop` or `trowel work --loop` mode where the **AFK loop** stays alive after finding no actionable work, sleeps for `work.loopPollSeconds`, then refetches effective Change and Slice state to look for newly actionable work. Project work polling exits only when every Change is `done` or `aborted`. Failed or partial Slices and attempted Close-out PR revisions remain skipped for the lifetime of the running Polling work mode process; retrying them requires restarting the command.
 _Avoid_: Watch mode, pooling, daemon.
 
 **Turn**:
@@ -159,7 +163,7 @@ _Avoid_: Checkout, sandbox directory.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
 - A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages, but that value may be `null` until first implementation preparation. `prepareImplement` fills null Slice branch metadata using current config: when per-slice branches are enabled it fetches the latest remote Change branch, creates and pushes a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, then stores it; when per-slice branches are disabled it stores the parent Change's Change branch.
 - When per-slice branches are enabled the Slice branch value is a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, and when per-slice branches are disabled the value is the parent Change's Change branch.
-- The work scheduler treats non-null Slice branch values as the concurrency boundary: no two Slices with the same stored Slice branch may run Turns in parallel. Under `work.perSliceBranches: true`, a null Slice branch means an unassigned unique branch and is not a shared-branch concurrency boundary; these Slices still count against `turn.maxConcurrent`. Under `work.perSliceBranches: false`, a null Slice branch resolves to the shared Change branch and must serialize with that branch.
+- The work scheduler treats non-null Slice branch values as the concurrency boundary: no two Slices with the same stored Slice branch may run Turns in parallel. Under `work.perSliceBranches: true`, a null Slice branch means an unassigned unique branch and is not a shared-branch concurrency boundary; these Slices still count against `turn.maxConcurrent`. Under `work.perSliceBranches: false`, a null Slice branch resolves to the shared Change branch and must serialize with that branch. In Project work, `turn.maxConcurrent` is a project-wide Turn cap across all Changes, and branch safety is global across the Project: no two running Turns may share the same non-null branch name. Multiple Turns from the same Change may run concurrently when branch safety allows it.
 - A **Slice state** is computed from Slice metadata and external PR/blocker relationships rather than stored directly; Slice `open` is the old ready-for-agent bucket renamed, `implemented` is derived from `implementedAt`, `audited` is derived from `auditedAt`, `awaiting-review` is the non-draft PR state waiting on a human, and `readyForAgent` remains the raw opt-in signal.
 - User-facing output and internal domain types use **state** for Change and Slice lifecycle classifications; the word "bucket" is retired from the codebase.
 - Internal Change types use `changeBranch`, not ambiguous `branch`, for the stored **Change branch** field.
@@ -168,7 +172,7 @@ _Avoid_: Checkout, sandbox directory.
 - A Slice's terminal raw storage field is `closedAt: string | null`, not `state: OPEN | CLOSED`; Slice finalization sets it once the Slice has landed. Slice process milestones are `implementedAt: string | null` and `auditedAt: string | null`; `needsRevision` is not stored on the Slice.
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
-- A Slice **Turn** runs in one **Worktree** checked out to the Slice's stored **Slice branch**; under `work.perSliceBranches: false`, that stored Slice branch is the parent **Change branch**. A Change-level Reviewer Turn for Close-out PR feedback runs on the **Change branch**.
+- A Slice **Turn** runs in one **Worktree** checked out to the Slice's stored **Slice branch**; under `work.perSliceBranches: false`, that stored Slice branch is the parent **Change branch**. A Change-level Reviewer Turn for Close-out PR feedback runs on the **Change branch** and participates in the same branch-safety rules as Slice Turns.
 - Merge-based **Ship** performs the Target-branch merge inside a trowel-managed **Worktree**, not the user's main working tree.
 - Host-owned local merges run inside trowel-managed **Worktrees**, not the user's main working tree.
 - After a host-owned local merge command completes, the user's main working tree remains on its starting branch.

@@ -10,6 +10,7 @@ import type { Change, Storage } from '../storages/types.ts'
 import { createGh } from '../utils/gh-ops.ts'
 import { tryExec } from '../utils/shell.ts'
 import { runEntityLoop, type LoopEntity } from '../work/entity-loop.ts'
+import { runProjectLoop } from '../work/project-loop.ts'
 import type { ClassifiedSlice } from '../work/slice-types.ts'
 import { spawnTurn } from '../work/turn.ts'
 import type { TurnIn } from '../work/verdict.ts'
@@ -21,6 +22,7 @@ type LoopWiring = {
 	storage: Storage
 	gh: ReturnType<typeof createGh>
 	runEntityLoopFor: (entity: LoopEntity, opts?: { loop?: boolean }) => Promise<void>
+	runProjectLoop: (opts?: { loop?: boolean }) => Promise<void>
 }
 
 export async function buildLoopWiring(opts: { storage?: string; harness?: HarnessKind }): Promise<LoopWiring> {
@@ -81,6 +83,16 @@ export async function buildLoopWiring(opts: { storage?: string; harness?: Harnes
 			log,
 		})
 
+	const loopConfig = {
+		pr: config.ship.pr,
+		audit: config.work.audit,
+		perSliceBranches: config.work.perSliceBranches,
+		maxConcurrent: config.turn.maxConcurrent,
+		mergeNoVerify: config.work.mergeNoVerify,
+		loopPollSeconds: config.work.loopPollSeconds,
+		needsRevisionLabel: config.labels.needsRevision,
+	}
+
 	const runEntityLoopFor = async (entity: LoopEntity, opts: { loop?: boolean } = {}): Promise<void> => {
 		await runEntityLoop(entity, {
 			storage,
@@ -88,20 +100,24 @@ export async function buildLoopWiring(opts: { storage?: string; harness?: Harnes
 			gh,
 			spawnTurn: makeSpawnTurnFor(entity.id),
 			log,
-			config: {
-				pr: config.ship.pr,
-				audit: config.work.audit,
-				perSliceBranches: config.work.perSliceBranches,
-				maxConcurrent: config.turn.maxConcurrent,
-				mergeNoVerify: config.work.mergeNoVerify,
-				loopPollSeconds: config.work.loopPollSeconds,
-				needsRevisionLabel: config.labels.needsRevision,
-			},
+			config: loopConfig,
 			projectRoot,
 		}, opts)
 	}
 
-	return { config, projectRoot, storage, gh, runEntityLoopFor }
+	const runProjectLoopFor = async (opts: { loop?: boolean } = {}): Promise<void> => {
+		await runProjectLoop({
+			storage,
+			git,
+			gh,
+			spawnTurn: (changeId, args) => makeSpawnTurnFor(changeId)(args),
+			log,
+			config: loopConfig,
+			projectRoot,
+		}, opts)
+	}
+
+	return { config, projectRoot, storage, gh, runEntityLoopFor, runProjectLoop: runProjectLoopFor }
 }
 
 async function gitStdoutOr(cwd: string, args: string[], fallback: string): Promise<string> {

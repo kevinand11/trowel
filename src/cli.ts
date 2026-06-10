@@ -8,7 +8,7 @@ import { list } from './commands/list/index.ts'
 import { shipChange } from './commands/ship/index.ts'
 import { start } from './commands/start.ts'
 import { statusChange } from './commands/status/index.ts'
-import { work } from './commands/work/index.ts'
+import { work, workProject } from './commands/work/index.ts'
 
 async function initialRequest(requestWords: string[]): Promise<string | undefined> {
 	return chooseInitialRequest(requestWords.join(' ').trim(), await pipedStdin())
@@ -45,6 +45,16 @@ export function run(): void {
 			await start({ ...opts, request: await initialRequest(requestWords) })
 		})
 
+	program
+		.command('work')
+		.description('Run project-wide AFK work across Changes')
+		.option('--storage <kind>', 'Override project storage')
+		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
+		.option('--loop', 'Keep polling for newly actionable work')
+		.action(async (opts) => {
+			await workProject(opts)
+		})
+
 	const changeCmd = program.command('change').description('Manage Changes')
 
 	changeCmd
@@ -66,11 +76,11 @@ export function run(): void {
 
 	changeCmd
 		.command('work')
-		.description("Run the AFK loop on a Change's open slices")
+		.description("Run the AFK loop on one Change's actionable work")
 		.argument('<change-id>')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.option('--loop', 'Keep polling for newly actionable Slice work')
+		.option('--loop', 'Keep polling for newly actionable work')
 		.action(async (changeId: string, opts) => {
 			await work(changeId, opts)
 		})
