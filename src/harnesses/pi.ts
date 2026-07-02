@@ -1,6 +1,12 @@
 import { detectCliVersion, spawnHarness, spawnPrintCommand, waitForChildExit } from './process.ts'
 import type { HarnessAdapter, HarnessSpawnHandle, HarnessSpawnInteractiveArgs, HarnessSpawnPrintArgs, HarnessVersionInfo } from './types.ts'
 
+function piInteractiveArgs(args: HarnessSpawnInteractiveArgs): string[] {
+	const out = ['--append-system-prompt', args.systemPrompt, '--model', args.model]
+	if (args.initialPrompt) out.push(args.initialPrompt)
+	return out
+}
+
 export const piHarness: HarnessAdapter = {
 	name: 'pi',
 	// Provider-prefixed so we don't depend on pi's --provider default (which is `google`).
@@ -15,7 +21,7 @@ export const piHarness: HarnessAdapter = {
 	},
 
 	async spawnInteractive(args: HarnessSpawnInteractiveArgs): Promise<HarnessSpawnHandle> {
-		const child = spawnHarness('pi', ['--append-system-prompt', args.systemPrompt, '--model', args.model], {
+		const child = spawnHarness('pi', piInteractiveArgs(args), {
 			cwd: args.cwd,
 			stdio: 'inherit',
 		})
@@ -37,6 +43,15 @@ if (import.meta.vitest) {
 		})
 		test('defaultModel is provider-prefixed (anthropic/…)', () => {
 			expect(piHarness.defaultModel.startsWith('anthropic/')).toBe(true)
+		})
+		test('interactive args include an initial prompt when present', () => {
+			expect(piInteractiveArgs({ model: 'm', systemPrompt: 's', cwd: '/tmp/x', initialPrompt: 'do thing' })).toEqual([
+				'--append-system-prompt',
+				's',
+				'--model',
+				'm',
+				'do thing',
+			])
 		})
 	})
 }

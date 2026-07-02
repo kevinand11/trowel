@@ -398,11 +398,15 @@ if (import.meta.vitest) {
 			pushHeadTo: recorded('pushHeadTo'),
 			updateLocalBranchRef: recorded('updateLocalBranchRef'),
 			worktreeAdd: recorded('worktreeAdd'),
+			worktreeAddNewBranch: recorded('worktreeAddNewBranch'),
 			worktreeRemove: recorded('worktreeRemove'),
 			worktreeList: async () => [],
 			restoreAll: recorded('restoreAll'),
 			cleanUntracked: recorded('cleanUntracked'),
 			cleanAll: recorded('cleanAll'),
+			isWorkingTreeCleanIn: async () => true,
+			statusShortIn: async () => '',
+			isAncestor: async () => false,
 			isWorkingTreeClean: async () => true,
 			statusShort: async () => '',
 			stashPush: recorded('stashPush'),
@@ -683,7 +687,7 @@ if (import.meta.vitest) {
 
 				const outcome = await integrateSlice(deps, slice, ctx)
 
-				const mergeWorktreePath = path.join(projectRoot, '.trowel', 'worktrees', 'pid', '__merge-slice')
+				const mergeWorktreePath = path.join(projectRoot, '.trowel', 'worktrees', 'changes', 'pid', '__merge-slice')
 				expect(outcome).toBe('done')
 				expect(calls.map((c) => c.method)).not.toContain('checkout')
 				expect(calls).toContainEqual({ method: 'worktreeAdd', args: [mergeWorktreePath, 'origin/change-branch'] })
@@ -718,7 +722,7 @@ if (import.meta.vitest) {
 					throw boom
 				}
 
-				const mergeWorktreePath = path.join(projectRoot, '.trowel', 'worktrees', 'pid', '__merge-slice')
+				const mergeWorktreePath = path.join(projectRoot, '.trowel', 'worktrees', 'changes', 'pid', '__merge-slice')
 				await expect(integrateSlice(deps, slice, ctx)).rejects.toThrow(`Merge worktree preserved at ${mergeWorktreePath}`)
 				expect(storageState.closedAt).toBeNull()
 				expect(calls.map((c) => c.method)).not.toContain('updateLocalBranchRef')

@@ -1,6 +1,12 @@
 import { detectCliVersion, spawnHarness, spawnPrintCommand, waitForChildExit } from './process.ts'
 import type { HarnessAdapter, HarnessSpawnHandle, HarnessSpawnInteractiveArgs, HarnessSpawnPrintArgs, HarnessVersionInfo } from './types.ts'
 
+function claudeInteractiveArgs(args: HarnessSpawnInteractiveArgs): string[] {
+	const out = ['--append-system-prompt', args.systemPrompt, '--model', args.model]
+	if (args.initialPrompt) out.push(args.initialPrompt)
+	return out
+}
+
 export const claudeHarness: HarnessAdapter = {
 	name: 'claude',
 	defaultModel: 'claude-opus-4-6',
@@ -21,7 +27,7 @@ export const claudeHarness: HarnessAdapter = {
 	},
 
 	async spawnInteractive(args: HarnessSpawnInteractiveArgs): Promise<HarnessSpawnHandle> {
-		const child = spawnHarness('claude', ['--append-system-prompt', args.systemPrompt, '--model', args.model], {
+		const child = spawnHarness('claude', claudeInteractiveArgs(args), {
 			cwd: args.cwd,
 			stdio: 'inherit',
 		})
@@ -42,6 +48,15 @@ if (import.meta.vitest) {
 		})
 		test('defaultModel is claude-opus-4-6', () => {
 			expect(claudeHarness.defaultModel).toBe('claude-opus-4-6')
+		})
+		test('interactive args include an initial prompt when present', () => {
+			expect(claudeInteractiveArgs({ model: 'm', systemPrompt: 's', cwd: '/tmp/x', initialPrompt: 'do thing' })).toEqual([
+				'--append-system-prompt',
+				's',
+				'--model',
+				'm',
+				'do thing',
+			])
 		})
 	})
 }

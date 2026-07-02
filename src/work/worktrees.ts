@@ -51,8 +51,12 @@ function gitignoreAppendSeparator(existing: string): string {
 export type TurnWorktree = { worktreePath: string; branch: string; changeId: string }
 type GitWorktree = Awaited<ReturnType<GitOps['worktreeList']>>[number]
 
+function changeWorktreeRoot(projectRoot: string, changeId: string): string {
+	return path.join(projectRoot, '.trowel', 'worktrees', 'changes', changeId)
+}
+
 function worktreePathFor(projectRoot: string, changeId: string, branch: string): string {
-	return path.join(projectRoot, '.trowel', 'worktrees', changeId, slug(branch))
+	return path.join(changeWorktreeRoot(projectRoot, changeId), slug(branch))
 }
 
 export async function ensureWorktree(args: {
@@ -93,7 +97,7 @@ async function createWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
 	await git.worktreeAdd(wt.worktreePath, wt.branch)
 }
 
-async function copyWorktreeEntries(projectRoot: string, worktreePath: string, entries: string[], log?: (m: string) => void): Promise<void> {
+export async function copyWorktreeEntries(projectRoot: string, worktreePath: string, entries: string[], log?: (m: string) => void): Promise<void> {
 	for (const entry of entries) await copyWorktreeEntry(projectRoot, worktreePath, entry, log)
 }
 
@@ -122,36 +126,56 @@ async function destroyWorktree(wt: TurnWorktree, git: GitOps): Promise<void> {
 	await rm(wt.worktreePath, { recursive: true, force: true })
 }
 
-export async function sweepOrphanWorktrees(args: {
+async function sweepOrphanWorktrees(args: {
 	projectRoot: string
 	orphanCheck: (changeId: string, branch: string) => Promise<boolean>
+	laneOrphanCheck?: (laneId: string) => Promise<boolean>
 	cleanupAge: string
 	git: GitOps
 	now?: Date
 }): Promise<void> {
 	const minAgeMs = parseDurationMs(args.cleanupAge)
 	const now = (args.now ?? new Date()).getTime()
-	const root = path.join(args.projectRoot, '.trowel', 'worktrees')
-	for (const w of await args.git.worktreeList()) await sweepWorktreeIfOrphan(args, root, minAgeMs, now, w)
+	const worktrees = await args.git.worktreeList()
+	const changeRoot = path.join(args.projectRoot, '.trowel', 'worktrees', 'changes')
+	const laneRoot = path.join(args.projectRoot, '.trowel', 'worktrees', 'lanes')
+	for (const w of worktrees) await sweepChangeWorktreeIfOrphan(args, changeRoot, minAgeMs, now, w)
+	for (const w of worktrees) await sweepLaneWorktreeIfOrphan(args, laneRoot, minAgeMs, now, w)
 }
 
-async function sweepWorktreeIfOrphan(args: { orphanCheck: (changeId: string, branch: string) => Promise<boolean>; git: GitOps }, root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<void> {
-	const candidate = await orphanWorktreeCandidate(root, minAgeMs, now, w)
+async function sweepChangeWorktreeIfOrphan(args: { orphanCheck: (changeId: string, branch: string) => Promise<boolean>; git: GitOps }, root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<void> {
+	const candidate = await changeOrphanWorktreeCandidate(root, minAgeMs, now, w)
 	if (!candidate) return
 	if (!(await args.orphanCheck(candidate.changeId, candidate.branch))) return
 	await destroyWorktree(candidate, args.git)
 }
 
-async function orphanWorktreeCandidate(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
-	if (!isUnderWorktreeRoot(root, w.path)) return null
-	return candidateInsideWorktreeRoot(root, minAgeMs, now, w)
+async function sweepLaneWorktreeIfOrphan(args: { laneOrphanCheck?: (laneId: string) => Promise<boolean>; git: GitOps }, root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<void> {
+	if (!args.laneOrphanCheck) return
+	const candidate = await laneOrphanWorktreeCandidate(root, minAgeMs, now, w)
+	if (!candidate) return
+	if (!(await args.laneOrphanCheck(candidate.changeId))) return
+	await destroyWorktree(candidate, args.git)
 }
 
-async function candidateInsideWorktreeRoot(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
+async function changeOrphanWorktreeCandidate(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
+	if (!isUnderWorktreeRoot(root, w.path)) return null
+	return candidateInsideChangeWorktreeRoot(root, minAgeMs, now, w)
+}
+
+async function candidateInsideChangeWorktreeRoot(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
 	const ids = worktreeIdsFromPath(root, w.path)
 	if (!ids) return null
 	if (!(await worktreeOldEnough(w.path, minAgeMs, now))) return null
 	return { worktreePath: w.path, changeId: ids.changeId, branch: worktreeBranch(w, ids.branchSlug) }
+}
+
+async function laneOrphanWorktreeCandidate(root: string, minAgeMs: number, now: number, w: GitWorktree): Promise<TurnWorktree | null> {
+	if (!isUnderWorktreeRoot(root, w.path)) return null
+	const laneId = laneIdFromPath(root, w.path)
+	if (!laneId) return null
+	if (!(await worktreeOldEnough(w.path, minAgeMs, now))) return null
+	return { worktreePath: w.path, changeId: laneId, branch: worktreeBranch(w, laneId) }
 }
 
 function worktreeBranch(w: GitWorktree, branchSlug: string): string {
@@ -166,6 +190,12 @@ function worktreeIdsFromPath(root: string, worktreePath: string): { changeId: st
 	const parts = path.relative(root, worktreePath).split(path.sep)
 	if (parts.length < 2) return null
 	return { changeId: parts[0]!, branchSlug: parts[1]! }
+}
+
+function laneIdFromPath(root: string, worktreePath: string): string | null {
+	const parts = path.relative(root, worktreePath).split(path.sep)
+	if (parts.length !== 1) return null
+	return /^\d+$/.test(parts[0]!) ? parts[0]! : null
 }
 
 async function worktreeOldEnough(worktreePath: string, minAgeMs: number, now: number): Promise<boolean> {
@@ -292,9 +322,9 @@ if (import.meta.vitest) {
 			if (cleanupRepo) await cleanupRepo()
 		})
 
-		test('ensureWorktree creates a new worktree at .trowel/worktrees/<changeId>/<slug>/', async () => {
+		test('ensureWorktree creates a new worktree at .trowel/worktrees/changes/<changeId>/<slug>/', async () => {
 			const wt = await ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })
-			expect(wt.worktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', 'p1', 'feature-a'))
+			expect(wt.worktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', 'changes', 'p1', 'feature-a'))
 			const s = await fsStat(path.join(wt.worktreePath, 'README.md'))
 			expect(s.isFile()).toBe(true)
 		})
@@ -316,7 +346,7 @@ if (import.meta.vitest) {
 		})
 
 		test('ensureWorktree refuses a registered worktree path for a different branch without removing it', async () => {
-			const wtPath = path.join(projectRoot, '.trowel', 'worktrees', 'p1', 'feature-a')
+			const wtPath = path.join(projectRoot, '.trowel', 'worktrees', 'changes', 'p1', 'feature-a')
 			await fsMkdir(path.dirname(wtPath), { recursive: true })
 			await git.worktreeAdd(wtPath, 'feature-b')
 			await expect(ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })).rejects.toThrow(/registered for branch 'feature-b'/)
@@ -325,7 +355,7 @@ if (import.meta.vitest) {
 		})
 
 		test('ensureWorktree refuses a stale path without deleting it', async () => {
-			const wtPath = path.join(projectRoot, '.trowel', 'worktrees', 'p1', 'feature-a')
+			const wtPath = path.join(projectRoot, '.trowel', 'worktrees', 'changes', 'p1', 'feature-a')
 			await fsMkdir(wtPath, { recursive: true })
 			await fsWriteFile(path.join(wtPath, 'keep.txt'), 'do not delete\n')
 			await expect(ensureWorktree({ changeId: 'p1', branch: 'feature-a', projectRoot, copyToWorktree: [], git })).rejects.toThrow(/already exists/)
@@ -379,6 +409,20 @@ if (import.meta.vitest) {
 				orphanCheck: async () => true,
 			})
 			expect((await git.worktreeList()).find((w) => w.path === wt.worktreePath)).toBeDefined()
+		})
+
+		test('sweepOrphanWorktrees removes old lane worktrees when laneOrphanCheck says orphan', async () => {
+			const lanePath = path.join(projectRoot, '.trowel', 'worktrees', 'lanes', '17')
+			await fsMkdir(path.dirname(lanePath), { recursive: true })
+			await git.worktreeAddNewBranch(lanePath, 'lane-17-x', 'HEAD')
+			await sweepOrphanWorktrees({
+				projectRoot,
+				git,
+				cleanupAge: '0ms',
+				orphanCheck: async () => false,
+				laneOrphanCheck: async (laneId) => laneId === '17',
+			})
+			expect((await git.worktreeList()).find((w) => w.path === lanePath)).toBeUndefined()
 		})
 	})
 }

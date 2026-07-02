@@ -47,7 +47,7 @@ async function cleanupChangeWorktrees(changeId: string, rt: CleanupRuntime): Pro
 }
 
 function changeWorktreeRoot(projectRoot: string, changeId: string): string {
-	return path.resolve(projectRoot, '.trowel', 'worktrees', changeId)
+	return path.resolve(projectRoot, '.trowel', 'worktrees', 'changes', changeId)
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -73,7 +73,7 @@ async function cleanupLocalBranches(args: CleanupChangeArgs): Promise<void> {
 	for (const branch of deletable) await args.rt.git.deleteBranch(branch)
 }
 
-export async function cleanupLocalBranchCandidates(change: Pick<Change, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], targetBranch: string, git: GitOps): Promise<string[]> {
+async function cleanupLocalBranchCandidates(change: Pick<Change, 'id' | 'changeBranch'>, slices: Pick<Slice, 'id' | 'sliceBranch'>[], targetBranch: string, git: GitOps): Promise<string[]> {
 	const local = new Set(await git.listLocalBranches())
 	const candidates = new Set<string>([change.changeBranch])
 	for (const slice of slices) if (slice.sliceBranch !== null) candidates.add(slice.sliceBranch)
@@ -196,9 +196,9 @@ if (import.meta.vitest) {
 		})
 
 		test('removes all trowel-managed worktrees for a Change and keeps logs', async () => {
-			const wtA = path.join(projectRoot, '.trowel', 'worktrees', '42', 'a')
-			const wtB = path.join(projectRoot, '.trowel', 'worktrees', '42', 'b')
-			const otherWt = path.join(projectRoot, '.trowel', 'worktrees', '99', 'a')
+			const wtA = path.join(projectRoot, '.trowel', 'worktrees', 'changes', '42', 'a')
+			const wtB = path.join(projectRoot, '.trowel', 'worktrees', 'changes', '42', 'b')
+			const otherWt = path.join(projectRoot, '.trowel', 'worktrees', 'changes', '99', 'a')
 			const logFile = path.join(projectRoot, '.trowel', 'logs', '42.log')
 			await mkdir(wtA, { recursive: true })
 			await mkdir(wtB, { recursive: true })
@@ -220,7 +220,7 @@ if (import.meta.vitest) {
 
 			await cleanupChange({ change: { id: '42', changeBranch: 'change-42-x' }, slices: [], targetBranch: 'main', rt: cleanupRt(projectRoot, git) })
 
-			await expect(stat(path.join(projectRoot, '.trowel', 'worktrees', '42'))).rejects.toThrow()
+			await expect(stat(path.join(projectRoot, '.trowel', 'worktrees', 'changes', '42'))).rejects.toThrow()
 			expect((await stat(otherWt)).isDirectory()).toBe(true)
 			expect(await readFile(logFile, 'utf8')).toBe('keep me\n')
 			expect(calls).toContain(`worktreeRemove(${wtA})`)
@@ -256,7 +256,7 @@ if (import.meta.vitest) {
 		})
 
 		test('refuses before prompting when the current branch is a Cleanup candidate', async () => {
-			const wt = path.join(projectRoot, '.trowel', 'worktrees', '42', 'a')
+			const wt = path.join(projectRoot, '.trowel', 'worktrees', 'changes', '42', 'a')
 			await mkdir(wt, { recursive: true })
 			const localBranches = new Set(['main', 'change-42-x'])
 			const state = { current: 'change-42-x', localBranches, remoteBranches: new Set<string>(), ahead: new Map<string, number>(), worktrees: [{ path: wt, branch: 'change-42-x', head: '1' }] }
@@ -321,7 +321,7 @@ if (import.meta.vitest) {
 		})
 
 		test('non-interactive prompt skips branch deletion but still removes worktrees', async () => {
-			const wt = path.join(projectRoot, '.trowel', 'worktrees', '42', 'a')
+			const wt = path.join(projectRoot, '.trowel', 'worktrees', 'changes', '42', 'a')
 			await mkdir(wt, { recursive: true })
 			const localBranches = new Set(['change-42-x'])
 			const { git, calls } = fakeCleanupGit({ current: 'main', localBranches, remoteBranches: new Set(), ahead: new Map(), worktrees: [{ path: wt, branch: 'change-42-x', head: '1' }] })

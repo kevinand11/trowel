@@ -4,6 +4,7 @@ import { abortChange } from './commands/abort/index.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { init } from './commands/init.ts'
+import { laneClose, laneContinue, laneList, laneStart } from './commands/lane/index.ts'
 import { list } from './commands/list/index.ts'
 import { shipChange } from './commands/ship/index.ts'
 import { start } from './commands/start.ts'
@@ -101,6 +102,42 @@ export function run(): void {
 		.option('--storage <kind>', 'Override project storage')
 		.action(async (changeId: string, opts) => {
 			await abortChange(changeId, opts)
+		})
+
+	const laneCmd = program.command('lane').description('Manage interactive local implementation Lanes')
+
+	laneCmd
+		.command('start')
+		.description('Start a foreground human-in-the-loop implementation Lane in a managed worktree')
+		.argument('<title...>', 'Lane title/request words')
+		.option('--base <ref>', 'Base ref for the Lane branch; defaults to HEAD')
+		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
+		.action(async (titleWords: string[], opts: { base?: string; harness?: string }) => {
+			await laneStart(titleWords.join(' '), opts)
+		})
+
+	laneCmd
+		.command('continue')
+		.description('Open an interactive agent session in an existing Lane worktree')
+		.argument('<lane-id>')
+		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
+		.action(async (laneId: string, opts: { harness?: string }) => {
+			await laneContinue(laneId, opts)
+		})
+
+	laneCmd
+		.command('close')
+		.description('Confirm, merge a Lane into its captured Target branch, and clean up')
+		.argument('<lane-id>')
+		.action(async (laneId: string) => {
+			await laneClose(laneId)
+		})
+
+	laneCmd
+		.command('list')
+		.description('List all Lanes newest first')
+		.action(async () => {
+			await laneList()
 		})
 
 	program

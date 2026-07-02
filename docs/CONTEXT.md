@@ -126,6 +126,14 @@ _Avoid_: Watch mode, pooling, daemon.
 The bounded execution of one agent role against one Slice or one Change-level PR revision. A Turn runs in a trowel-managed git worktree, receives `.trowel/turn-in.json`, and must write `.trowel/turn-out.json`.
 _Avoid_: Sandbox, session, run, container.
 
+**Lane**:
+A local, human-in-the-loop implementation workspace backed by a Trowel-managed git worktree and a generated Lane branch, used for foreground interactive agent sessions outside the Change/Slice lifecycle.
+_Avoid_: Turn, Slice, Change, AFK work, session
+
+**Lane id**:
+A positive integer allocated from `.trowel/lanes/*.json` for a Lane and never reused because closed Lane metadata remains in place.
+_Avoid_: Branch name, Change id
+
 **Verdict**:
 The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.json`. One of `ready`, `no-work-needed`, `partial`. The host translates verdicts into git/gh/storage operations; `needs-revision` is a Slice state derived from PR review surfaces, not an agent Verdict.
 _Avoid_: Result, status, outcome.
@@ -133,6 +141,10 @@ _Avoid_: Result, status, outcome.
 **Slice branch**:
 The stored branch a **Slice**'s Turns run on, nullable until `prepareImplement` first needs it. With `perSliceBranches: true` at prepare time, the Slice branch is created from the latest remote Change branch and named `<changeId>/<sliceId>-<slug>`; with `perSliceBranches: false`, it is set to the parent Change branch.
 _Avoid_: Feature branch, task branch, computed branch.
+
+**Lane branch**:
+The generated local branch for a Lane, named `lane-<laneId>-<slug>`, stored as Lane metadata and merged into the captured Target branch by `trowel lane close`.
+_Avoid_: Change branch, Slice branch
 
 **Slice PR**:
 A pull request from a **Slice branch** into its parent **Change branch**, used as the human review and merge surface before a Slice lands.
@@ -147,12 +159,17 @@ A pull request that GitHub currently permits Trowel to offer for merging: open, 
 _Avoid_: Available PR, maybe-mergeable PR.
 
 **Worktree**:
-A trowel-managed git worktree under `.trowel/worktrees/` used as disposable infrastructure for Turns and host-owned merge work.
+A trowel-managed git worktree under `.trowel/worktrees/`; Change/Slice Turn and host-merge Worktrees live under `.trowel/worktrees/changes/<changeId>/...`, while Lane worktrees live under `.trowel/worktrees/lanes/<laneId>`.
 _Avoid_: Checkout, sandbox directory.
+
+**Lane worktree**:
+The managed git worktree for a Lane under `.trowel/worktrees/lanes/<laneId>`.
+_Avoid_: Turn Worktree, sandbox
 
 ## Relationships
 
 - A **Change** has one stored **Change branch** and one or more **Slices** across all storages; because the Change id is allocated by storage creation, orchestration creates and pushes the Change branch before writing branch metadata through an explicit metadata update; new Change branch names use `${changeId}-${changeSlug}`.
+- A **Lane** has one **Lane id**, one generated **Lane branch**, one captured **Target branch**, and one **Lane worktree**; closed Lane metadata remains under `.trowel/lanes/` so Lane ids are never reused.
 - A **Change** has exactly one stored **Target branch** and one stored **Change branch**.
 - For issue storage, branch metadata is stored in one existing hidden issue-body comment per issue as a JSON object with entity-specific keys (`targetBranch`, `changeBranch`, `sliceBranch`); after the branch-metadata change lands, storage reads require this metadata and do not fall back to Development-linked PR history or naming conventions.
 - For file storage, entity paths are deterministic from ids: Changes live at `<changesDir>/<changeId>/` and Slices live at `<changesDir>/<changeId>/slices/<sliceId>/`. `store.json` is canonical for entity metadata and must contain the matching numeric `id`; `slug` is not stored or used in file-storage paths. Direct id lookup uses the deterministic path, while list/allocation operations enumerate existing deterministic paths and read their stores.
@@ -177,6 +194,7 @@ _Avoid_: Checkout, sandbox directory.
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
 - A Slice **Turn** runs in one **Worktree** checked out to the Slice's stored **Slice branch**; under `work.perSliceBranches: false`, that stored Slice branch is the parent **Change branch**. A Change-level Reviewer Turn for Close-out PR feedback runs on the **Change branch** and participates in the same branch-safety rules as Slice Turns.
+- A **Lane** runs foreground interactive agent sessions in its **Lane worktree** and never writes `.trowel/turn-in.json` or `.trowel/turn-out.json`.
 - Merge-based **Ship** performs the Target-branch merge inside a trowel-managed **Worktree**, not the user's main working tree.
 - Host-owned local merges run inside trowel-managed **Worktrees**, not the user's main working tree.
 - After a host-owned local merge command completes, the user's main working tree remains on its starting branch.

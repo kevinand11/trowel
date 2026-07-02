@@ -653,8 +653,8 @@ if (import.meta.vitest) {
 		test('non-PR mode merges ready Changes, closes, preserves the main checkout, and applies local delete policy', async () => {
 			const { rt, gitCalls, closed } = makeRt({ deleteBranchPolicy: 'always' })
 			await runShip('3', rt)
-			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
-			expect(gitCalls).toContain('pushHeadTo(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,main)')
+			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/changes/3/__merge-change,change-3-x)')
+			expect(gitCalls).toContain('pushHeadTo(/tmp/trowel-ship-test-project/.trowel/worktrees/changes/3/__merge-change,main)')
 			expect(gitCalls.find((call) => call.startsWith('checkout'))).toBeUndefined()
 			expect(closed).toEqual(['3'])
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
@@ -902,7 +902,7 @@ if (import.meta.vitest) {
 
 			expect(calls.map((c) => c[0])).not.toContain('createPr')
 			expect(calls.map((c) => c[0])).not.toContain('mergePr')
-			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/3/__merge-change,change-3-x)')
+			expect(gitCalls).toContain('mergeNoFfIn(/tmp/trowel-ship-test-project/.trowel/worktrees/changes/3/__merge-change,change-3-x)')
 			expect(closed).toEqual(['3'])
 			expect(gitCalls).toContain('deleteBranch(change-3-x)')
 		})

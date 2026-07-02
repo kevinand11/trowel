@@ -4,6 +4,12 @@ import path from 'node:path'
 import { detectCliVersion, spawnHarness, spawnPrintCommand } from './process.ts'
 import type { HarnessAdapter, HarnessSpawnHandle, HarnessSpawnInteractiveArgs, HarnessSpawnPrintArgs, HarnessVersionInfo } from './types.ts'
 
+function codexInteractiveArgs(args: HarnessSpawnInteractiveArgs): string[] {
+	const out = ['--model', args.model, '--cd', args.cwd]
+	if (args.initialPrompt) out.push(args.initialPrompt)
+	return out
+}
+
 export const codexHarness: HarnessAdapter = {
 	name: 'codex',
 	// Placeholder — verify against `codex --list-models` at adapter-implementation time.
@@ -30,7 +36,7 @@ export const codexHarness: HarnessAdapter = {
 		const agentsPath = path.join(args.cwd, 'AGENTS.md')
 		await writeFile(agentsPath, args.systemPrompt, 'utf8')
 
-		const child = spawnHarness('codex', ['--model', args.model, '--cd', args.cwd], { cwd: args.cwd, stdio: 'inherit' })
+		const child = spawnHarness('codex', codexInteractiveArgs(args), { cwd: args.cwd, stdio: 'inherit' })
 		const waitForExit = new Promise<number>((resolve, reject) => {
 			child.on('error', reject)
 			child.on('exit', async (code) => {
@@ -58,6 +64,15 @@ if (import.meta.vitest) {
 	describe('codexHarness', () => {
 		test('kind is codex', () => {
 			expect(codexHarness.name).toBe('codex')
+		})
+		test('interactive args include an initial prompt when present', () => {
+			expect(codexInteractiveArgs({ model: 'm', systemPrompt: 's', cwd: '/tmp/x', initialPrompt: 'do thing' })).toEqual([
+				'--model',
+				'm',
+				'--cd',
+				'/tmp/x',
+				'do thing',
+			])
 		})
 	})
 }

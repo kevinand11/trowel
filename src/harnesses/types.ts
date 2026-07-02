@@ -12,6 +12,7 @@ export type HarnessSpawnInteractiveArgs = {
 	model: string
 	systemPrompt: string
 	cwd: string
+	initialPrompt?: string
 }
 
 export type HarnessSpawnHandle = {

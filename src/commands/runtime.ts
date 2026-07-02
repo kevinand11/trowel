@@ -40,7 +40,7 @@ export type GrillCommandRuntime = {
 	storage: Storage
 	git: GitOps
 	promptText: string
-	runInteractive: (opts: { promptText: string; cwd: string }) => Promise<void>
+	runInteractive: (opts: { promptText: string; cwd: string; initialPrompt?: string }) => Promise<void>
 	readOut: () => Promise<string | null>
 	preflight: () => Promise<void>
 	stdout: (s: string) => void
@@ -64,11 +64,12 @@ export async function buildGrillCommandRuntime(
 		storage: buildStorage(base, storage),
 		git,
 		promptText: await loadPrompt(commandName),
-		runInteractive: async ({ promptText, cwd }) => {
+		runInteractive: async ({ promptText, cwd, initialPrompt }) => {
 			const { waitForExit } = await harness.spawnInteractive({
 				model: config.agent.model,
 				systemPrompt: promptText,
 				cwd,
+				initialPrompt,
 			})
 			const code = await waitForExit
 			if (code !== 0) throw new Error(`${harness.name} exited with code ${code}`)

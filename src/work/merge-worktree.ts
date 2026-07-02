@@ -1,6 +1,7 @@
-import { mkdir, realpath, stat } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
+import { pathExists } from '../utils/fs.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
 export const MERGE_CHANGE_WORKTREE = '__merge-change'
@@ -49,7 +50,7 @@ function argsForDetachedMerge(args: MergeWithWorktreeArgs, worktree: MergeWorktr
 	return { worktree, sourceBranch: args.sourceBranch, git: args.git, mergeNoVerify: args.mergeNoVerify }
 }
 
-export async function prepareMergeWorktree(args: PrepareMergeWorktreeArgs): Promise<MergeWorktree> {
+async function prepareMergeWorktree(args: PrepareMergeWorktreeArgs): Promise<MergeWorktree> {
 	const worktree = mergeWorktreeFor(args)
 	await assertDestinationSafe(args.git, args.destinationBranch, worktree.worktreePath)
 	try {
@@ -62,7 +63,7 @@ export async function prepareMergeWorktree(args: PrepareMergeWorktreeArgs): Prom
 
 function mergeWorktreeFor(args: Pick<PrepareMergeWorktreeArgs, 'projectRoot' | 'changeId' | 'reservation' | 'destinationBranch'>): MergeWorktree {
 	return {
-		worktreePath: path.join(args.projectRoot, '.trowel', 'worktrees', args.changeId, args.reservation),
+		worktreePath: path.join(args.projectRoot, '.trowel', 'worktrees', 'changes', args.changeId, args.reservation),
 		changeId: args.changeId,
 		reservation: args.reservation,
 		destinationBranch: args.destinationBranch,
@@ -133,7 +134,7 @@ async function resetMergeWorktree(git: GitOps, worktree: MergeWorktree): Promise
 	await git.cleanAll(worktree.worktreePath)
 }
 
-export async function runDetachedMerge(args: RunDetachedMergeArgs): Promise<void> {
+async function runDetachedMerge(args: RunDetachedMergeArgs): Promise<void> {
 	await args.git.mergeNoFfIn(args.worktree.worktreePath, args.sourceBranch, { noVerify: args.mergeNoVerify })
 	await args.git.pushHeadTo(args.worktree.worktreePath, args.worktree.destinationBranch)
 	const pushedHead = await args.git.resolveRef('HEAD', args.worktree.worktreePath)
@@ -147,15 +148,6 @@ function mergeWorktreeError(error: unknown, worktreePath: string): Error {
 
 function remoteRef(branch: string): string {
 	return `origin/${branch}`
-}
-
-async function pathExists(p: string): Promise<boolean> {
-	try {
-		await stat(p)
-		return true
-	} catch {
-		return false
-	}
 }
 
 if (import.meta.vitest) {
@@ -239,7 +231,7 @@ if (import.meta.vitest) {
 				log: (msg) => logs.push(msg),
 			})
 
-			expect(result.worktreePath).toBe(path.join(fixture.work, '.trowel', 'worktrees', '42', MERGE_CHANGE_WORKTREE))
+			expect(result.worktreePath).toBe(path.join(fixture.work, '.trowel', 'worktrees', 'changes', '42', MERGE_CHANGE_WORKTREE))
 			expect(await currentBranch(fixture.work)).toBe('change-42')
 			expect((await findRegisteredWorktree(git, result.worktreePath))?.branch).toBeNull()
 			expect(await readFile(path.join(result.worktreePath, 'feature.txt'), 'utf8')).toBe('feature\n')
@@ -263,7 +255,7 @@ if (import.meta.vitest) {
 
 			const args = { projectRoot: fixture.work, changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', git, mergeNoVerify: false, log: (msg: string) => logs.push(msg) }
 			await expect(mergeBranchIntoDestinationWithWorktree({ ...args, sourceBranch: 'conflict-source' })).rejects.toThrow(/Merge worktree preserved at/)
-			const worktreePath = path.join(fixture.work, '.trowel', 'worktrees', '42', MERGE_CHANGE_WORKTREE)
+			const worktreePath = path.join(fixture.work, '.trowel', 'worktrees', 'changes', '42', MERGE_CHANGE_WORKTREE)
 			expect(await revParseMaybe(worktreePath, 'MERGE_HEAD')).toMatch(/^[0-9a-f]{40}$/)
 			await writeFile(path.join(worktreePath, 'leftover.txt'), 'remove me\n')
 

@@ -13,7 +13,8 @@ export type StartRuntime = {
 	storage: Storage
 	git: GitOps
 	startPromptText: string
-	runInteractive: (opts: { promptText: string; cwd: string }) => Promise<void>
+	runInteractive: (opts: { promptText: string; cwd: string; initialPrompt?: string }) => Promise<void>
+	initialPrompt?: string
 	readStartOut: () => Promise<string | null>
 	preflight: () => Promise<void>
 	stdout: (s: string) => void
@@ -45,7 +46,7 @@ function resolveStartSpec(rt: StartRuntime): Promise<StartGrillResult> {
 		confirm: rt.confirm,
 		parseOut: parseStartOut,
 		printResumePreview: (spec) => printResumePreview(rt, spec),
-		runInteractive: () => rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot }),
+		runInteractive: () => rt.runInteractive({ promptText: rt.startPromptText, cwd: rt.projectRoot, initialPrompt: rt.initialPrompt }),
 		missingOutMessage: 'Change not created. Working tree has grill changes; review with `git status`, then `git checkout .` to discard or stash/commit to keep.\n',
 		missingOutError: 'start-out.json missing — grill aborted',
 		resumePrompt: 'Continue with the spec above? (no → discard and start a fresh grill)',
@@ -170,19 +171,15 @@ function blockedBySuffix(slice: StartSpec['slices'][number]): string {
 	return slice.blockedBy.length > 0 ? ` blocked by [${slice.blockedBy.join(', ')}]` : ''
 }
 
-function startPromptWithRequest(promptText: string, request: string | undefined): string {
-	if (!request?.trim()) return promptText
-	return `${promptText}\n\n---\n\nInitial user request:\n\n${request.trim()}\n`
-}
-
 export async function start(opts: { storage?: string; harness?: string; request?: string }): Promise<void> {
 	const rtBase = await buildGrillCommandRuntime('start', opts, 'start-out.json')
 	await exitOnCommandError('start', () => runStart({
 		projectRoot: rtBase.projectRoot,
 		storage: rtBase.storage,
 		git: rtBase.git,
-		startPromptText: startPromptWithRequest(rtBase.promptText, opts.request),
+		startPromptText: rtBase.promptText,
 		runInteractive: rtBase.runInteractive,
+		initialPrompt: opts.request,
 		readStartOut: rtBase.readOut,
 		preflight: rtBase.preflight,
 		stdout: rtBase.stdout,

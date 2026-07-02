@@ -17,12 +17,33 @@ async function exists(p: string): Promise<boolean> {
 export async function resolveProjectRoot(cwd: string): Promise<string | null> {
 	let dir = path.resolve(cwd)
 	while (true) {
+		const managedOwner = await managedWorktreeOwner(dir)
+		if (managedOwner) return managedOwner
 		if (await exists(path.join(dir, '.trowel'))) return dir
 		if (await exists(path.join(dir, '.git'))) return dir
 		const parent = path.dirname(dir)
 		if (parent === dir) return null
 		dir = parent
 	}
+}
+
+async function managedWorktreeOwner(dir: string): Promise<string | null> {
+	const parts = managedWorktreeParts(dir)
+	if (!parts) return null
+	return (await exists(path.join(parts.owner, '.trowel'))) ? parts.owner : null
+}
+
+function managedWorktreeParts(dir: string): { owner: string; worktreeKind: string } | null {
+	const resolved = path.resolve(dir)
+	const marker = `${path.sep}.trowel${path.sep}worktrees${path.sep}`
+	const markerIndex = resolved.indexOf(marker)
+	if (markerIndex === -1) return null
+	const worktreeKind = resolved.slice(markerIndex + marker.length).split(path.sep)[0]!
+	return isManagedWorktreeKind(worktreeKind) ? { owner: resolved.slice(0, markerIndex), worktreeKind } : null
+}
+
+function isManagedWorktreeKind(kind: string): boolean {
+	return kind === 'changes' || kind === 'lanes'
 }
 
 if (import.meta.vitest) {
@@ -66,6 +87,24 @@ if (import.meta.vitest) {
 			await mkdir(path.join(sub, '.trowel'), { recursive: true })
 			const resolved = await resolveProjectRoot(sub)
 			expect(resolved).toBe(sub)
+		})
+
+		test('resolves from a managed lane worktree back to the owning project root', async () => {
+			await mkdir(path.join(root, '.git'))
+			await mkdir(path.join(root, '.trowel'))
+			const lane = path.join(root, '.trowel', 'worktrees', 'lanes', '17', 'src')
+			await mkdir(path.join(lane, '.git'), { recursive: true })
+			const resolved = await resolveProjectRoot(lane)
+			expect(resolved).toBe(root)
+		})
+
+		test('resolves from a managed Change worktree back to the owning project root', async () => {
+			await mkdir(path.join(root, '.git'))
+			await mkdir(path.join(root, '.trowel'))
+			const worktree = path.join(root, '.trowel', 'worktrees', 'changes', '3', 'branch', 'src')
+			await mkdir(path.join(worktree, '.git'), { recursive: true })
+			const resolved = await resolveProjectRoot(worktree)
+			expect(resolved).toBe(root)
 		})
 
 		test('returns null when no .trowel/ or .git/ is found in any ancestor', async () => {

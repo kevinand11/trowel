@@ -41,11 +41,15 @@ export type GitOps = {
 	updateLocalBranchRef(branch: string, ref: string): Promise<void>
 	// worktree primitives (consumed by src/work/worktrees.ts for per-Turn worktrees)
 	worktreeAdd(worktreePath: string, branch: string): Promise<void>
+	worktreeAddNewBranch(worktreePath: string, branch: string, baseRef: string): Promise<void>
 	worktreeRemove(worktreePath: string, opts?: { force?: boolean }): Promise<void>
 	worktreeList(): Promise<Array<{ path: string; branch: string | null; head: string }>>
 	restoreAll(worktreePath: string): Promise<void>
 	cleanUntracked(worktreePath: string): Promise<void>
 	cleanAll(worktreePath: string): Promise<void>
+	isWorkingTreeCleanIn(worktreePath: string): Promise<boolean>
+	statusShortIn(worktreePath: string): Promise<string>
+	isAncestor(ancestorRef: string, descendantRef: string): Promise<boolean>
 	// host-side workflow ops (consumed by `runStart` in `src/commands/start.ts`)
 	isWorkingTreeClean(): Promise<boolean>
 	statusShort(): Promise<string>
@@ -99,11 +103,15 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		pushHeadTo: forbiddenGitMutation('pushHeadTo'),
 		updateLocalBranchRef: forbiddenGitMutation('updateLocalBranchRef'),
 		worktreeAdd: forbiddenGitMutation('worktreeAdd'),
+		worktreeAddNewBranch: forbiddenGitMutation('worktreeAddNewBranch'),
 		worktreeRemove: forbiddenGitMutation('worktreeRemove'),
 		worktreeList: git.worktreeList,
 		restoreAll: forbiddenGitMutation('restoreAll'),
 		cleanUntracked: forbiddenGitMutation('cleanUntracked'),
 		cleanAll: forbiddenGitMutation('cleanAll'),
+		isWorkingTreeCleanIn: git.isWorkingTreeCleanIn,
+		statusShortIn: git.statusShortIn,
+		isAncestor: git.isAncestor,
 		isWorkingTreeClean: git.isWorkingTreeClean,
 		statusShort: git.statusShort,
 		stashPush: forbiddenGitMutation('stashPush'),
@@ -233,6 +241,9 @@ export function createRepoGit(projectRoot: string): GitOps {
 		worktreeAdd: async (worktreePath, branch) => {
 			await gitOrThrow(['worktree', 'add', worktreePath, branch])
 		},
+		worktreeAddNewBranch: async (worktreePath, branch, baseRef) => {
+			await gitOrThrow(['worktree', 'add', '-b', branch, worktreePath, baseRef])
+		},
 		worktreeRemove: async (worktreePath, opts) => {
 			const args = ['worktree', 'remove']
 			if (opts?.force) args.push('--force')
@@ -251,6 +262,15 @@ export function createRepoGit(projectRoot: string): GitOps {
 		},
 		cleanAll: async (worktreePath) => {
 			await gitOrThrow(['clean', '-fdx'], worktreePath)
+		},
+		isWorkingTreeCleanIn: async (worktreePath) => {
+			const stdout = await gitOrThrow(['status', '--porcelain'], worktreePath)
+			return stdout.trim() === ''
+		},
+		statusShortIn: async (worktreePath) => gitOrThrow(['status', '--short'], worktreePath),
+		isAncestor: async (ancestorRef, descendantRef) => {
+			const r = await tryExec('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', ancestorRef, descendantRef])
+			return r.ok
 		},
 		isWorkingTreeClean: async () => {
 			const stdout = await gitOrThrow(['status', '--porcelain'])
@@ -383,6 +403,31 @@ if (import.meta.vitest) {
 			expect(s.isFile()).toBe(true)
 			const branch = (await exec('git', ['-C', wtPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
 			expect(branch).toBe('feature')
+		})
+
+		test('worktreeAddNewBranch creates a new branch from a base ref', async () => {
+			const wtPath = path.join(repo, '.trowel-new-branch-test')
+			await git.worktreeAddNewBranch(wtPath, 'lane-1-test', 'HEAD')
+			const branch = (await exec('git', ['-C', wtPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim()
+			expect(branch).toBe('lane-1-test')
+		})
+
+		test('isWorkingTreeCleanIn and statusShortIn inspect arbitrary worktrees', async () => {
+			const wtPath = path.join(repo, '.trowel-clean-test')
+			await git.worktreeAddNewBranch(wtPath, 'lane-2-test', 'HEAD')
+			expect(await git.isWorkingTreeCleanIn(wtPath)).toBe(true)
+			await writeFile(path.join(wtPath, 'dirty.txt'), 'dirty\n')
+			expect(await git.isWorkingTreeCleanIn(wtPath)).toBe(false)
+			expect(await git.statusShortIn(wtPath)).toContain('dirty.txt')
+		})
+
+		test('isAncestor reports local ancestry', async () => {
+			await exec('git', ['-C', repo, 'checkout', '-q', 'feature'])
+			await writeFile(path.join(repo, 'feature.txt'), 'feature\n')
+			await exec('git', ['-C', repo, 'add', 'feature.txt'])
+			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'advance feature'])
+			expect(await git.isAncestor('main', 'feature')).toBe(true)
+			expect(await git.isAncestor('feature', 'main')).toBe(false)
 		})
 
 		test('worktreeList includes the primary repo and any added worktrees', async () => {

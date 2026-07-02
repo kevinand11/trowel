@@ -3,10 +3,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export type Role = 'implement' | 'audit' | 'review'
+export type PromptName = Role | 'start' | 'lane'
 
 const PROMPTS_DIR = path.dirname(fileURLToPath(import.meta.url))
 
-export async function loadPrompt(name: Role | 'start'): Promise<string> {
+export async function loadPrompt(name: PromptName): Promise<string> {
 	const filePath = path.join(PROMPTS_DIR, `${name}.md`)
 	try {
 		return await readFile(filePath, 'utf8')
@@ -40,8 +41,15 @@ if (import.meta.vitest) {
 			expect(start.length).toBeGreaterThan(0)
 		})
 
+		test('lane prompt loads and contains the confirmation gate', async () => {
+			const lane = await loadPrompt('lane')
+			expect(lane).toContain('Trowel Lane')
+			expect(lane).toContain('Proceed with inline implementation in this lane?')
+			expect(lane).toContain('human in the loop')
+		})
+
 		test('throws with a useful message when the template is missing', async () => {
-			await expect(loadPrompt('missing' as Role)).rejects.toThrow(/Prompt template not found/)
+			await expect(loadPrompt('missing' as PromptName)).rejects.toThrow(/Prompt template not found/)
 		})
 	})
 }

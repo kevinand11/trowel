@@ -9,6 +9,7 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 - **Storage** — where Changes and Slices are tracked: local files or GitHub issues.
 - **Slice branch** — the durable branch a Slice Turn runs on. New Slices may store `null`; `prepareImplement` fills it lazily using `work.perSliceBranches`.
 - **Turn** — one agent run for one role (`implement`, `audit`, or `review`) against one Slice, or a Change-level Close-out PR revision.
+- **Lane** — a local, foreground, human-in-the-loop implementation workspace in a managed worktree, outside the Change/Slice lifecycle.
 - **Auditing / Auditor** — the optional branch-diff quality gate after implementation. The Auditor compares the Slice branch against the Change branch, fixes and commits when possible, and records `auditedAt` when ready.
 - **Reviewer** — the PR-feedback response role. It runs when an open Slice PR or Close-out PR computes as `needs-revision`, then responds to the feedback and clears that signal when ready.
 
@@ -23,11 +24,17 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel change work <change-id> [--loop] [--storage <kind>] [--harness <kind>]` | Run the AFK loop for one Change; `--loop` keeps polling for newly actionable Slice or Close-out PR revision work. |
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
+| `trowel lane start <title...> [--base <ref>] [--harness <kind>]` | Start a foreground human-in-the-loop implementation Lane in a managed local worktree. |
+| `trowel lane continue <lane-id> [--harness <kind>]` | Open another interactive harness session in an existing Lane worktree. |
+| `trowel lane close <lane-id>` | Confirm, merge the Lane branch into its captured Target branch, remove the Lane worktree, and apply `ship.deleteBranch`. |
+| `trowel lane list` | List all Lanes newest first with computed state. |
 | `trowel doctor` | Check local tool/config health. |
 | `trowel config` | Print resolved config. |
 | `trowel init [global\|project]` | Write a config layer. |
 
-`--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn. Run `trowel config` for the effective config plus a generated config reference; `trowel init` also writes `.trowel/schema.json` for editor completion.
+`--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn or interactive Lane session. Run `trowel config` for the effective config plus a generated config reference; `trowel init` also writes `.trowel/schema.json` for editor completion.
+
+Lanes are local interactive workspaces, not Changes or Slices. They are useful when you want multiple terminal tabs running separate foreground agent sessions in isolated worktrees without invoking the full Trowel delivery lifecycle.
 
 ## States and workflow flags
 

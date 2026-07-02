@@ -216,7 +216,7 @@ if (import.meta.vitest) {
 				},
 			}
 			await spawnTurn(makeArgs(), deps)
-			expect(observedWorktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', '142', 'feature'))
+			expect(observedWorktreePath).toBe(path.join(projectRoot, '.trowel', 'worktrees', 'changes', '142', 'feature'))
 			const s = await stat(observedWorktreePath!)
 			expect(s.isDirectory()).toBe(true)
 		})
