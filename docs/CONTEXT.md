@@ -31,7 +31,7 @@ A user-configurable behavior toggle. Current flags:
 - **`ship.pr`**: ships a Change through a Close-out PR from the Change branch to the Target branch when true, or through a host merge when false; default true.
 - **`ship.mergeabilityPollSeconds`**: bounds how long Ship waits for GitHub to compute unknown PR mergeability before deciding whether to offer a merge prompt; default 30, max 600, and 0 disables polling.
 - **`work.audit`**: runs Auditing after implementation and before Slice integration or making a Slice PR ready.
-- **`work.perSliceBranches`**: each Slice gets its own stored **Slice branch** (`<changeId>/<sliceId>-<slug>` for new Slices). When false, each Slice stores the parent **Change branch** as its **Slice branch** and concurrency is one.
+- **`work.perSliceBranches`**: each Slice gets its own stored **Slice branch** (`change-<changeId>/slice-<sliceId>-<slug>` for new Slices). When false, each Slice stores the parent **Change branch** as its **Slice branch** and concurrency is one.
 - **`work.loopPollSeconds`**: the integer sleep interval used by **Polling work mode** between no-actionable-work refetches; default 30, min 1, max 3600.
 _Avoid_: Option, setting, usePrs, review.
 
@@ -52,7 +52,7 @@ The branch a **Change** will be completed back into. Captured from the current b
 _Avoid_: Base branch, BACK_TO branch, merge branch.
 
 **Change branch**:
-The branch that holds in-flight Change work. Slice commits are merged into it (or written directly when `perSliceBranches: false`) before Close-out ships it to the **Target branch**. New Change branches use `<changeId>-<slug>` and are stored durably as `changeBranch` metadata.
+The branch that holds in-flight Change work. Slice commits are merged into it (or written directly when `perSliceBranches: false`) before Close-out ships it to the **Target branch**. New Change branches use `change-<changeId>-<slug>` and are stored durably as `changeBranch` metadata.
 _Avoid_: Integration branch, feature branch.
 
 **Close-out**:
@@ -139,7 +139,7 @@ The agent's self-reported outcome of one **Turn**, written to `.trowel/turn-out.
 _Avoid_: Result, status, outcome.
 
 **Slice branch**:
-The stored branch a **Slice**'s Turns run on, nullable until `prepareImplement` first needs it. With `perSliceBranches: true` at prepare time, the Slice branch is created from the latest remote Change branch and named `<changeId>/<sliceId>-<slug>`; with `perSliceBranches: false`, it is set to the parent Change branch.
+The stored branch a **Slice**'s Turns run on, nullable until `prepareImplement` first needs it. With `perSliceBranches: true` at prepare time, the Slice branch is created from the latest remote Change branch and named `change-<changeId>/slice-<sliceId>-<slug>`; with `perSliceBranches: false`, it is set to the parent Change branch.
 _Avoid_: Feature branch, task branch, computed branch.
 
 **Lane branch**:
@@ -172,7 +172,7 @@ _Avoid_: Turn Worktree, sandbox
 
 ## Relationships
 
-- A **Change** has one stored **Change branch** and one or more **Slices** across all storages; because the Change id is allocated by storage creation, orchestration creates and pushes the Change branch before writing branch metadata through an explicit metadata update; new Change branch names use `${changeId}-${changeSlug}`.
+- A **Change** has one stored **Change branch** and one or more **Slices** across all storages; because the Change id is allocated by storage creation, orchestration creates and pushes the Change branch before writing branch metadata through an explicit metadata update; new Change branch names use `change-${changeId}-${changeSlug}`.
 - A **Lane** has one **Lane id**, one generated **Lane branch**, one captured **Target branch**, and one **Lane worktree**; closed Lane metadata remains under `.trowel/lanes/` so Lane ids are never reused.
 - A **Change** has exactly one stored **Target branch** and one stored **Change branch**.
 - For issue storage, branch metadata is stored in one existing hidden issue-body comment per issue as a JSON object with entity-specific keys (`targetBranch`, `changeBranch`, `sliceBranch`); after the branch-metadata change lands, storage reads require this metadata and do not fall back to Development-linked PR history or naming conventions.
@@ -186,8 +186,8 @@ _Avoid_: Turn Worktree, sandbox
 - Only **Ship** runs **Finalization** for a landed **Change** after a merged Close-out PR; **Entity read commands** may report `landed` but never finalize.
 - **Entity read commands** are `trowel change list` and `trowel change status <change-id>`; they do not acquire the **Mutation lock**, create/delete branches, or switch the main working tree branch.
 - `done` means merged and finalized with `closedAt`; `aborted` means `closedAt` is set without merge.
-- A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages, but that value may be `null` until first implementation preparation. `prepareImplement` fills null Slice branch metadata using current config: when per-slice branches are enabled it fetches the latest remote Change branch, creates and pushes a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, then stores it; when per-slice branches are disabled it stores the parent Change's Change branch.
-- When per-slice branches are enabled the Slice branch value is a per-Slice branch named `${changeId}/${sliceId}-${sliceSlug}`, and when per-slice branches are disabled the value is the parent Change's Change branch.
+- A **Slice** has one stored **Slice branch** value for the branch its Turns run on across all storages, but that value may be `null` until first implementation preparation. `prepareImplement` fills null Slice branch metadata using current config: when per-slice branches are enabled it fetches the latest remote Change branch, creates and pushes a per-Slice branch named `change-${changeId}/slice-${sliceId}-${sliceSlug}`, then stores it; when per-slice branches are disabled it stores the parent Change's Change branch.
+- When per-slice branches are enabled the Slice branch value is a per-Slice branch named `change-${changeId}/slice-${sliceId}-${sliceSlug}`, and when per-slice branches are disabled the value is the parent Change's Change branch.
 - The work scheduler treats non-null Slice branch values as the concurrency boundary: no two Slices with the same stored Slice branch may run Turns in parallel. Under `work.perSliceBranches: true`, a null Slice branch means an unassigned unique branch and is not a shared-branch concurrency boundary; these Slices still count against `turn.maxConcurrent`. Under `work.perSliceBranches: false`, a null Slice branch resolves to the shared Change branch and must serialize with that branch. In Project work, `turn.maxConcurrent` is a project-wide Turn cap across all Changes, and branch safety is global across the Project: no two running Turns may share the same non-null branch name. Multiple Turns from the same Change may run concurrently when branch safety allows it.
 - A **Slice state** is computed from Slice metadata and external PR/blocker relationships rather than stored directly; Slice `open` is the old ready-for-agent bucket renamed, `implemented` is derived from `implementedAt`, `audited` is derived from `auditedAt`, `awaiting-review` is the non-draft PR state waiting on a human, and `readyForAgent` remains the raw opt-in signal.
 - User-facing output and internal domain types use **state** for Change and Slice lifecycle classifications; the word "bucket" is retired from the codebase.

@@ -86,7 +86,7 @@ async function materialiseStartChange(rt: StartRuntime, result: StartGrillResult
 }
 
 function changeBranchName(changeId: string, title: string): string {
-	return `${changeId}-${slugify(title)}`
+	return `change-${changeId}-${slugify(title)}`
 }
 
 async function updateChangeMetadataOrThrow(rt: StartRuntime, changeId: string, patch: ChangeMetadataPatch): Promise<void> {
@@ -585,7 +585,7 @@ if (import.meta.vitest) {
 				cleanTree: false,
 			})
 			await runStart(rt)
-			expect(calls.git).toEqual(['stashPush', 'createRemoteBranch(pid-t,main)', 'fetch(pid-t)', 'checkout(pid-t)', 'stashPop'])
+			expect(calls.git).toEqual(['stashPush', 'createRemoteBranch(change-pid-t,main)', 'fetch(change-pid-t)', 'checkout(change-pid-t)', 'stashPop'])
 		})
 
 		test('clean tree → no stashPush/stashPop, just checkout', async () => {
@@ -598,7 +598,7 @@ if (import.meta.vitest) {
 				cleanTree: true,
 			})
 			await runStart(rt)
-			expect(calls.git).toEqual(['createRemoteBranch(pid-t,main)', 'fetch(pid-t)', 'checkout(pid-t)'])
+			expect(calls.git).toEqual(['createRemoteBranch(change-pid-t,main)', 'fetch(change-pid-t)', 'checkout(change-pid-t)'])
 		})
 	})
 
@@ -614,7 +614,7 @@ if (import.meta.vitest) {
 				stashPopThrows: new Error('CONFLICT (content): Merge conflict in CONTEXT.md'),
 			})
 			await expect(runStart(rt)).rejects.toThrow(/conflict/i)
-			expect(gitState.current).toBe('pid-t')
+			expect(gitState.current).toBe('change-pid-t')
 		})
 	})
 
@@ -661,14 +661,14 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls } = makeFakes({
 				startOut,
-				createChangeResult: { id: 'abc123', changeBranch: 'abc123-rename-foo' },
+				createChangeResult: { id: 'abc123', changeBranch: 'change-abc123-rename-foo' },
 				createSliceIds: ['s1', 's2'],
 				currentBranch: 'main',
 			})
 			await runStart(rt)
 			const out = calls.stdout.join('')
 			expect(out).toMatch(/abc123/)
-			expect(out).toMatch(/abc123-rename-foo/)
+			expect(out).toMatch(/change-abc123-rename-foo/)
 			expect(out).toMatch(/s1/)
 			expect(out).toMatch(/s2/)
 			expect(out).toMatch(/trowel change work abc123/)
@@ -685,7 +685,7 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls } = makeFakes({
 				startOut: startOutJson,
-				createChangeResult: { id: 'abc123', changeBranch: 'abc123-target-develop' },
+				createChangeResult: { id: 'abc123', changeBranch: 'change-abc123-target-develop' },
 				currentBranch: 'develop',
 			})
 
@@ -714,10 +714,10 @@ if (import.meta.vitest) {
 
 			expect(calls.order).toEqual([
 				'createChange(Rename Foo)',
-				'createRemoteBranch(abc123-rename-foo,main)',
-				'updateChangeMetadata(abc123,main,abc123-rename-foo)',
-				'fetch(abc123-rename-foo)',
-				'checkout(abc123-rename-foo)',
+				'createRemoteBranch(change-abc123-rename-foo,main)',
+				'updateChangeMetadata(abc123,main,change-abc123-rename-foo)',
+				'fetch(change-abc123-rename-foo)',
+				'checkout(change-abc123-rename-foo)',
 				'createSlice(abc123,Rename type)',
 				'createSlice(abc123,Update callsites)',
 				'setSliceBlockers(abc123,slice-a)',
@@ -742,7 +742,7 @@ if (import.meta.vitest) {
 
 			await runStart(rt)
 
-			expect(calls.git).toEqual(['createRemoteBranch(abc123-shared-branch,main)', 'fetch(abc123-shared-branch)', 'checkout(abc123-shared-branch)'])
+			expect(calls.git).toEqual(['createRemoteBranch(change-abc123-shared-branch,main)', 'fetch(change-abc123-shared-branch)', 'checkout(change-abc123-shared-branch)'])
 			expect(calls.updateSliceMetadata).toEqual([])
 		})
 
@@ -762,8 +762,8 @@ if (import.meta.vitest) {
 			await expect(runStart(rt)).rejects.toThrow(/failed to update Change metadata for abc123: storage API down/)
 			expect(calls.order).toEqual([
 				'createChange(Metadata Failure)',
-				'createRemoteBranch(abc123-metadata-failure,main)',
-				'updateChangeMetadata(abc123,main,abc123-metadata-failure)',
+				'createRemoteBranch(change-abc123-metadata-failure,main)',
+				'updateChangeMetadata(abc123,main,change-abc123-metadata-failure)',
 			])
 		})
 
@@ -782,7 +782,7 @@ if (import.meta.vitest) {
 
 			await runStart(rt)
 			expect(calls.order).toContain('createSlice(abc123,One Slice)')
-			expect(calls.order).not.toContain('createRemoteBranch(abc123/slice-a-one-slice,abc123-lazy-slice-metadata)')
+			expect(calls.order).not.toContain('createRemoteBranch(change-abc123/slice-slice-a-one-slice,change-abc123-lazy-slice-metadata)')
 			expect(calls.updateSliceMetadata).toEqual([])
 		})
 
@@ -797,7 +797,7 @@ if (import.meta.vitest) {
 			})
 			const { rt, calls, gitState } = makeFakes({
 				startOut: startOutJson,
-				createChangeResult: { id: 'abc123', changeBranch: 'abc123-rename-foo' },
+				createChangeResult: { id: 'abc123', changeBranch: 'change-abc123-rename-foo' },
 				createSliceIds: ['slice-a', 'slice-b'],
 				currentBranch: 'main',
 			})
@@ -817,7 +817,7 @@ if (import.meta.vitest) {
 				{ changeId: 'abc123', sliceId: 'slice-a', ready: true },
 				{ changeId: 'abc123', sliceId: 'slice-b', ready: false },
 			])
-			expect(gitState.current).toBe('abc123-rename-foo')
+			expect(gitState.current).toBe('change-abc123-rename-foo')
 		})
 	})
 }

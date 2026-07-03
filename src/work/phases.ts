@@ -39,7 +39,7 @@ function sliceBranchFor(slice: Slice): string {
 }
 
 function sliceBranchName(changeId: string, sliceId: string, title: string): string {
-	return `${changeId}/${sliceId}-${slugify(title)}`
+	return `change-${changeId}/slice-${sliceId}-${slugify(title)}`
 }
 
 async function pushSliceBranchIfNeeded(deps: PhaseDeps, branch: string, commits: number, tag: string): Promise<void> {
@@ -557,12 +557,12 @@ if (import.meta.vitest) {
 			const { deps, calls, storageState } = makePhaseDeps()
 			const unassigned = { ...slice, sliceBranch: null }
 			const prep = await prepareImplement(deps, unassigned, ctx)
-			expect(prep.branch).toBe('pid/42-a-slice')
-			expect(storageState.sliceBranch).toBe('pid/42-a-slice')
-			expect(unassigned.sliceBranch).toBe('pid/42-a-slice')
-			expect(calls).toContainEqual({ method: 'createRemoteBranch', args: ['pid/42-a-slice', 'change-branch'] })
-			expect(calls).toContainEqual({ method: 'updateSliceMetadata', args: ['pid', '42', { sliceBranch: 'pid/42-a-slice' }] })
-			expect(calls).toContainEqual({ method: 'fetch', args: ['pid/42-a-slice'] })
+			expect(prep.branch).toBe('change-pid/slice-42-a-slice')
+			expect(storageState.sliceBranch).toBe('change-pid/slice-42-a-slice')
+			expect(unassigned.sliceBranch).toBe('change-pid/slice-42-a-slice')
+			expect(calls).toContainEqual({ method: 'createRemoteBranch', args: ['change-pid/slice-42-a-slice', 'change-branch'] })
+			expect(calls).toContainEqual({ method: 'updateSliceMetadata', args: ['pid', '42', { sliceBranch: 'change-pid/slice-42-a-slice' }] })
+			expect(calls).toContainEqual({ method: 'fetch', args: ['change-pid/slice-42-a-slice'] })
 		})
 
 		test('null Slice branch + perSliceBranches:false stores the Change branch at preparation time', async () => {

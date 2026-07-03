@@ -26,7 +26,7 @@ export async function setupLocalSliceMergeFixture(opts: {
 	const fixture = await setupTestRepoWithBare({ prefix: 'trowel-local-slice-merge-' })
 	const git = createRepoGit(fixture.work)
 	const changeId = opts.changeId ?? 'p1'
-	const changeBranch = opts.changeBranch ?? `${changeId}-feature`
+	const changeBranch = opts.changeBranch ?? `change-${changeId}-feature`
 	const currentBranch = opts.currentBranch ?? 'main'
 	await createRemoteChangeBranch(fixture.work, changeBranch)
 	if (currentBranch !== 'main') await exec('git', ['-C', fixture.work, 'checkout', '-q', '-b', currentBranch, 'origin/main'])
@@ -77,7 +77,7 @@ function testSlice(changeId: string, overrides: Partial<Slice> = {}): Slice {
 		auditedAt: null,
 		readyForAgent: true,
 		blockedBy: [],
-		sliceBranch: `${changeId}/${id}-implement-a`,
+		sliceBranch: `change-${changeId}/slice-${id}-implement-a`,
 		...overrides,
 	}
 }

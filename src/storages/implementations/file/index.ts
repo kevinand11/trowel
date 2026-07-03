@@ -232,7 +232,7 @@ if (import.meta.vitest) {
 		targetBranch = 'main',
 	): Promise<{ id: string; title: string; changeBranch: string }> {
 		const created = await storage.createChange(spec)
-		const changeBranch = `${created.id}-${slugify(created.title)}`
+		const changeBranch = `change-${created.id}-${slugify(created.title)}`
 		await storage.updateChangeMetadata(created.id, { targetBranch, changeBranch })
 		return { ...created, changeBranch }
 	}
@@ -245,7 +245,7 @@ if (import.meta.vitest) {
 	): Promise<Slice> {
 		const created = await storage.createSlice(changeId, { title: spec.title, body: spec.body })
 		await storage.updateSliceMetadata(changeId, created.id, {
-			sliceBranch: sliceBranch ?? `${changeId}/${created.id}-${slugify(created.title)}`,
+			sliceBranch: sliceBranch ?? `change-${changeId}/slice-${created.id}-${slugify(created.title)}`,
 		})
 		if (spec.blockedBy !== undefined) await storage.setSliceBlockers(changeId, created.id, spec.blockedBy)
 		const slices = await storage.findSlices(changeId)

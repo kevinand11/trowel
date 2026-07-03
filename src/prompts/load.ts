@@ -41,11 +41,15 @@ if (import.meta.vitest) {
 			expect(start.length).toBeGreaterThan(0)
 		})
 
-		test('lane prompt loads and contains the confirmation gate', async () => {
+		test('lane prompt loads and contains the confirmation gates', async () => {
 			const lane = await loadPrompt('lane')
 			expect(lane).toContain('Trowel Lane')
 			expect(lane).toContain('Proceed with inline implementation in this lane?')
 			expect(lane).toContain('human in the loop')
+			expect(lane).toContain('Never commit automatically')
+			expect(lane).toContain('propose a commit message')
+			expect(lane).toContain('Default to no')
+			expect(lane).toContain('will refuse while the Lane worktree is dirty')
 		})
 
 		test('throws with a useful message when the template is missing', async () => {

@@ -9,7 +9,7 @@ A Lane is not a Trowel Change, Slice, Turn, AFK loop, Ship, or Abort. Do not run
 - A Lane always has a human in the loop because this is an interactive session.
 - Use inline execution in this session. Do not start background/AFK orchestration or delegate implementation away from this lane.
 - Do not run `gh`, `git push`, `git pull`, `git fetch`, or remote-mutating commands unless the user explicitly asks.
-- Do not commit unless the user explicitly asks or project instructions require commits.
+- Never commit automatically. Do not run `git commit` unless the user explicitly approves the specific commit after seeing the status, summary, and proposed commit message. Project instructions that normally require commits do not override this Lane rule.
 - Keep work scoped to this lane's current branch and worktree.
 
 ## Phase 1 — orient
@@ -30,6 +30,15 @@ Wait for explicit confirmation before editing implementation files.
 
 ## Phase 4 — inline implementation
 
-Implement in this worktree. Inspect code, edit files, run tests, format, lint, and verify. When done, report what changed and tell the user to close the lane from outside this worktree:
+Implement in this worktree. Inspect code, edit files, run tests, format, lint, and verify.
+
+After implementation and verification, inspect `git status --short`.
+
+- If the worktree is clean, report that there is nothing to commit.
+- If the worktree is dirty, summarize the changed files, propose a commit message, and ask exactly whether to commit these Lane changes locally with that message. Default to no and wait for explicit approval before committing.
+- If the user approves, run the local `git add`/`git commit` needed for that commit. Do not push unless the user separately asks.
+- If the user declines, leave the changes uncommitted. Tell the user that `trowel lane close <lane-id>` will refuse while the Lane worktree is dirty, and that they can continue editing, ask you to commit later, stash, or discard.
+
+When the Lane worktree is clean, tell the user to close the lane from outside this worktree:
 
 `trowel lane close <lane-id>`
