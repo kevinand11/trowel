@@ -11,6 +11,7 @@ const emptyWorktreeList = async (): Promise<Awaited<ReturnType<GitOps['worktreeL
 const emptyBranchList = async (): Promise<string[]> => []
 const installedGit = async (): Promise<Awaited<ReturnType<GitOps['detectVersion']>>> => ({ installed: true, version: '0.0.0' })
 const emptyStatus = async (): Promise<string> => ''
+const cleanMergePreflight = async (): Promise<Awaited<ReturnType<GitOps['mergeConflictPreflight']>>> => ({ ok: true })
 
 export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 	return {
@@ -56,6 +57,8 @@ export function noopGitOps(overrides: Partial<GitOps> = {}): GitOps {
 		commitsAhead: zeroAsync,
 		commitDate: fakeCommitDate,
 		detectVersion: installedGit,
+		supportsMergeConflictPreflight: trueAsync,
+		mergeConflictPreflight: cleanMergePreflight,
 		...overrides,
 	}
 }

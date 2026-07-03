@@ -2,6 +2,10 @@ import { exec, parseSemver, tryExec } from './shell.ts'
 
 type VersionInfo = { installed: boolean; version?: string }
 
+export type MergeConflictPreflight =
+	| { ok: true }
+	| { ok: false; files: string[]; messages: string }
+
 /**
  * Single canonical surface for every git operation trowel performs against
  * a project's repo. See ADR `2026-05-13-unified-gitops-via-module-factory`.
@@ -9,6 +13,7 @@ type VersionInfo = { installed: boolean; version?: string }
 export type GitOps = {
 	// Environment
 	detectVersion(): Promise<VersionInfo>
+	supportsMergeConflictPreflight(): Promise<boolean>
 	// phase-method ops (consumed by Storage implementations)
 	fetch(branch: string): Promise<void>
 	push(branch: string): Promise<void>
@@ -17,6 +22,7 @@ export type GitOps = {
 	mergeAbort(): Promise<void>
 	mergeNoFfIn(worktreePath: string, branch: string, opts?: { noVerify?: boolean }): Promise<void>
 	mergeAbortIn(worktreePath: string): Promise<void>
+	mergeConflictPreflight(destinationRef: string, sourceRef: string, cwd?: string): Promise<MergeConflictPreflight>
 	deleteRemoteBranch(branch: string): Promise<void>
 	remoteBranchExists(branch: string): Promise<boolean>
 	createRemoteBranch(newBranch: string, baseBranch: string): Promise<void>
@@ -75,6 +81,7 @@ export function branchStableGitFacts(git: GitOps): ReadOnlyGitFacts {
 export function branchStableGitOps(git: GitOps): GitOps {
 	return {
 		detectVersion: git.detectVersion,
+		supportsMergeConflictPreflight: git.supportsMergeConflictPreflight,
 		fetch: git.fetch,
 		push: forbiddenGitMutation('push'),
 		checkout: forbiddenGitMutation('checkout'),
@@ -82,6 +89,7 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		mergeAbort: forbiddenGitMutation('mergeAbort'),
 		mergeNoFfIn: forbiddenGitMutation('mergeNoFfIn'),
 		mergeAbortIn: forbiddenGitMutation('mergeAbortIn'),
+		mergeConflictPreflight: git.mergeConflictPreflight,
 		deleteRemoteBranch: forbiddenGitMutation('deleteRemoteBranch'),
 		remoteBranchExists: git.remoteBranchExists,
 		createRemoteBranch: forbiddenGitMutation('createRemoteBranch'),
@@ -125,6 +133,35 @@ function forbiddenGitMutation(name: string): (...args: unknown[]) => Promise<nev
 	}
 }
 
+function mergeTreeErrorOutput(error: Error): { code: number | null; output: string } {
+	const details = error as { code?: unknown; stdout?: unknown; stderr?: unknown }
+	const code = typeof details.code === 'number' ? details.code : null
+	const stdout = typeof details.stdout === 'string' ? details.stdout : ''
+	const stderr = typeof details.stderr === 'string' ? details.stderr : ''
+	return { code, output: `${stdout}\n${stderr}`.trim() }
+}
+
+function parseMergeConflictFiles(output: string): string[] {
+	const lines = output.split('\n')
+	const files: string[] = []
+	for (const line of lines.slice(isObjectIdLine(lines[0]) ? 1 : 0)) {
+		const trimmed = line.trim()
+		if (!trimmed) break
+		files.push(trimmed)
+	}
+	return [...new Set(files)]
+}
+
+function isObjectIdLine(line: string | undefined): boolean {
+	return /^[0-9a-f]{40,64}$/.test(line?.trim() ?? '')
+}
+
+function preflightUnavailableError(destinationRef: string, sourceRef: string, cause: Error): Error {
+	const { output } = mergeTreeErrorOutput(cause)
+	const suffix = output ? `\n${output}` : ''
+	return new Error(`merge conflict preflight is unavailable for '${sourceRef}' into '${destinationRef}'; upgrade Git to a version that supports 'git merge-tree --write-tree'.${suffix}`)
+}
+
 export function createRepoGit(projectRoot: string): GitOps {
 	const gitOrThrow = async (args: string[], cwd = projectRoot): Promise<string> => {
 		const r = await tryExec('git', ['-C', cwd, ...args])
@@ -137,6 +174,11 @@ export function createRepoGit(projectRoot: string): GitOps {
 			const r = await tryExec('git', ['--version'])
 			if (!r.ok) return { installed: false }
 			return { installed: true, version: parseSemver(`${r.stdout}\n${r.stderr}`) }
+		},
+		supportsMergeConflictPreflight: async () => {
+			const r = await tryExec('git', ['merge-tree', '-h'])
+			const output = r.ok ? `${r.stdout}\n${r.stderr}` : mergeTreeErrorOutput(r.error).output
+			return /--write-tree/.test(output)
 		},
 		fetch: async (b) => {
 			await gitOrThrow(['fetch', '-q', 'origin', b])
@@ -164,6 +206,13 @@ export function createRepoGit(projectRoot: string): GitOps {
 		},
 		mergeAbortIn: async (worktreePath) => {
 			await gitOrThrow(['merge', '--abort'], worktreePath)
+		},
+		mergeConflictPreflight: async (destinationRef, sourceRef, cwd = projectRoot) => {
+			const r = await tryExec('git', ['-C', cwd, 'merge-tree', '--write-tree', '--messages', '--name-only', destinationRef, sourceRef])
+			if (r.ok) return { ok: true }
+			const { code, output } = mergeTreeErrorOutput(r.error)
+			if (code !== 1) throw preflightUnavailableError(destinationRef, sourceRef, r.error)
+			return { ok: false, files: parseMergeConflictFiles(output), messages: output }
 		},
 		deleteRemoteBranch: async (b) => {
 			await gitOrThrow(['push', '-q', 'origin', `:${b}`])
@@ -428,6 +477,32 @@ if (import.meta.vitest) {
 			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'advance feature'])
 			expect(await git.isAncestor('main', 'feature')).toBe(true)
 			expect(await git.isAncestor('feature', 'main')).toBe(false)
+		})
+
+		test('mergeConflictPreflight reports clean branch merges without mutating the worktree', async () => {
+			await exec('git', ['-C', repo, 'checkout', '-q', '-b', 'clean-source'])
+			await writeFile(path.join(repo, 'clean.txt'), 'clean\n')
+			await exec('git', ['-C', repo, 'add', 'clean.txt'])
+			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'clean source'])
+			await exec('git', ['-C', repo, 'checkout', '-q', 'main'])
+
+			expect(await git.mergeConflictPreflight('main', 'clean-source')).toEqual({ ok: true })
+			expect((await exec('git', ['-C', repo, 'status', '--short'])).stdout).toBe('')
+		})
+
+		test('mergeConflictPreflight returns conflicting paths without mutating the worktree', async () => {
+			await exec('git', ['-C', repo, 'checkout', '-q', '-b', 'conflict-source'])
+			await writeFile(path.join(repo, 'README.md'), 'source\n')
+			await exec('git', ['-C', repo, 'commit', '-am', 'source edit', '-q'])
+			await exec('git', ['-C', repo, 'checkout', '-q', 'main'])
+			await writeFile(path.join(repo, 'README.md'), 'destination\n')
+			await exec('git', ['-C', repo, 'commit', '-am', 'destination edit', '-q'])
+
+			const preflight = await git.mergeConflictPreflight('main', 'conflict-source')
+
+			expect(preflight).toMatchObject({ ok: false, files: ['README.md'] })
+			if (!preflight.ok) expect(preflight.messages).toContain('CONFLICT')
+			expect((await exec('git', ['-C', repo, 'status', '--short'])).stdout).toBe('')
 		})
 
 		test('worktreeList includes the primary repo and any added worktrees', async () => {

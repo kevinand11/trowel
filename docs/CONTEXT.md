@@ -158,6 +158,10 @@ _Avoid_: New comments, already comments, latest comments.
 A pull request that GitHub currently permits Trowel to offer for merging: open, not draft, conflict-free, and not blocked by required review, checks, or branch protection.
 _Avoid_: Available PR, maybe-mergeable PR.
 
+**Merge conflict preflight**:
+A pre-merge safety check that determines whether a host-owned local merge is expected to conflict before Trowel attempts the merge. It can block automation or ask a human whether to continue.
+_Avoid_: Possible conflict check, merge preview.
+
 **Worktree**:
 A trowel-managed git worktree under `.trowel/worktrees/`; Change/Slice Turn and host-merge Worktrees live under `.trowel/worktrees/changes/<changeId>/...`, while Lane worktrees live under `.trowel/worktrees/lanes/<laneId>`.
 _Avoid_: Checkout, sandbox directory.

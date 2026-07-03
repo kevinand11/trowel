@@ -1,3 +1,4 @@
+import { requireMergeConflictPreflight, type ConfirmMergeConflict } from './merge-conflict-preflight.ts'
 import { MERGE_CHANGE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from './merge-worktree.ts'
 import type { DeleteBranchPolicy, Storage } from '../storages/types.ts'
 import type { GhOps } from '../utils/gh-ops.ts'
@@ -37,6 +38,7 @@ export type CloseOutDeps = {
 	log: (msg: string) => void
 	config: CloseOutConfig
 	projectRoot?: string
+	confirmMergeConflict?: ConfirmMergeConflict
 }
 
 export async function runCloseOut(entity: CloseOutEntity, deps: CloseOutDeps): Promise<void> {
@@ -89,6 +91,7 @@ async function mergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, t
 			git: deps.git,
 			mergeNoVerify: deps.config.mergeNoVerify,
 			log: deps.log,
+			confirmMergeConflict: deps.confirmMergeConflict,
 		})
 		return
 	}
@@ -96,6 +99,15 @@ async function mergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, t
 }
 
 async function legacyMergeCloseOutBranch(entity: CloseOutEntity, deps: CloseOutDeps, targetBranch: string): Promise<void> {
+	await requireMergeConflictPreflight({
+		git: deps.git,
+		destinationRef: targetBranch,
+		sourceRef: entity.changeBranch,
+		destinationBranch: targetBranch,
+		sourceBranch: entity.changeBranch,
+		mergeLocation: 'current worktree',
+		confirm: deps.confirmMergeConflict,
+	})
 	const current = await deps.git.currentBranch()
 	await deps.git.checkout(targetBranch)
 	try {
@@ -203,6 +215,22 @@ if (import.meta.vitest) {
 			expect(calls).toContain('push(release/1.2)')
 			expect(calls.find((c) => c.startsWith('deleteBranch'))).toBeUndefined()
 			expect(closed.change).toEqual(['3'])
+		})
+
+		test('merge conflict preflight stops legacy Close-out merge before checkout', async () => {
+			const { storage, closed } = fakeStorage()
+			const { git, calls } = fakeGit()
+			git.mergeConflictPreflight = async () => ({ ok: false, files: ['README.md'], messages: 'CONFLICT (content): README.md' })
+			const { gh } = recordingGhOps()
+
+			await expect(runCloseOut(
+				{ kind: 'change', id: '3', changeBranch: '3-feat', targetBranch: 'release/1.2', title: 'Feat' },
+				{ storage, git, gh, log: () => {}, config: { pr: false, deleteBranch: 'never', mergeNoVerify: false } },
+			)).rejects.toThrow(/README\.md/)
+
+			expect(calls).not.toContain('checkout(release/1.2)')
+			expect(calls).not.toContain('mergeNoFf(3-feat)')
+			expect(closed.change).toEqual([])
 		})
 
 		test('prompt policy is coerced to never in auto Close-out', async () => {

@@ -26,8 +26,19 @@ export async function doctor(): Promise<void> {
 }
 
 async function addGitCheck(checks: Check[], git: ReturnType<typeof createRepoGit>): Promise<void> {
-	const gitFmt = fmtVersion(await git.detectVersion(), 'install git (every storage uses git for branches/worktrees)')
-	checks.push({ tag: gitFmt.tag, label: 'git', detail: gitFmt.detail, failsDoctor: gitFmt.tag === 'X' })
+	const version = await git.detectVersion()
+	const gitFmt = fmtVersion(version, 'install git (every storage uses git for branches/worktrees)')
+	if (!version.installed) {
+		checks.push({ tag: gitFmt.tag, label: 'git', detail: gitFmt.detail, failsDoctor: true })
+		return
+	}
+	const supportsPreflight = await git.supportsMergeConflictPreflight()
+	checks.push({
+		tag: supportsPreflight ? 'ok' : 'X',
+		label: 'git',
+		detail: supportsPreflight ? `${gitFmt.detail}  merge conflict preflight supported` : `${gitFmt.detail}  missing merge conflict preflight support (upgrade Git for git merge-tree --write-tree)`,
+		failsDoctor: !supportsPreflight,
+	})
 }
 
 async function loadDoctorConfig(): Promise<DoctorConfigState> {

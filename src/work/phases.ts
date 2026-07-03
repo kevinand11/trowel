@@ -1,3 +1,4 @@
+import { requireMergeConflictPreflight } from './merge-conflict-preflight.ts'
 import { MERGE_SLICE_WORKTREE, mergeBranchIntoDestinationWithWorktree } from './merge-worktree.ts'
 import { fetchFreshnessMarkedPrFeedback } from './pr-flow.ts'
 import type { ClassifiedSlice } from './slice-types.ts'
@@ -126,6 +127,14 @@ async function mergeSliceBranch(deps: PhaseDeps, ctx: PhaseCtx, branch: string):
 }
 
 async function legacyMergeSliceBranch(deps: PhaseDeps, ctx: PhaseCtx, branch: string): Promise<void> {
+	await requireMergeConflictPreflight({
+		git: deps.git,
+		destinationRef: ctx.changeBranch,
+		sourceRef: branch,
+		destinationBranch: ctx.changeBranch,
+		sourceBranch: branch,
+		mergeLocation: 'current worktree',
+	})
 	await deps.git.checkout(ctx.changeBranch)
 	try {
 		await deps.git.mergeNoFf(branch, { noVerify: deps.mergeNoVerify })
@@ -333,6 +342,7 @@ if (import.meta.vitest) {
 			remoteBranchExists?: (b: string) => boolean
 			branchExists?: (b: string) => boolean
 			commitsAhead?: number
+			mergeConflictPreflight?: GitOps['mergeConflictPreflight']
 		} = {},
 	): {
 		deps: PhaseDeps
@@ -412,6 +422,11 @@ if (import.meta.vitest) {
 			stashPush: recorded('stashPush'),
 			stashPop: recorded('stashPop'),
 			detectVersion: async () => ({ installed: true, version: '0.0.0' }),
+			supportsMergeConflictPreflight: async () => true,
+			mergeConflictPreflight: async (destinationRef, sourceRef, cwd) => {
+				calls.push({ method: 'mergeConflictPreflight', args: [destinationRef, sourceRef, cwd] })
+				return overrides.mergeConflictPreflight ? overrides.mergeConflictPreflight(destinationRef, sourceRef, cwd) : { ok: true }
+			},
 		}
 		const storage: Storage = {
 			createChange: async () => ({ id: 'p', title: 'p' }),
@@ -646,6 +661,19 @@ if (import.meta.vitest) {
 			expect(methods.indexOf('mergeAbort')).toBeGreaterThan(methods.indexOf('mergeNoFf'))
 			expect(methods).not.toContain('deleteRemoteBranch')
 			expect(methods.filter((m) => m === 'push')).toHaveLength(0)
+		})
+
+		test('merge conflict preflight stops legacy host merge before checkout', async () => {
+			const { deps, calls } = makePhaseDeps({
+				mergeConflictPreflight: async () => ({ ok: false, files: ['README.md'], messages: 'CONFLICT (content): README.md' }),
+			})
+
+			await expect(integrateSlice(deps, slice, ctx)).rejects.toThrow(/README\.md/)
+
+			const methods = calls.map((c) => c.method)
+			expect(methods).toContain('mergeConflictPreflight')
+			expect(methods).not.toContain('checkout')
+			expect(methods).not.toContain('mergeNoFf')
 		})
 	})
 

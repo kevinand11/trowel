@@ -1,6 +1,7 @@
 import { mkdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
 
+import { requireMergeConflictPreflight, type ConfirmMergeConflict } from './merge-conflict-preflight.ts'
 import { pathExists } from '../utils/fs.ts'
 import type { GitOps } from '../utils/git-ops.ts'
 
@@ -20,8 +21,10 @@ type PrepareMergeWorktreeArgs = {
 	changeId: string
 	reservation: string
 	destinationBranch: string
+	sourceBranch: string
 	git: GitOps
 	log?: (msg: string) => void
+	confirmMergeConflict?: ConfirmMergeConflict
 }
 
 type RunDetachedMergeArgs = {
@@ -32,7 +35,6 @@ type RunDetachedMergeArgs = {
 }
 
 type MergeWithWorktreeArgs = PrepareMergeWorktreeArgs & {
-	sourceBranch: string
 	mergeNoVerify: boolean
 }
 
@@ -53,12 +55,25 @@ function argsForDetachedMerge(args: MergeWithWorktreeArgs, worktree: MergeWorktr
 async function prepareMergeWorktree(args: PrepareMergeWorktreeArgs): Promise<MergeWorktree> {
 	const worktree = mergeWorktreeFor(args)
 	await assertDestinationSafe(args.git, args.destinationBranch, worktree.worktreePath)
+	await preflightMergeWorktree(args, worktree)
 	try {
 		await ensurePreparedMergeWorktree(args.git, worktree, args.log)
 		return worktree
 	} catch (error) {
 		throw mergeWorktreeError(error, worktree.worktreePath)
 	}
+}
+
+async function preflightMergeWorktree(args: PrepareMergeWorktreeArgs, worktree: MergeWorktree): Promise<void> {
+	await requireMergeConflictPreflight({
+		git: args.git,
+		destinationRef: worktree.destinationRef,
+		sourceRef: args.sourceBranch,
+		destinationBranch: args.destinationBranch,
+		sourceBranch: args.sourceBranch,
+		mergeLocation: worktree.worktreePath,
+		confirm: args.confirmMergeConflict,
+	})
 }
 
 function mergeWorktreeFor(args: Pick<PrepareMergeWorktreeArgs, 'projectRoot' | 'changeId' | 'reservation' | 'destinationBranch'>): MergeWorktree {
@@ -161,6 +176,15 @@ if (import.meta.vitest) {
 	type BareFixture = Awaited<ReturnType<typeof setupTestRepoWithBare>>
 
 	describe('merge worktree safety checks', () => {
+		function remoteDestinationGit(overrides: Partial<GitOps> = {}): GitOps {
+			return noopGitOps({
+				remoteBranchExists: async () => true,
+				localBranchExists: async () => true,
+				worktreeList: async () => [],
+				...overrides,
+			})
+		}
+
 		test('missing remote destination fails before preparing a merge worktree', async () => {
 			const calls: string[] = []
 			const git = noopGitOps({
@@ -169,35 +193,42 @@ if (import.meta.vitest) {
 				worktreeAdd: async (worktreePath, ref) => { calls.push(`worktreeAdd(${worktreePath},${ref})`) },
 			})
 
-			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', git })).rejects.toThrow(/remote destination branch origin\/main does not exist/)
+			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', sourceBranch: 'change-42', git })).rejects.toThrow(/remote destination branch origin\/main does not exist/)
 			expect(calls.find((call) => call.startsWith('worktreeAdd'))).toBeUndefined()
 			expect(calls.find((call) => call.startsWith('fetch'))).toBeUndefined()
 		})
 
 		test('local destination ahead of remote is refused before preparing a merge worktree', async () => {
 			const calls: string[] = []
-			const git = noopGitOps({
-				remoteBranchExists: async () => true,
-				localBranchExists: async () => true,
+			const git = remoteDestinationGit({
 				commitsAhead: async (branch) => branch === 'main' ? 2 : 0,
-				worktreeList: async () => [],
 				worktreeAdd: async () => { calls.push('worktreeAdd') },
 			})
 
-			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', git })).rejects.toThrow(/ahead of origin\/main/)
+			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', sourceBranch: 'change-42', git })).rejects.toThrow(/ahead of origin\/main/)
 			expect(calls).toEqual([])
 		})
 
 		test('local destination diverged from remote is refused before preparing a merge worktree', async () => {
-			const git = noopGitOps({
-				remoteBranchExists: async () => true,
-				localBranchExists: async () => true,
+			const git = remoteDestinationGit({
 				commitsAhead: async () => 1,
-				worktreeList: async () => [],
 				worktreeAdd: async () => { throw new Error('should not prepare') },
 			})
 
-			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', git })).rejects.toThrow(/diverged from origin\/main/)
+			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', sourceBranch: 'change-42', git })).rejects.toThrow(/diverged from origin\/main/)
+		})
+
+		test('conflict preflight fails before preparing a merge worktree without confirmation', async () => {
+			const calls: string[] = []
+			const git = noopGitOps({
+				remoteBranchExists: async () => true,
+				localBranchExists: async () => false,
+				mergeConflictPreflight: async () => ({ ok: false, files: ['README.md'], messages: 'CONFLICT (content): README.md' }),
+				worktreeAdd: async () => { calls.push('worktreeAdd') },
+			})
+
+			await expect(prepareMergeWorktree({ projectRoot: '/tmp/project', changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', sourceBranch: 'change-42', git })).rejects.toThrow(/README\.md/)
+			expect(calls).toEqual([])
 		})
 	})
 
@@ -253,7 +284,7 @@ if (import.meta.vitest) {
 			await exec('git', ['-C', fixture.work, 'commit', '-q', '-am', 'main diverges'])
 			await exec('git', ['-C', fixture.work, 'push', '-q', 'origin', 'driver:main'])
 
-			const args = { projectRoot: fixture.work, changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', git, mergeNoVerify: false, log: (msg: string) => logs.push(msg) }
+			const args = { projectRoot: fixture.work, changeId: '42', reservation: MERGE_CHANGE_WORKTREE, destinationBranch: 'main', git, mergeNoVerify: false, log: (msg: string) => logs.push(msg), confirmMergeConflict: async () => true }
 			await expect(mergeBranchIntoDestinationWithWorktree({ ...args, sourceBranch: 'conflict-source' })).rejects.toThrow(/Merge worktree preserved at/)
 			const worktreePath = path.join(fixture.work, '.trowel', 'worktrees', 'changes', '42', MERGE_CHANGE_WORKTREE)
 			expect(await revParseMaybe(worktreePath, 'MERGE_HEAD')).toMatch(/^[0-9a-f]{40}$/)

@@ -6,6 +6,7 @@ import { withMutationLock } from '../../utils/mutation-lock.ts'
 import type { ChangeState } from '../../work/change-types.ts'
 import { cleanupChange, refuseCurrentCleanupBranch } from '../../work/cleanup.ts'
 import { runCloseOut } from '../../work/close-out.ts'
+import { formatMergeConflictDetails, type MergeConflictSummary } from '../../work/merge-conflict-preflight.ts'
 import { classifySlicesForChange } from '../../work/slice-states.ts'
 import type { ClassifiedSlice } from '../../work/slice-types.ts'
 import { restoreStartingBranch, type OpenPr } from '../abort/branch.ts'
@@ -161,10 +162,15 @@ async function shipViaMerge(change: Change, targetBranch: string, rt: ShipRuntim
 			gh: rt.gh,
 			log: rt.stdout,
 			projectRoot: rt.projectRoot,
+			confirmMergeConflict: rt.interactive ? (summary) => confirmShipConflict(summary, rt) : undefined,
 			config: { pr: false, deleteBranch: 'never', mergeNoVerify: rt.mergeNoVerify },
 		},
 	)
 	return true
+}
+
+async function confirmShipConflict(summary: MergeConflictSummary, rt: ShipRuntime): Promise<boolean> {
+	return rt.confirm(`Merge conflict preflight predicted conflicts.\n${formatMergeConflictDetails(summary)}\n\nAttempt merge anyway? [y/N]`)
 }
 
 async function shipViaPr(change: Change, targetBranch: string, rt: ShipRuntime): Promise<boolean> {

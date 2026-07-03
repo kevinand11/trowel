@@ -21,6 +21,7 @@ import {
 	type Lane,
 	type LaneState,
 } from '../../work/lanes.ts'
+import { formatMergeConflictDetails, formatMergeConflictPreflightError, runMergeConflictPreflight, type MergeConflictSummary } from '../../work/merge-conflict-preflight.ts'
 import { copyWorktreeEntries } from '../../work/worktrees.ts'
 import { exitOnCommandError, loadCommandBase } from '../runtime.ts'
 
@@ -174,15 +175,32 @@ async function runLaneClose(id: string, rt: LaneRuntime): Promise<void> {
 }
 
 async function closeLane(id: string, rt: LaneRuntime): Promise<void> {
+	const lane = await requireClosableLane(id, rt)
+	const closePlan = await planLaneClose(lane, rt)
+	await requireMergeConfirmation(lane, closePlan.conflict, rt)
+	if (closePlan.mergePlan) await mergeLaneIntoTarget(lane, closePlan.mergePlan, rt)
+	await finishLaneClose(lane, rt)
+}
+
+async function requireClosableLane(id: string, rt: LaneRuntime): Promise<Lane> {
 	const lane = await requireExistingLane(rt.projectRoot, id)
 	if (lane.closedAt !== null) throw new Error(`Lane ${id} is closed`)
 	if (isInside(lane.worktreePath, rt.invocationCwd)) throw new Error(`Lane ${id} cleanup may remove the current worktree. Switch directories first, then retry.`)
 	await requireLocalBranch(lane.branch, rt.repoGit, `Lane ${id} branch '${lane.branch}' is missing`)
 	await requireLocalBranch(lane.targetBranch, rt.repoGit, `Lane ${id} target branch '${lane.targetBranch}' is missing`)
-	await requireMergeConfirmation(lane, rt)
+	return lane
+}
+
+type LaneClosePlan = { mergePlan: LaneMergePlan | null; conflict: MergeConflictSummary | null }
+
+async function planLaneClose(lane: Lane, rt: LaneRuntime): Promise<LaneClosePlan> {
 	const alreadyMerged = await rt.repoGit.isAncestor(lane.branch, lane.targetBranch)
 	await assertLaneWorktreeCleanOrAlreadyMerged(lane, alreadyMerged, rt)
-	if (!alreadyMerged) await mergeLaneIntoTarget(lane, rt)
+	const mergePlan = alreadyMerged ? null : await planLaneMerge(lane, rt)
+	return { mergePlan, conflict: mergePlan ? await preflightLaneMerge(lane, mergePlan, rt) : null }
+}
+
+async function finishLaneClose(lane: Lane, rt: LaneRuntime): Promise<void> {
 	await removeLaneWorktree(lane, rt)
 	await maybeDeleteLaneBranch(lane, rt.config.ship.deleteBranch, rt)
 	const closed = await markLaneClosed(rt.projectRoot, lane.id, rt.now().toISOString())
@@ -207,9 +225,22 @@ async function requireRegisteredWorktree(lane: Lane, git: GitOps): Promise<void>
 	if (registered.branch !== lane.branch) throw new Error(`Lane ${lane.id} worktree is registered for branch '${registered.branch ?? '(detached)'}', expected '${lane.branch}'`)
 }
 
-async function requireMergeConfirmation(lane: Lane, rt: LaneRuntime): Promise<void> {
-	if (!rt.interactive) throw new Error('lane close requires an interactive terminal for merge confirmation')
-	if (!(await rt.confirm(`Merge Lane ${lane.id} "${lane.title}" into ${lane.targetBranch}? [y/N]`))) throw new Error('lane close cancelled')
+async function requireMergeConfirmation(lane: Lane, conflict: MergeConflictSummary | null, rt: LaneRuntime): Promise<void> {
+	if (!rt.interactive) throw nonInteractiveLaneCloseError(conflict)
+	if (await rt.confirm(laneMergeConfirmationMessage(lane, conflict))) return
+	throw new Error('lane close cancelled')
+}
+
+function nonInteractiveLaneCloseError(conflict: MergeConflictSummary | null): Error {
+	return conflict ? new Error(formatMergeConflictPreflightError(conflict)) : new Error('lane close requires an interactive terminal for merge confirmation')
+}
+
+function laneMergeConfirmationMessage(lane: Lane, conflict: MergeConflictSummary | null): string {
+	return conflict ? laneConflictConfirmationMessage(lane, conflict) : `Merge Lane ${lane.id} "${lane.title}" into ${lane.targetBranch}? [y/N]`
+}
+
+function laneConflictConfirmationMessage(lane: Lane, conflict: MergeConflictSummary): string {
+	return `Merge conflict preflight predicted conflicts for Lane ${lane.id} "${lane.title}".\n${formatMergeConflictDetails(conflict)}\n\nMerge anyway? [y/N]`
 }
 
 async function assertLaneWorktreeCleanOrAlreadyMerged(lane: Lane, alreadyMerged: boolean, rt: LaneRuntime): Promise<void> {
@@ -224,14 +255,34 @@ async function assertLaneWorktreeCleanOrAlreadyMerged(lane: Lane, alreadyMerged:
 	}
 }
 
-async function mergeLaneIntoTarget(lane: Lane, rt: LaneRuntime): Promise<void> {
+type LaneMergePlan =
+	| { kind: 'target-worktree'; path: string }
+	| { kind: 'detached-worktree'; path: string }
+
+async function planLaneMerge(lane: Lane, rt: LaneRuntime): Promise<LaneMergePlan> {
 	const targetWorktrees = (await rt.repoGit.worktreeList()).filter((w) => w.branch === lane.targetBranch)
 	if (targetWorktrees.length > 1) throw new Error(`Target branch '${lane.targetBranch}' is checked out in multiple worktrees:\n${targetWorktrees.map((w) => `  ${w.path}`).join('\n')}`)
-	if (targetWorktrees.length === 1) {
-		await mergeInTargetWorktree(lane, targetWorktrees[0]!.path, rt)
+	if (targetWorktrees.length === 1) return { kind: 'target-worktree', path: targetWorktrees[0]!.path }
+	return { kind: 'detached-worktree', path: laneMergeWorktreePath(rt.projectRoot, lane.id) }
+}
+
+async function preflightLaneMerge(lane: Lane, mergePlan: LaneMergePlan, rt: LaneRuntime): Promise<MergeConflictSummary | null> {
+	return runMergeConflictPreflight({
+		git: rt.repoGit,
+		destinationRef: lane.targetBranch,
+		sourceRef: lane.branch,
+		destinationBranch: lane.targetBranch,
+		sourceBranch: lane.branch,
+		mergeLocation: mergePlan.path,
+	})
+}
+
+async function mergeLaneIntoTarget(lane: Lane, mergePlan: LaneMergePlan, rt: LaneRuntime): Promise<void> {
+	if (mergePlan.kind === 'target-worktree') {
+		await mergeInTargetWorktree(lane, mergePlan.path, rt)
 		return
 	}
-	await mergeInDetachedWorktree(lane, rt)
+	await mergeInDetachedWorktree(lane, mergePlan.path, rt)
 }
 
 async function mergeInTargetWorktree(lane: Lane, targetPath: string, rt: LaneRuntime): Promise<void> {
@@ -247,8 +298,7 @@ async function mergeInTargetWorktree(lane: Lane, targetPath: string, rt: LaneRun
 	}
 }
 
-async function mergeInDetachedWorktree(lane: Lane, rt: LaneRuntime): Promise<void> {
-	const mergePath = laneMergeWorktreePath(rt.projectRoot, lane.id)
+async function mergeInDetachedWorktree(lane: Lane, mergePath: string, rt: LaneRuntime): Promise<void> {
 	try {
 		await prepareLaneMergeWorktree(mergePath, lane, rt)
 		await rt.repoGit.mergeNoFfIn(mergePath, lane.branch, { noVerify: rt.config.work.mergeNoVerify })
@@ -458,8 +508,8 @@ if (import.meta.vitest) {
 			expect(interactiveCalls).toEqual([{ cwd: lane.worktreePath, initialPrompt: undefined, harnessKind: defaultConfig.agent.harness }])
 		})
 
-		test('closes a clean lane by merging into a checked-out target worktree and marking metadata closed', async () => {
-			const lane = {
+		function testLane() {
+			return {
 				schemaVersion: 1 as const,
 				id: '1',
 				title: 'Add cache invalidation',
@@ -471,14 +521,21 @@ if (import.meta.vitest) {
 				closedAt: null,
 				mergedAt: null,
 			}
+		}
+
+		async function writeTestLane() {
+			const lane = testLane()
 			await writeLane(root, lane)
 			await mkdir(lane.worktreePath, { recursive: true })
-			const calls: string[] = []
+			return lane
+		}
+
+		function laneCloseGit(lane: ReturnType<typeof testLane>, calls: string[]): GitOps {
 			let worktrees = [
 				{ path: lane.worktreePath, branch: lane.branch, head: '1' },
 				{ path: root, branch: 'main', head: '2' },
 			]
-			const git = noopGitOps({
+			return noopGitOps({
 				localBranchExists: async (branch) => branch === lane.branch || branch === 'main',
 				worktreeList: async () => worktrees,
 				isAncestor: async () => false,
@@ -490,8 +547,13 @@ if (import.meta.vitest) {
 				},
 				deleteBranch: async (branch) => { calls.push(`deleteBranch(${branch})`) },
 			})
+		}
+
+		test('closes a clean lane by merging into a checked-out target worktree and marking metadata closed', async () => {
+			const lane = await writeTestLane()
+			const calls: string[] = []
 			const config = { ...defaultConfig, ship: { ...defaultConfig.ship, deleteBranch: 'always' as const } }
-			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: git, config })
+			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: laneCloseGit(lane, calls), config })
 
 			await runLaneClose('1', rt)
 
@@ -501,6 +563,41 @@ if (import.meta.vitest) {
 				`deleteBranch(${lane.branch})`,
 			])
 			expect(await readLane(root, '1')).toMatchObject({ closedAt: '2026-01-01T00:00:00.000Z', mergedAt: '2026-01-01T00:00:00.000Z' })
+		})
+
+		test('cancels lane close before merge when conflict preflight predicts conflicts and user declines', async () => {
+			const lane = await writeTestLane()
+			const calls: string[] = []
+			const prompts: string[] = []
+			const git = laneCloseGit(lane, calls)
+			git.mergeConflictPreflight = async () => ({ ok: false, files: ['README.md'], messages: 'CONFLICT (content): README.md' })
+			const { rt } = makeRt({
+				projectRoot: root,
+				invocationCwd: root,
+				repoGit: git,
+				confirm: async (message) => {
+					prompts.push(message)
+					return false
+				},
+			})
+
+			await expect(runLaneClose('1', rt)).rejects.toThrow(/lane close cancelled/)
+
+			expect(prompts.join('\n')).toContain('Merge conflict preflight predicted conflicts')
+			expect(prompts.join('\n')).toContain('README.md')
+			expect(calls).toEqual([])
+		})
+
+		test('attempts lane close merge when conflict preflight predicts conflicts and user confirms', async () => {
+			const lane = await writeTestLane()
+			const calls: string[] = []
+			const git = laneCloseGit(lane, calls)
+			git.mergeConflictPreflight = async () => ({ ok: false, files: ['README.md'], messages: 'CONFLICT (content): README.md' })
+			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: git })
+
+			await runLaneClose('1', rt)
+
+			expect(calls[0]).toBe(`mergeNoFfIn(${root},${lane.branch})`)
 		})
 	})
 }
