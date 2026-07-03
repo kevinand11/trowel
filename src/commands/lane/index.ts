@@ -57,7 +57,7 @@ async function runLaneStart(title: string, opts: LaneStartOpts, rt: LaneRuntime)
 
 async function createLane(title: string, baseRef: string, harnessKind: string, rt: LaneRuntime): Promise<StartedLane> {
 	const targetBranch = await laneTargetBranch(rt)
-	await assertCleanInvocationWorktree(rt)
+	await confirmCleanOrContinueInvocationWorktree(rt)
 	await rt.cwdGit.resolveRef(baseRef)
 	const lane = await newLaneRecord(title, baseRef, targetBranch, rt)
 	await assertLaneBranchAvailable(lane.branch, rt)
@@ -75,8 +75,24 @@ async function laneTargetBranch(rt: LaneRuntime): Promise<string> {
 	return targetBranch
 }
 
-async function assertCleanInvocationWorktree(rt: LaneRuntime): Promise<void> {
-	if (!(await rt.cwdGit.isWorkingTreeClean())) throw new Error('working tree is dirty; commit or stash before starting a Lane')
+async function confirmCleanOrContinueInvocationWorktree(rt: LaneRuntime): Promise<void> {
+	if (await rt.cwdGit.isWorkingTreeClean()) return
+	await printDirtyInvocationStatus(rt)
+	if (await shouldContinueWithDirtyInvocationWorktree(rt)) return
+	throw new Error('working tree is dirty')
+}
+
+async function printDirtyInvocationStatus(rt: LaneRuntime): Promise<void> {
+	const statusShort = await rt.cwdGit.statusShort()
+	if (statusShort.trim()) rt.stdout(`\nDirty working tree:\n${statusShort.trimEnd()}\n\n`)
+}
+
+async function shouldContinueWithDirtyInvocationWorktree(rt: LaneRuntime): Promise<boolean> {
+	return rt.interactive ? rt.confirm(dirtyLaneStartConfirmationMessage()) : false
+}
+
+function dirtyLaneStartConfirmationMessage(): string {
+	return 'Working tree is dirty. Commit/stash first for a clean Lane, or continue and create the Lane from the requested base while your current changes stay in this worktree. Continue with dirty tree?'
 }
 
 async function newLaneRecord(title: string, baseRef: string, targetBranch: string, rt: LaneRuntime): Promise<Lane> {
@@ -460,7 +476,7 @@ if (import.meta.vitest) {
 			await rm(root, { recursive: true, force: true })
 		})
 
-		test('creates lane metadata/worktree and starts the harness in the lane cwd', async () => {
+		function startGit(overrides: Partial<GitOps> = {}): { git: GitOps; added: () => { worktreePath: string; branch: string; baseRef: string } | null } {
 			const branches = new Set<string>()
 			let added: { worktreePath: string; branch: string; baseRef: string } | null = null
 			const git = noopGitOps({
@@ -473,14 +489,61 @@ if (import.meta.vitest) {
 					added = { worktreePath, branch, baseRef }
 					await mkdir(worktreePath, { recursive: true })
 				},
+				...overrides,
 			})
+			return { git, added: () => added }
+		}
+
+		test('creates lane metadata/worktree and starts the harness in the lane cwd', async () => {
+			const { git, added } = startGit()
 			const { rt, interactiveCalls } = makeRt({ projectRoot: root, cwdGit: git, repoGit: git })
 
 			await runLaneStart('Add cache invalidation', {}, rt)
 
-			expect(added).toEqual({ worktreePath: laneWorktreePath(root, '1'), branch: 'lane-1-add-cache-invalidation', baseRef: 'HEAD' })
+			expect(added()).toEqual({ worktreePath: laneWorktreePath(root, '1'), branch: 'lane-1-add-cache-invalidation', baseRef: 'HEAD' })
 			expect(await readLane(root, '1')).toMatchObject({ id: '1', title: 'Add cache invalidation', branch: 'lane-1-add-cache-invalidation', targetBranch: 'main' })
 			expect(interactiveCalls).toEqual([{ cwd: laneWorktreePath(root, '1'), initialPrompt: 'Add cache invalidation', harnessKind: defaultConfig.agent.harness }])
+		})
+
+		test('dirty invocation worktree can continue after confirmation', async () => {
+			const { git, added } = startGit({
+				isWorkingTreeClean: async () => false,
+				statusShort: async () => ' M README.md\n',
+			})
+			const prompts: string[] = []
+			const { rt, out } = makeRt({
+				projectRoot: root,
+				cwdGit: git,
+				repoGit: git,
+				confirm: async (message) => {
+					prompts.push(message)
+					return true
+				},
+			})
+
+			await runLaneStart('Add cache invalidation', {}, rt)
+
+			expect(out.join('')).toContain('Dirty working tree')
+			expect(out.join('')).toContain('M README.md')
+			expect(prompts.join('\n')).toContain('Continue with dirty tree?')
+			expect(added()).toMatchObject({ branch: 'lane-1-add-cache-invalidation' })
+		})
+
+		test('dirty invocation worktree cancels lane start when confirmation is declined', async () => {
+			const { git, added } = startGit({
+				isWorkingTreeClean: async () => false,
+				statusShort: async () => ' M README.md\n',
+			})
+			const { rt } = makeRt({
+				projectRoot: root,
+				cwdGit: git,
+				repoGit: git,
+				confirm: async () => false,
+			})
+
+			await expect(runLaneStart('Add cache invalidation', {}, rt)).rejects.toThrow(/working tree is dirty/)
+
+			expect(added()).toBeNull()
 		})
 
 		test('continues an existing open lane without an initial prompt', async () => {
