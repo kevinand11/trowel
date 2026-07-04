@@ -40,7 +40,7 @@ type LaneRuntime = {
 	assertHarnessInstalled: (harnessKind: string) => Promise<void>
 }
 
-type LaneStartOpts = { base?: string; harness?: string }
+type LaneStartOpts = { harness?: string }
 type LaneContinueOpts = { harness?: string }
 
 type StartedLane = { lane: Lane; harnessKind: string }
@@ -50,19 +50,18 @@ async function runLaneStart(title: string, opts: LaneStartOpts, rt: LaneRuntime)
 	if (!trimmedTitle) throw new Error('lane title is required')
 	const harnessKind = opts.harness ?? rt.config.agent.harness
 	await rt.assertHarnessInstalled(harnessKind)
-	const started = await withMutationLock(rt.projectRoot, () => createLane(trimmedTitle, opts.base ?? 'HEAD', harnessKind, rt))
+	const started = await withMutationLock(rt.projectRoot, () => createLane(trimmedTitle, harnessKind, rt))
 	const promptText = await loadPrompt('lane')
 	await rt.runInteractive({ cwd: started.lane.worktreePath, promptText, initialPrompt: trimmedTitle, harnessKind: started.harnessKind })
 }
 
-async function createLane(title: string, baseRef: string, harnessKind: string, rt: LaneRuntime): Promise<StartedLane> {
+async function createLane(title: string, harnessKind: string, rt: LaneRuntime): Promise<StartedLane> {
 	const targetBranch = await laneTargetBranch(rt)
 	await confirmCleanOrContinueInvocationWorktree(rt)
-	await rt.cwdGit.resolveRef(baseRef)
-	const lane = await newLaneRecord(title, baseRef, targetBranch, rt)
+	const lane = await newLaneRecord(title, targetBranch, rt)
 	await assertLaneBranchAvailable(lane.branch, rt)
 	await assertLaneWorktreePathAvailable(lane.worktreePath)
-	await rt.cwdGit.worktreeAddNewBranch(lane.worktreePath, lane.branch, baseRef)
+	await rt.cwdGit.worktreeAddNewBranch(lane.worktreePath, lane.branch, targetBranch)
 	await rt.copyToWorktree(lane.worktreePath)
 	await writeLane(rt.projectRoot, lane)
 	printStartedLane(lane, rt)
@@ -92,10 +91,10 @@ async function shouldContinueWithDirtyInvocationWorktree(rt: LaneRuntime): Promi
 }
 
 function dirtyLaneStartConfirmationMessage(): string {
-	return 'Working tree is dirty. Commit/stash first for a clean Lane, or continue and create the Lane from the requested base while your current changes stay in this worktree. Continue with dirty tree?'
+	return 'Working tree is dirty. Commit/stash first for a clean Lane, or continue and create the Lane from the captured Target branch while your current changes stay in this worktree. Continue with dirty tree?'
 }
 
-async function newLaneRecord(title: string, baseRef: string, targetBranch: string, rt: LaneRuntime): Promise<Lane> {
+async function newLaneRecord(title: string, targetBranch: string, rt: LaneRuntime): Promise<Lane> {
 	const id = await allocateNextLaneId(rt.projectRoot)
 	const branch = laneBranchName(id, title)
 	return {
@@ -104,7 +103,6 @@ async function newLaneRecord(title: string, baseRef: string, targetBranch: strin
 		title,
 		branch,
 		targetBranch,
-		baseRef,
 		worktreePath: laneWorktreePath(rt.projectRoot, id),
 		createdAt: rt.now().toISOString(),
 		closedAt: null,
@@ -476,17 +474,16 @@ if (import.meta.vitest) {
 			await rm(root, { recursive: true, force: true })
 		})
 
-		function startGit(overrides: Partial<GitOps> = {}): { git: GitOps; added: () => { worktreePath: string; branch: string; baseRef: string } | null } {
+		function startGit(overrides: Partial<GitOps> = {}): { git: GitOps; added: () => { worktreePath: string; branch: string; baseBranch: string } | null } {
 			const branches = new Set<string>()
-			let added: { worktreePath: string; branch: string; baseRef: string } | null = null
+			let added: { worktreePath: string; branch: string; baseBranch: string } | null = null
 			const git = noopGitOps({
 				currentBranch: async () => 'main',
 				isWorkingTreeClean: async () => true,
-				resolveRef: async (ref) => ref,
 				localBranchExists: async (branch) => branches.has(branch),
-				worktreeAddNewBranch: async (worktreePath, branch, baseRef) => {
+				worktreeAddNewBranch: async (worktreePath, branch, baseBranch) => {
 					branches.add(branch)
-					added = { worktreePath, branch, baseRef }
+					added = { worktreePath, branch, baseBranch }
 					await mkdir(worktreePath, { recursive: true })
 				},
 				...overrides,
@@ -500,7 +497,7 @@ if (import.meta.vitest) {
 
 			await runLaneStart('Add cache invalidation', {}, rt)
 
-			expect(added()).toEqual({ worktreePath: laneWorktreePath(root, '1'), branch: 'lane-1-add-cache-invalidation', baseRef: 'HEAD' })
+			expect(added()).toEqual({ worktreePath: laneWorktreePath(root, '1'), branch: 'lane-1-add-cache-invalidation', baseBranch: 'main' })
 			expect(await readLane(root, '1')).toMatchObject({ id: '1', title: 'Add cache invalidation', branch: 'lane-1-add-cache-invalidation', targetBranch: 'main' })
 			expect(interactiveCalls).toEqual([{ cwd: laneWorktreePath(root, '1'), initialPrompt: 'Add cache invalidation', harnessKind: defaultConfig.agent.harness }])
 		})
@@ -553,7 +550,6 @@ if (import.meta.vitest) {
 				title: 'Add cache invalidation',
 				branch: 'lane-1-add-cache-invalidation',
 				targetBranch: 'main',
-				baseRef: 'HEAD',
 				worktreePath: laneWorktreePath(root, '1'),
 				createdAt: '2026-01-01T00:00:00.000Z',
 				closedAt: null,
@@ -578,7 +574,6 @@ if (import.meta.vitest) {
 				title: 'Add cache invalidation',
 				branch: 'lane-1-add-cache-invalidation',
 				targetBranch: 'main',
-				baseRef: 'HEAD',
 				worktreePath: laneWorktreePath(root, '1'),
 				createdAt: '2026-01-01T00:00:00.000Z',
 				closedAt: null,

@@ -143,7 +143,7 @@ The stored branch a **Slice**'s Turns run on, nullable until `prepareImplement` 
 _Avoid_: Feature branch, task branch, computed branch.
 
 **Lane branch**:
-The generated local branch for a Lane, named `lane-<laneId>-<slug>`, stored as Lane metadata and merged into the captured Target branch by `trowel lane close`.
+The generated local branch for a Lane, named `lane-<laneId>-<slug>`, created from the captured Target branch, stored as Lane metadata, and merged back into that Target branch by `trowel lane close`.
 _Avoid_: Change branch, Slice branch
 
 **Slice PR**:

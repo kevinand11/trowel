@@ -110,9 +110,8 @@ export function run(): void {
 		.command('start')
 		.description('Start a foreground human-in-the-loop implementation Lane in a managed worktree')
 		.argument('<title...>', 'Lane title/request words')
-		.option('--base <ref>', 'Base ref for the Lane branch; defaults to HEAD')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.action(async (titleWords: string[], opts: { base?: string; harness?: string }) => {
+		.action(async (titleWords: string[], opts: { harness?: string }) => {
 			await laneStart(titleWords.join(' '), opts)
 		})
 

@@ -24,7 +24,7 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel change work <change-id> [--loop] [--storage <kind>] [--harness <kind>]` | Run the AFK loop for one Change; `--loop` keeps polling for newly actionable Slice or Close-out PR revision work. |
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
-| `trowel lane start <title...> [--base <ref>] [--harness <kind>]` | Start a foreground human-in-the-loop implementation Lane in a managed local worktree. |
+| `trowel lane start <title...> [--harness <kind>]` | Start a foreground human-in-the-loop implementation Lane in a managed local worktree. |
 | `trowel lane continue <lane-id> [--harness <kind>]` | Open another interactive harness session in an existing Lane worktree. |
 | `trowel lane close <lane-id>` | Confirm, merge the Lane branch into its captured Target branch, remove the Lane worktree, and apply `ship.deleteBranch`. |
 | `trowel lane list` | List all Lanes newest first with computed state. |

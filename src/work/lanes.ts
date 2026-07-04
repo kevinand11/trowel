@@ -16,7 +16,6 @@ const lanePipe = v.object({
 	title: v.string(),
 	branch: v.string(),
 	targetBranch: v.string(),
-	baseRef: v.string(),
 	worktreePath: v.string(),
 	createdAt: v.string(),
 	closedAt: v.nullable(v.string()),
@@ -155,7 +154,6 @@ if (import.meta.vitest) {
 			title,
 			branch: laneBranchName(id, title),
 			targetBranch: 'main',
-			baseRef: 'HEAD',
 			worktreePath: laneWorktreePath('/tmp/project', id),
 			createdAt: '2026-01-01T00:00:00.000Z',
 			closedAt: null,
@@ -196,6 +194,16 @@ if (import.meta.vitest) {
 			await mkdir(path.join(root, '.trowel', 'lanes'), { recursive: true })
 			await writeFile(path.join(root, '.trowel', 'lanes', '1.json'), '{"id":1}', 'utf8')
 			await expect(readLane(root, '1')).rejects.toThrow(/Invalid Lane metadata/)
+		})
+
+		test('readLane ignores obsolete baseRef metadata from older Lane records', async () => {
+			await mkdir(path.join(root, '.trowel', 'lanes'), { recursive: true })
+			await writeFile(path.join(root, '.trowel', 'lanes', '1.json'), `${JSON.stringify({ ...lane({ id: '1' }), baseRef: 'HEAD' }, null, 2)}\n`, 'utf8')
+
+			const parsed = await readLane(root, '1')
+
+			expect(parsed).toMatchObject({ id: '1', targetBranch: 'main' })
+			expect(parsed).not.toHaveProperty('baseRef')
 		})
 
 		test('markLaneClosed records closedAt and mergedAt without deleting metadata', async () => {

@@ -47,7 +47,7 @@ export type GitOps = {
 	updateLocalBranchRef(branch: string, ref: string): Promise<void>
 	// worktree primitives (consumed by src/work/worktrees.ts for per-Turn worktrees)
 	worktreeAdd(worktreePath: string, branch: string): Promise<void>
-	worktreeAddNewBranch(worktreePath: string, branch: string, baseRef: string): Promise<void>
+	worktreeAddNewBranch(worktreePath: string, branch: string, startPoint: string): Promise<void>
 	worktreeRemove(worktreePath: string, opts?: { force?: boolean }): Promise<void>
 	worktreeList(): Promise<Array<{ path: string; branch: string | null; head: string }>>
 	restoreAll(worktreePath: string): Promise<void>
@@ -290,8 +290,8 @@ export function createRepoGit(projectRoot: string): GitOps {
 		worktreeAdd: async (worktreePath, branch) => {
 			await gitOrThrow(['worktree', 'add', worktreePath, branch])
 		},
-		worktreeAddNewBranch: async (worktreePath, branch, baseRef) => {
-			await gitOrThrow(['worktree', 'add', '-b', branch, worktreePath, baseRef])
+		worktreeAddNewBranch: async (worktreePath, branch, startPoint) => {
+			await gitOrThrow(['worktree', 'add', '-b', branch, worktreePath, startPoint])
 		},
 		worktreeRemove: async (worktreePath, opts) => {
 			const args = ['worktree', 'remove']
