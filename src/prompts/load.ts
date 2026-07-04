@@ -50,6 +50,10 @@ if (import.meta.vitest) {
 			expect(lane).toContain('propose a commit message')
 			expect(lane).toContain('Default to no')
 			expect(lane).toContain('will refuse while the Lane worktree is dirty')
+			expect(lane).toContain('merge-compatible with its captured Target branch')
+			expect(lane).toContain('git merge-tree --write-tree --messages --name-only <targetBranch> HEAD')
+			expect(lane).toContain('do not suggest closing yet')
+			expect(lane).toContain('git merge --no-ff --no-commit <targetBranch>')
 		})
 
 		test('throws with a useful message when the template is missing', async () => {

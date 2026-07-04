@@ -39,6 +39,20 @@ After implementation and verification, inspect `git status --short`.
 - If the user approves, run the local `git add`/`git commit` needed for that commit. Do not push unless the user separately asks.
 - If the user declines, leave the changes uncommitted. Tell the user that `trowel lane close <lane-id>` will refuse while the Lane worktree is dirty, and that they can continue editing, ask you to commit later, stash, or discard.
 
-When the Lane worktree is clean, tell the user to close the lane from outside this worktree:
+Before suggesting `trowel lane close <lane-id>`, the Lane worktree must be clean and merge-compatible with its captured Target branch.
 
-`trowel lane close <lane-id>`
+1. Identify the Lane id and Target branch from the owning project's `.trowel/lanes/<lane-id>.json`. Derive the owning project and Lane id from the current worktree path (`.trowel/worktrees/lanes/<lane-id>`). Do not guess the Target branch.
+2. Run a non-mutating merge preflight from this Lane worktree:
+
+   `git merge-tree --write-tree --messages --name-only <targetBranch> HEAD`
+
+3. If preflight reports no conflicts, tell the user to close the lane from outside this worktree:
+
+   `trowel lane close <lane-id>`
+
+4. If preflight reports conflicts, do not suggest closing yet. Show the Target branch, the conflicting files, and the relevant conflict output. Then try to resolve the conflicts in this Lane branch before suggesting close:
+   - Merge the Target branch into the Lane branch without auto-committing: `git merge --no-ff --no-commit <targetBranch>`.
+   - Resolve the conflicts in this worktree, preserving both Target branch changes and Lane changes.
+   - Run the relevant tests/format/lint verification again.
+   - Inspect `git status --short`, summarize the conflict-resolution changes, propose a merge-resolution commit message, and ask for explicit approval before committing. Default to no.
+   - After an approved local commit, rerun the merge preflight. Only suggest `trowel lane close <lane-id>` once the worktree is clean and preflight reports no conflicts.
