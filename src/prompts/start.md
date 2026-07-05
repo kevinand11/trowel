@@ -178,9 +178,10 @@ When the Change body is locked, break it into **vertical slices**.
 
 **Vertical-slice rules:**
 
+- Each slice is a small, reviewable chunk: one coherent behavior, refactor, or doc/test update that a human can review independently.
 - Each slice cuts end-to-end through every layer (schema → API → UI → tests, whichever apply). NOT a horizontal slice of one layer.
 - A completed slice is demoable or verifiable on its own.
-- Prefer many thin slices over few thick ones.
+- Prefer many thin slices over few thick ones; split broad or mixed-purpose slices instead of bundling unrelated changes.
 - Aim for 3–6 slices per Change; one slice's body should fit on a screen.
 - A slice may be **AFK** (an agent can implement it without human input) or **HITL** (human-in-the-loop — requires architectural decisions, design review, manual config, etc.). Prefer AFK; mark HITL only when necessary.
 - **Blockers:** if slice B depends on slice A landing first, record A's index in B's `blockedBy` array. All blockers are treated as hard — there is no soft/hard distinction.
@@ -197,6 +198,7 @@ Present the proposed slices as a **markdown table** for the user to review:
 
 Ask the user:
 
+- Does each slice feel like a small, independently reviewable chunk?
 - Does the granularity feel right (too coarse / too fine)?
 - Are the dependency relationships correct?
 - Should any slices be merged or split further?

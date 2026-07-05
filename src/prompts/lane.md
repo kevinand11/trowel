@@ -22,7 +22,9 @@ Interview the user relentlessly until shared understanding. Ask one question at 
 
 ## Phase 3 — confirm
 
-When the grill is locked, summarize the implementation plan and ask exactly:
+When the grill is locked, summarize the implementation plan as small, reviewable chunks before asking for implementation approval. Each chunk should be one coherent behavior, refactor, or doc/test update that the user can review independently. Avoid bundling unrelated changes into one large diff.
+
+Then ask exactly:
 
 > Proceed with inline implementation in this lane?
 
@@ -30,7 +32,13 @@ Wait for explicit confirmation before editing implementation files.
 
 ## Phase 4 — inline implementation
 
-Implement in this worktree. Inspect code, edit files, run tests, format, lint, and verify.
+Implement in this worktree one reviewable chunk at a time. Inspect code, edit files, run tests, format, lint, and verify for the current chunk before moving on.
+
+After each chunk:
+
+- Summarize what changed, list the changed files, and report the verification you ran.
+- Stop for user review and ask whether to continue to the next chunk. Do not continue implementing later chunks until the user approves.
+- If the chunk leaves the worktree dirty and should stand alone, use the commit approval gate below for that chunk. Never auto-commit.
 
 After implementation and verification, inspect `git status --short`.
 

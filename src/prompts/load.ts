@@ -36,9 +36,12 @@ if (import.meta.vitest) {
 			expect(review).not.toMatch(/\{\{.+?\}\}/)
 		})
 
-		test('start prompt loads', async () => {
+		test('start prompt loads and contains slice granularity guidance', async () => {
 			const start = await loadPrompt('start')
 			expect(start.length).toBeGreaterThan(0)
+			expect(start).toContain('small, reviewable chunk')
+			expect(start).toContain('independently reviewable chunk')
+			expect(start).toContain('split broad or mixed-purpose slices')
 		})
 
 		test('lane prompt loads and contains the confirmation gates', async () => {
@@ -47,6 +50,9 @@ if (import.meta.vitest) {
 			expect(lane).toContain('Proceed with inline implementation in this lane?')
 			expect(lane).toContain('human in the loop')
 			expect(lane).toContain('Never commit automatically')
+			expect(lane).toContain('small, reviewable chunks')
+			expect(lane).toContain('one reviewable chunk at a time')
+			expect(lane).toContain('Do not continue implementing later chunks until the user approves')
 			expect(lane).toContain('propose a commit message')
 			expect(lane).toContain('Default to no')
 			expect(lane).toContain('will refuse while the Lane worktree is dirty')
