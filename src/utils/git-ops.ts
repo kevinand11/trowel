@@ -56,7 +56,7 @@ export type GitOps = {
 	isWorkingTreeCleanIn(worktreePath: string): Promise<boolean>
 	statusShortIn(worktreePath: string): Promise<string>
 	isAncestor(ancestorRef: string, descendantRef: string): Promise<boolean>
-	// host-side workflow ops (consumed by `runStart` in `src/commands/start.ts`)
+	// host-side workflow ops (consumed by `runChangeStart` in `src/commands/change-start.ts`)
 	isWorkingTreeClean(): Promise<boolean>
 	statusShort(): Promise<string>
 	stashPush(opts: { includeUntracked: boolean }): Promise<void>

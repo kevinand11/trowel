@@ -2,7 +2,7 @@
 
 > **Historical note:** the Reconciliation/read-command behavior described below is superseded by [2026-06-04-read-commands-do-not-finalize.md](./2026-06-04-read-commands-do-not-finalize.md). Entity read commands are lock-free and never run Finalization; Ship owns Change-level Finalization after a landed Close-out.
 
-Trowel today has two top-level entities: the **PRD** (heavyweight, sliced, run by `trowel work`) and the slice (sub-entity of a PRD). Bug-fix work has no canonical surface — the `trowel fix` stub was a one-shot agent run with no entity tracking, no symmetry with PRD/slice machinery, and no shared shipping logic.
+Trowel today has two top-level entities: the **PRD** (heavyweight, sliced, run by `trowel change work`) and the slice (sub-entity of a PRD). Bug-fix work has no canonical surface — the `trowel fix` stub was a one-shot agent run with no entity tracking, no symmetry with PRD/slice machinery, and no shared shipping logic.
 
 This ADR introduces a third first-class entity, **Fix**, and a shared **Close-out** step that ships both PRDs and Fixes through the same code path. The two pieces are entwined: Fix is defined as "a slice without a PRD," and that definition is what makes a unified Close-out tractable.
 
@@ -18,7 +18,7 @@ The `config.work.perSliceBranches` flag does **not** apply to Fix. The flag is n
 
 An entity becomes **closeable** when its internal work is done. For a PRD: every Slice is CLOSED. For a Fix: the phase loop converges (implement `ready`, plus review/address convergence if `config.work.review`).
 
-When closeable, **Close-out** fires inside `runLoop` — `trowel work prd <id>` and `trowel work fix <id>` both route through it. The action branches on `config.work.usePrs`:
+When closeable, **Close-out** fires inside `runLoop` — `trowel change work prd <id>` and `trowel change work fix <id>` both route through it. The action branches on `config.work.usePrs`:
 
 - `usePrs: true` — opens a PR from the entity's branch (PRD's integration branch; Fix's `fix/<id>-<slug>` branch) against `config.baseBranch`. Entity stays OPEN. The human merges on GitHub; **Reconciliation** later observes the merge and flips entity to CLOSED.
 - `usePrs: false` — host-merges the entity's branch into `config.baseBranch` via `git merge --no-ff`, then marks entity CLOSED immediately.
@@ -44,8 +44,8 @@ Branch deletion at Close-out is gated by `config.close.deleteBranch`. `'always'`
 ## Consequences
 
 - New entity, new commands, new storage methods, new config knobs (`config.docs.fixesDir`, `config.labels.fix`).
-- `trowel work` adopts a scope token: `trowel work prd <id>` / `trowel work fix <id>`. Old `trowel work <prd-id>` shape retires.
-- `trowel fix` becomes a *create-only* interactive grill (mirror of `trowel start`); execution flows through `trowel work fix <id>`.
+- `trowel change work` adopts a scope token: `trowel change work prd <id>` / `trowel change work fix <id>`. Old `trowel change work <prd-id>` shape retires.
+- `trowel fix` becomes a *create-only* interactive grill (mirror of `trowel change start`); execution flows through `trowel change work fix <id>`.
 - `runLoop` is refactored to operate over `LoopEntity = { kind: 'prd' | 'fix'; ... }`; today's PRD-only signature retires.
-- Close-out is a new phase between "last actionable unit done" and "loop exits"; it is idempotent (re-running `trowel work` on an already-shipped entity is a no-op or a Reconciliation-only pass).
+- Close-out is a new phase between "last actionable unit done" and "loop exits"; it is idempotent (re-running `trowel change work` on an already-shipped entity is a no-op or a Reconciliation-only pass).
 - Historical Reconciliation behavior was later superseded by ADR `2026-06-04-read-commands-do-not-finalize.md`; Ship now owns Change-level Finalization after a landed Close-out.

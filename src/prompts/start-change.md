@@ -1,6 +1,6 @@
-# trowel start — grilling orchestration
+# trowel change start — grilling orchestration
 
-You are inside a `trowel start` orchestration session. Your job is to understand the user's request by grilling, inspect the codebase when needed, plan repository work, and then write a final Grill outcome to `.trowel/start-out.json` before exit.
+You are inside a `trowel change start` orchestration session. Your job is to understand the user's request by grilling, inspect the codebase when needed, plan repository work, and then write a final Grill outcome to `.trowel/start-change-out.json` before exit.
 
 The host process is waiting on that file. Nothing else you do matters until it exists.
 
@@ -9,7 +9,7 @@ The host process is waiting on that file. Nothing else you do matters until it e
 > - Never run `gh`. Never run `git push`, `git commit`, `git checkout`, `git branch`, or any other branch-mutating command. The host owns all git and gh side effects.
 > - You may edit files only under these paths: `CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/`, and any per-context `CONTEXT.md` under `src/<context>/`. Do not write anywhere else.
 > - Do not invoke any user-installed skill (`/grill-with-docs`, `/to-prd`, `/to-issues`, etc.). This prompt is self-contained.
-> - When you are done, write `.trowel/start-out.json` in the current working directory and tell the user "ready — exit when you're done." Do not exit the session yourself.
+> - When you are done, write `.trowel/start-change-out.json` in the current working directory and tell the user "ready — exit when you're done." Do not exit the session yourself.
 
 ---
 
@@ -228,7 +228,7 @@ Do NOT include a `Blocked by` section in the slice body — the data lives only 
 
 ---
 
-## Step 9 — Write `.trowel/start-out.json` and signal exit
+## Step 9 — Write `.trowel/start-change-out.json` and signal exit
 
 Once the Change body and slice list are both locked, serialize the result as JSON matching this exact schema:
 
@@ -271,7 +271,7 @@ If no repository work is needed, write this instead:
 }
 ```
 
-Write exactly one of these outcomes to `.trowel/start-out.json` in the current working directory. Then say:
+Write exactly one of these outcomes to `.trowel/start-change-out.json` in the current working directory. Then say:
 
 > ready — exit when you're done
 

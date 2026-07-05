@@ -7,7 +7,7 @@ Current role prompts:
 - `implement.md` — Implementer first-cut Slice work.
 - `audit.md` — Auditor branch-diff quality gate; compares the Slice branch against the Change branch.
 - `review.md` — Reviewer response to PR review feedback when a Slice or Change is `needs-revision`.
-- `start.md` — Grill prompt for `trowel start`.
+- `start-change.md` — Grill prompt for `trowel change start`.
 - `lane.md` — Interactive Lane prompt for foreground human-in-the-loop implementation sessions.
 
 ## Adding a prompt

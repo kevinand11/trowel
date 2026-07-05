@@ -1,10 +1,10 @@
 # Configurable agent harness; support `claude`, `codex`, `pi` behind a per-project choice
 
-Trowel hard-codes `claude` as the CLI it spawns to run every agent role. The Turn-mode invocation in `_loop-wiring.ts:runAgent` and the interactive PRD-grill in `commands/start.ts` both shell out to `claude` literally, passing claude-specific flags (`--print` / `--append-system-prompt` / `--dangerously-skip-permissions` / `--model`). The only configurable piece is `config.agent.model`, which is meaningful only because the harness is fixed.
+Trowel hard-codes `claude` as the CLI it spawns to run every agent role. The Turn-mode invocation in `_loop-wiring.ts:runAgent` and the interactive PRD-grill in `commands/change-start.ts` both shell out to `claude` literally, passing claude-specific flags (`--print` / `--append-system-prompt` / `--dangerously-skip-permissions` / `--model`). The only configurable piece is `config.agent.model`, which is meaningful only because the harness is fixed.
 
 The agent ecosystem has fanned out: **codex** (OpenAI's coding CLI, `codex exec` for non-interactive) and **pi** (the multi-provider terminal harness from pi.dev, `pi -p` for print mode) are both viable Turn runners — same shape as claude (spawn, prompt-in, filesystem cwd, exit), different argv conventions. The Turn IPC contract (`.trowel/turn-in.json` / `.trowel/turn-out.json`) is harness-neutral by construction; only the spawn args differ.
 
-This ADR introduces the **Agent harness** concept: the CLI binary that runs an agent role inside a Turn. Trowel supports three harnesses out of the box — `claude` (default), `codex`, `pi`. The harness is chosen per project via `config.agent.harness`; `trowel start` and `trowel work` accept `--harness <kind>` to override per invocation, mirroring `--storage`. Per-harness spawn logic lives in `src/harnesses/`, parallel to `src/storages/`. `trowel doctor` enumerates every known harness and reports installed/version; the *configured* harness being missing is a failure, others missing are info.
+This ADR introduces the **Agent harness** concept: the CLI binary that runs an agent role inside a Turn. Trowel supports three harnesses out of the box — `claude` (default), `codex`, `pi`. The harness is chosen per project via `config.agent.harness`; `trowel change start` and `trowel change work` accept `--harness <kind>` to override per invocation, mirroring `--storage`. Per-harness spawn logic lives in `src/harnesses/`, parallel to `src/storages/`. `trowel doctor` enumerates every known harness and reports installed/version; the *configured* harness being missing is a failure, others missing are info.
 
 ## Considered options
 
@@ -15,7 +15,7 @@ This ADR introduces the **Agent harness** concept: the CLI binary that runs an a
 - **Model-string allowlist per harness** (validate `model` at config load). Rejected: pi alone supports 15+ providers' models; tracking that list is a maintenance pit. Pass model strings through verbatim; the harness CLI produces its own "unknown model" error.
 - **Probe-the-configured-harness-only in `doctor`** instead of enumerating all three. Rejected: the user explicitly asked for the full list. The non-configured harnesses double as discovery ("I didn't know I could use pi"); listing them at info level (not failure level) keeps the green/red signal meaningful.
 - **Detect harness from `model` string** (claude-* → claude, gpt-* → codex). Rejected: fragile, and pi accepts model names from many providers — claude-* via pi is a legal combination, breaking the heuristic.
-- **Keep `start` on claude even though `work` is configurable.** Rejected: mental-model whiplash. The user picks one harness; both commands respect it. If a "per-command harness" preference emerges, it slots in cleanly via the existing `--harness` override pattern. `start.md`'s one claude-specific phrasing (line 256, "the user closes the Claude session") is rewritten to be harness-neutral.
+- **Keep `start` on claude even though `work` is configurable.** Rejected: mental-model whiplash. The user picks one harness; both commands respect it. If a "per-command harness" preference emerges, it slots in cleanly via the existing `--harness` override pattern. `start-change.md`'s one claude-specific phrasing (line 256, "the user closes the Claude session") is rewritten to be harness-neutral.
 
 ## Consequences
 
@@ -89,7 +89,7 @@ Per-harness argv mappings live inside the adapters and are not config-exposed. F
 
 Two harness differences leak into the abstraction. The ADR documents them rather than papering over them.
 
-1. **Codex has no `--append-system-prompt` equivalent.** For `spawnPrint`, this is a non-issue — concatenate the system + user prompt before piping. For `spawnInteractive` (used by `trowel start`), the codex adapter writes the start prompt to `<cwd>/AGENTS.md` before spawning and removes it after exit. This:
+1. **Codex has no `--append-system-prompt` equivalent.** For `spawnPrint`, this is a non-issue — concatenate the system + user prompt before piping. For `spawnInteractive` (used by `trowel change start`), the codex adapter writes the start prompt to `<cwd>/AGENTS.md` before spawning and removes it after exit. This:
    - works inside the worktree-isolated `start` flow (`AGENTS.md` is gitignored by convention; if it's not, the user sees a transient file during the session),
    - is a known codex-specific quirk worth a comment in the adapter,
    - is *not* applied to Turn execution (Turns use print mode, which concatenates).
@@ -107,9 +107,9 @@ const exitCode = await waitForExit
 
 `buildLoopWiring(opts: { storage?: StorageKind; harness?: HarnessKind })` accepts the override; falls back to `config.agent.harness`.
 
-### `trowel start`
+### `trowel change start`
 
-`commands/start.ts` swaps the literal `spawn('claude', [...])` call for `getHarness(harnessKind).spawnInteractive(...)`. The `--append-system-prompt` flag is replaced by the harness's equivalent system-prompt injection. The `start.md` prompt is rewritten to remove the one Claude-specific phrasing (line 256 → "the user exits the agent session").
+`commands/change-start.ts` swaps the literal `spawn('claude', [...])` call for `getHarness(harnessKind).spawnInteractive(...)`. The `--append-system-prompt` flag is replaced by the harness's equivalent system-prompt injection. The `start-change.md` prompt is rewritten to remove the one Claude-specific phrasing (line 256 → "the user exits the agent session").
 
 ### `trowel init`
 
@@ -159,11 +159,11 @@ ok  config layers loaded      project@…/.trowel/config.json
 
 ### `--harness <kind>` CLI override
 
-Added to `trowel start` and `trowel work`, parallel to `--storage`. Falls back to `config.agent.harness` when absent. No persistence — single-invocation override only.
+Added to `trowel change start` and `trowel change work`, parallel to `--storage`. Falls back to `config.agent.harness` when absent. No persistence — single-invocation override only.
 
 ### Prompts
 
-The implementer / reviewer / addresser prompts at `src/prompts/{implement,review,address}.md` are already harness-neutral by content (they instruct the agent to write `.trowel/turn-out.json`, no Claude-specific phrasing). Only `start.md:256` and `prompts/README.md:3` need de-claude-ification.
+The implementer / reviewer / addresser prompts at `src/prompts/{implement,review,address}.md` are already harness-neutral by content (they instruct the agent to write `.trowel/turn-out.json`, no Claude-specific phrasing). Only `start-change.md:256` and `prompts/README.md:3` need de-claude-ification.
 
 ### CONTEXT.md
 

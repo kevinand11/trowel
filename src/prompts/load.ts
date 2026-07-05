@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export type Role = 'implement' | 'audit' | 'review'
-export type PromptName = Role | 'start' | 'lane'
+export type PromptName = Role | 'start-change' | 'lane'
 
 const PROMPTS_DIR = path.dirname(fileURLToPath(import.meta.url))
 
@@ -36,8 +36,8 @@ if (import.meta.vitest) {
 			expect(review).not.toMatch(/\{\{.+?\}\}/)
 		})
 
-		test('start prompt loads and contains slice granularity guidance', async () => {
-			const start = await loadPrompt('start')
+		test('start-change prompt loads and contains slice granularity guidance', async () => {
+			const start = await loadPrompt('start-change')
 			expect(start.length).toBeGreaterThan(0)
 			expect(start).toContain('small, reviewable chunk')
 			expect(start).toContain('independently reviewable chunk')

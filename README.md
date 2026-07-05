@@ -17,11 +17,10 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 
 | Command | Purpose |
 | --- | --- |
-| `trowel start [--storage <kind>] [--harness <kind>]` | Understand a user request by grilling, plan repository work, and create a Change when needed. |
+| `trowel change start [--storage <kind>] [--harness <kind>]` | Understand a user request by grilling, plan repository work, and create a Change when needed. |
 | `trowel change list [--storage <kind>]` | List all Changes newest first with computed state. |
 | `trowel change status <change-id> [--storage <kind>]` | Show one Change and its Slice states. |
-| `trowel work [--loop] [--storage <kind>] [--harness <kind>]` | Run project-wide AFK work across Changes; `--loop` keeps polling for newly actionable work. |
-| `trowel change work <change-id> [--loop] [--storage <kind>] [--harness <kind>]` | Run the AFK loop for one Change; `--loop` keeps polling for newly actionable Slice or Close-out PR revision work. |
+| `trowel change work [change-id] [--loop] [--storage <kind>] [--harness <kind>]` | Run project-wide AFK work across Changes, or scope to one Change when a Change id is provided; `--loop` keeps polling for newly actionable work. |
 | `trowel change ship <change-id> [--storage <kind>]` | Ship a finished Change. |
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
 | `trowel lane start <title...> [--harness <kind>]` | Start a foreground human-in-the-loop implementation Lane in a managed local worktree. |
@@ -47,6 +46,6 @@ Key workflow flags:
 - `ship.pr` (default `true`) controls PR-vs-host-merge shipping for Change Close-out, and controls Slice PR integration when a Slice branch differs from the Change branch.
 - `work.audit` (default `false`) controls whether the AFK loop runs Auditing after implementation before integrating a Slice or making its Slice PR ready.
 - `work.perSliceBranches` (default `true`) controls how `prepareImplement` fills a null Slice branch: when true it creates a per-Slice branch from the latest remote Change branch; when false it stores the parent Change branch and serializes work on that shared branch.
-- `work.loopPollSeconds` (default `30`) controls the idle polling interval for `trowel change work <id> --loop` and `trowel work --loop`.
+- `work.loopPollSeconds` (default `30`) controls the idle polling interval for `trowel change work <id> --loop` and project-wide `trowel change work --loop`.
 
-Branch behavior: `trowel start` intentionally switches the main checkout to the newly created Change branch after materialising the Change. Later host-owned local merges do not use the main checkout: `trowel work`, `trowel change work`, and merge-based `trowel change ship` merge through reserved trowel worktrees. Before host-owned local merges, Trowel runs merge conflict preflight; interactive commands ask before proceeding with predicted conflicts, while non-interactive work fails before mutating worktrees or branches. `trowel change ship` and `trowel change abort` also refuse Cleanup when the current branch is one of the local branches Cleanup may delete; switch branches first, then retry.
+Branch behavior: `trowel change start` intentionally switches the main checkout to the newly created Change branch after materialising the Change. Later host-owned local merges do not use the main checkout: `trowel change work` and merge-based `trowel change ship` merge through reserved trowel change worktrees. Before host-owned local merges, Trowel runs merge conflict preflight; interactive commands ask before proceeding with predicted conflicts, while non-interactive work fails before mutating worktrees or branches. `trowel change ship` and `trowel change abort` also refuse Cleanup when the current branch is one of the local branches Cleanup may delete; switch branches first, then retry.

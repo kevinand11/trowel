@@ -35,7 +35,7 @@ const noChangePipe = v.object({
 	reason: v.string(),
 })
 
-const startOutPipe = v.discriminate((x) => x?.outcome, {
+const startChangeOutPipe = v.discriminate((x) => x?.outcome, {
 	['create-change']: createChangePipe,
 	['existing-change']: existingChangePipe,
 	['no-change']: noChangePipe,
@@ -44,10 +44,10 @@ const startOutPipe = v.discriminate((x) => x?.outcome, {
 export type CreateChangeStartOut = PipeOutput<typeof createChangePipe>
 export type ExistingChangeStartOut = PipeOutput<typeof existingChangePipe>
 export type NoChangeStartOut = PipeOutput<typeof noChangePipe>
-export type StartOut = CreateChangeStartOut | ExistingChangeStartOut | NoChangeStartOut
+export type StartChangeOut = CreateChangeStartOut | ExistingChangeStartOut | NoChangeStartOut
 
-export function parseStartOut(raw: string): StartOut {
-	return validateJson<StartOut>(startOutPipe, raw, 'Invalid start-out.json')
+export function parseStartChangeOut(raw: string): StartChangeOut {
+	return validateJson<StartChangeOut>(startChangeOutPipe, raw, 'Invalid start-change-out.json')
 }
 
 function blockedByReferencesError(slices: Slice[]): string | null {
@@ -102,17 +102,17 @@ function visitBlockedBy(
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest
-	const { parseStartOut } = await import('./start-out.ts')
+	const { parseStartChangeOut } = await import('./start-change-out.ts')
 
-	describe('parseStartOut', () => {
+	describe('parseStartChangeOut', () => {
 		test('rejects a payload missing the change field', () => {
 			const raw = JSON.stringify({ slices: [] })
-			expect(() => parseStartOut(raw)).toThrow(/Invalid start-out\.json/)
+			expect(() => parseStartChangeOut(raw)).toThrow(/Invalid start-change-out\.json/)
 		})
 
 		test('rejects a payload missing the slices field', () => {
 			const raw = JSON.stringify({ outcome: 'create-change', change: { title: 'x', body: 'y' } })
-			expect(() => parseStartOut(raw)).toThrow(/Invalid start-out\.json/)
+			expect(() => parseStartChangeOut(raw)).toThrow(/Invalid start-change-out\.json/)
 		})
 
 		test('rejects a blockedBy index ≥ slices.length, naming the offending slice index', () => {
@@ -124,7 +124,7 @@ if (import.meta.vitest) {
 					{ title: 'a', body: 'b', blockedBy: [5], readyForAgent: true },
 				],
 			})
-			expect(() => parseStartOut(raw)).toThrow(/slice 1.*blockedBy.*5/i)
+			expect(() => parseStartChangeOut(raw)).toThrow(/slice 1.*blockedBy.*5/i)
 		})
 
 		test('rejects a negative blockedBy index', () => {
@@ -133,7 +133,7 @@ if (import.meta.vitest) {
 				change: { title: 't', body: 'b' },
 				slices: [{ title: 'a', body: 'b', blockedBy: [-1], readyForAgent: true }],
 			})
-			expect(() => parseStartOut(raw)).toThrow(/slice 0.*blockedBy.*-1/i)
+			expect(() => parseStartChangeOut(raw)).toThrow(/slice 0.*blockedBy.*-1/i)
 		})
 
 		test('rejects a slice that blocks on itself', () => {
@@ -142,7 +142,7 @@ if (import.meta.vitest) {
 				change: { title: 't', body: 'b' },
 				slices: [{ title: 'a', body: 'b', blockedBy: [0], readyForAgent: true }],
 			})
-			expect(() => parseStartOut(raw)).toThrow(/slice 0.*self/i)
+			expect(() => parseStartChangeOut(raw)).toThrow(/slice 0.*self/i)
 		})
 
 		test('rejects a 2-cycle (A blocks B, B blocks A)', () => {
@@ -154,7 +154,7 @@ if (import.meta.vitest) {
 					{ title: 'B', body: 'b', blockedBy: [0], readyForAgent: true },
 				],
 			})
-			expect(() => parseStartOut(raw)).toThrow(/cycle/i)
+			expect(() => parseStartChangeOut(raw)).toThrow(/cycle/i)
 		})
 
 		test('rejects a 3-cycle (A→B→C→A)', () => {
@@ -167,7 +167,7 @@ if (import.meta.vitest) {
 					{ title: 'C', body: 'b', blockedBy: [1], readyForAgent: true },
 				],
 			})
-			expect(() => parseStartOut(raw)).toThrow(/cycle/i)
+			expect(() => parseStartChangeOut(raw)).toThrow(/cycle/i)
 		})
 
 		test('accepts an empty slices array (single-slice Change or "add slices later" cases)', () => {
@@ -176,14 +176,14 @@ if (import.meta.vitest) {
 				change: { title: 'Spec-only Change', body: 'body' },
 				slices: [],
 			})
-			const out = parseStartOut(raw)
+			const out = parseStartChangeOut(raw)
 			expect(out.outcome).toBe('create-change')
 			if (out.outcome !== 'create-change') throw new Error('expected create-change')
 			expect(out.slices).toEqual([])
 		})
 
 		test('rejects non-JSON input with a clear error', () => {
-			expect(() => parseStartOut('this is not json {{{')).toThrow(/start-out\.json/i)
+			expect(() => parseStartChangeOut('this is not json {{{')).toThrow(/start-change-out\.json/i)
 		})
 
 		test('parses a valid 2-slice spec where the second slice blocks on the first', () => {
@@ -196,7 +196,7 @@ if (import.meta.vitest) {
 				],
 			})
 
-			const out = parseStartOut(raw)
+			const out = parseStartChangeOut(raw)
 
 			expect(out.outcome).toBe('create-change')
 			if (out.outcome !== 'create-change') throw new Error('expected create-change')

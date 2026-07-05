@@ -23,26 +23,20 @@ async function runProjectWork(rt: ProjectWorkRuntime, opts: { loop?: boolean } =
 	await rt.runProject({ loop: opts.loop })
 }
 
-export async function work(id: string, opts: { storage?: string; harness?: HarnessKind; loop?: boolean }): Promise<void> {
+export async function changeWork(id: string | undefined, opts: { storage?: string; harness?: HarnessKind; loop?: boolean }): Promise<void> {
 	try {
 		const wiring = await buildLoopWiring(opts)
-		await runWork(id, {
-			storage: wiring.storage,
-			runEntity: wiring.runEntityLoopFor,
-			stdout: (s) => process.stdout.write(s),
-		}, { loop: opts.loop })
-	} catch (e) {
-		process.stderr.write(`trowel change work: ${(e as Error).message}\n`)
-		process.exit(1)
-	}
-}
-
-export async function workProject(opts: { storage?: string; harness?: HarnessKind; loop?: boolean }): Promise<void> {
-	try {
-		const wiring = await buildLoopWiring(opts)
+		if (id) {
+			await runWork(id, {
+				storage: wiring.storage,
+				runEntity: wiring.runEntityLoopFor,
+				stdout: (s) => process.stdout.write(s),
+			}, { loop: opts.loop })
+			return
+		}
 		await runProjectWork({ runProject: wiring.runProjectLoop }, { loop: opts.loop })
 	} catch (e) {
-		process.stderr.write(`trowel work: ${(e as Error).message}\n`)
+		process.stderr.write(`trowel change work: ${(e as Error).message}\n`)
 		process.exit(1)
 	}
 }

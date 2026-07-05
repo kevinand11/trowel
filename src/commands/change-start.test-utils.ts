@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import type { StartRuntime } from './start.ts'
+import type { ChangeStartRuntime } from './change-start.ts'
 import type { ChangeMetadataPatch, CreateChange, CreateSlice, SliceMetadataPatch } from '../storages/types.ts'
 import { noopGitOps } from '../test-utils/git-ops-fixtures.ts'
 import { fakeSliceStorage } from '../test-utils/storage-fixtures.ts'
@@ -25,7 +25,7 @@ export type FakeGitState = {
 }
 
 export type MakeFakesOpts = {
-	startOut: string | null
+	startChangeOut: string | null
 	createChangeResult?: { id: string; title?: string; changeBranch?: string }
 	createSliceIds?: string[]
 	currentBranch?: string
@@ -37,7 +37,7 @@ export type MakeFakesOpts = {
 	updateSliceMetadataThrows?: Error
 }
 
-export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeCalls; gitState: FakeGitState } {
+export function makeFakes(opts: MakeFakesOpts): { rt: ChangeStartRuntime; calls: FakeCalls; gitState: FakeGitState } {
 	const calls: FakeCalls = {
 		createChange: [],
 		createSlice: [],
@@ -120,13 +120,13 @@ export function makeFakes(opts: MakeFakesOpts): { rt: StartRuntime; calls: FakeC
 		},
 	})
 
-	const rt: StartRuntime = {
-		projectRoot: path.join(tmpdir(), 'trowel-start-fake'),
+	const rt: ChangeStartRuntime = {
+		projectRoot: path.join(tmpdir(), 'trowel-change-start-fake'),
 		storage,
 		git,
-		startPromptText: '<prompt>',
+		changeStartPromptText: '<prompt>',
 		runInteractive: async () => {},
-		readStartOut: async () => opts.startOut,
+		readStartChangeOut: async () => opts.startChangeOut,
 		preflight: async () => {
 			if ((opts.preflightFailures ?? []).length > 0)
 				throw new Error(`preflight failed:\n${opts.preflightFailures!.map((f) => `  · ${f}`).join('\n')}`)

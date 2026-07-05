@@ -26,7 +26,7 @@ type LoopWiring = {
 }
 
 export async function buildLoopWiring(opts: { storage?: string; harness?: HarnessKind }): Promise<LoopWiring> {
-	const base = await loadCommandBase('work')
+	const base = await loadCommandBase('change work')
 	const { config, projectRoot, git, gh } = base
 	const harnessKind = opts.harness ?? config.agent.harness
 	const harness = getHarness(harnessKind)

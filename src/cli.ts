@@ -1,15 +1,15 @@
 import { Command } from 'commander'
 
 import { abortChange } from './commands/abort/index.ts'
+import { changeStart } from './commands/change-start.ts'
 import { showConfig } from './commands/config.ts'
 import { doctor } from './commands/doctor.ts'
 import { init } from './commands/init.ts'
 import { laneClose, laneContinue, laneList, laneStart } from './commands/lane/index.ts'
 import { list } from './commands/list/index.ts'
 import { shipChange } from './commands/ship/index.ts'
-import { start } from './commands/start.ts'
 import { statusChange } from './commands/status/index.ts'
-import { work, workProject } from './commands/work/index.ts'
+import { changeWork } from './commands/work/index.ts'
 
 async function initialRequest(requestWords: string[]): Promise<string | undefined> {
 	return chooseInitialRequest(requestWords.join(' ').trim(), await pipedStdin())
@@ -20,7 +20,7 @@ function chooseInitialRequest(positional: string, stdin: string): string | undef
 }
 
 function initialRequestFromPositional(positional: string, stdin: string): string {
-	if (stdin) throw new Error('provide the start request either as arguments or via stdin, not both')
+	if (stdin) throw new Error('provide the change start request either as arguments or via stdin, not both')
 	return positional
 }
 
@@ -36,27 +36,17 @@ export function run(): void {
 
 	program.name('trowel').description('Personal CLI for Change-driven feature work').version('0.0.0')
 
-	program
+	const changeCmd = program.command('change').description('Manage Changes')
+
+	changeCmd
 		.command('start')
 		.description('Understand a user request by grilling, plan repository work, and create a Change when needed')
 		.argument('[request...]', 'Initial request words')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.action(async (requestWords: string[], opts: { storage?: string; harness?: string }) => {
-			await start({ ...opts, request: await initialRequest(requestWords) })
+			await changeStart({ ...opts, request: await initialRequest(requestWords) })
 		})
-
-	program
-		.command('work')
-		.description('Run project-wide AFK work across Changes')
-		.option('--storage <kind>', 'Override project storage')
-		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
-		.option('--loop', 'Keep polling for newly actionable work')
-		.action(async (opts) => {
-			await workProject(opts)
-		})
-
-	const changeCmd = program.command('change').description('Manage Changes')
 
 	changeCmd
 		.command('list')
@@ -77,13 +67,13 @@ export function run(): void {
 
 	changeCmd
 		.command('work')
-		.description("Run the AFK loop on one Change's actionable work")
-		.argument('<change-id>')
+		.description('Run AFK work across Changes, or on one Change when a Change id is provided')
+		.argument('[change-id]')
 		.option('--storage <kind>', 'Override project storage')
 		.option('--harness <kind>', 'Override project agent harness (claude | codex | pi)')
 		.option('--loop', 'Keep polling for newly actionable work')
-		.action(async (changeId: string, opts) => {
-			await work(changeId, opts)
+		.action(async (changeId: string | undefined, opts) => {
+			await changeWork(changeId, opts)
 		})
 
 	changeCmd

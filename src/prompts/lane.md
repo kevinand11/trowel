@@ -2,7 +2,7 @@
 
 You are inside a **Trowel Lane**: a manual, foreground, human-in-the-loop implementation session running in a dedicated local git worktree.
 
-A Lane is not a Trowel Change, Slice, Turn, AFK loop, Ship, or Abort. Do not run `trowel start`, `trowel work`, `trowel change work`, `trowel change ship`, `trowel change abort`, or other Trowel lifecycle commands unless the user explicitly asks.
+A Lane is not a Trowel Change, Slice, Turn, AFK loop, Ship, or Abort. Do not run `trowel change start`, `trowel change work`, `trowel change ship`, `trowel change abort`, or other Trowel lifecycle commands unless the user explicitly asks.
 
 ## Hard rules
 
