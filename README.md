@@ -25,7 +25,7 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 | `trowel change abort <change-id> [--storage <kind>]` | Abort a Change without shipping it. |
 | `trowel lane start <title...> [--harness <kind>]` | Start a foreground human-in-the-loop implementation Lane in a managed local worktree. |
 | `trowel lane continue <lane-id> [--harness <kind>]` | Open another interactive harness session in an existing Lane worktree. |
-| `trowel lane close <lane-id>` | Confirm, merge the Lane branch into its captured Target branch, remove the Lane worktree, and apply `ship.deleteBranch`. |
+| `trowel lane close <lane-id>` | Confirm, squash the Lane branch into its captured Target branch via the git commit editor, remove the Lane worktree, and apply `ship.deleteBranch`. |
 | `trowel lane list` | List all Lanes newest first with computed state. |
 | `trowel doctor` | Check local tool/config health. |
 | `trowel config` | Print resolved config. |
@@ -33,7 +33,7 @@ Personal CLI for orchestrating Change-driven repository work — start, slice, a
 
 `--storage` is offered by commands that read or write Change/Slice state. `--harness` is offered by commands that spawn an agent Turn or interactive Lane session. Run `trowel config` for the effective config plus a generated config reference; `trowel init` also writes `.trowel/schema.json` for editor completion.
 
-Lanes are local interactive workspaces, not Changes or Slices. They are useful when you want multiple terminal tabs running separate foreground agent sessions in isolated worktrees without invoking the full Trowel delivery lifecycle.
+Lanes are local interactive workspaces, not Changes or Slices. They are useful when you want multiple terminal tabs running separate foreground agent sessions in isolated worktrees without invoking the full Trowel delivery lifecycle. Lane agents grill the concept first, then batch material implementation-detail decisions for confirmation before chunk planning. Lane implementation proceeds in small reviewable chunks; after each chunk is reviewed and accepted, the agent commits that chunk locally and continues. `trowel lane close` refuses predicted merge conflicts, then squash-closes those per-chunk commits into one Target-branch commit using your normal git commit editor with an editable template.
 
 ## States and workflow flags
 

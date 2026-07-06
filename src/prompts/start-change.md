@@ -110,17 +110,53 @@ Optional sections (include only when they genuinely add value):
 
 ---
 
-## Step 5 — Phase 1: grill until done
+## Step 5 — Phase 1: concept grill until clearly accepted
 
-Run the grill until the user signals "grill done" (or equivalent). Vocabulary, scope, design questions are all on the table. Edit `CONTEXT.md` / `CONTEXT-MAP.md` / `docs/adr/*` files as terms and decisions crystallize.
+Run the concept grill until the user clearly accepts the overall concept (for example, "Concept locked", "yes, that's the concept", or an equivalent clear signal). Vocabulary, scope, user-facing behavior, domain boundaries, and design questions are all on the table. Edit `CONTEXT.md` / `CONTEXT-MAP.md` / `docs/adr/*` files as terms and decisions crystallize.
 
-**Do not draft the Change or slices yet.** Phase 1 is about reaching shared understanding.
+**Do not draft the Change, slices, or implementation-detail decision table yet.** Phase 1 is about reaching shared understanding of the concept.
 
 ---
 
-## Step 6 — Phase 2a: draft the Change body
+## Step 6 — Phase 2: implementation-detail decision table
 
-When the grill is locked, draft the Change body in **markdown** using this template:
+After the concept is clearly accepted, continue grilling for implementation details, but **batch these questions** instead of asking them one at a time.
+
+Before drafting the table, inspect the codebase for implementation facts. If a detail can be answered from code, answer it yourself and do not ask the user. Include only material implementation choices that are not answerable from code and that affect how the work should be built.
+
+Good implementation-detail rows include material choices about:
+
+- Architecture or module boundaries.
+- Data model, schema, or persistence behavior.
+- API/CLI contracts and compatibility/migration behavior.
+- Error handling and edge cases that materially affect implementation.
+- Testing strategy when there is a real choice.
+- Chunking risks that affect how the work should be sliced.
+
+Present the implementation-detail decision table in chat:
+
+```md
+| # | Area | Decision / question | Recommended answer | Confidence | Rationale | Record in |
+|---|------|---------------------|--------------------|------------|-----------|-----------|
+| 1 | API  | Should old inputs be accepted? | No legacy alias. | High | The concept lock removed aliases. | Change body: Implementation Decisions |
+```
+
+Rules for the table:
+
+- Provide a recommended answer for every row, inferred from the concept grill and code inspection.
+- Mark low-confidence recommendations explicitly and explain why confirmation matters.
+- The user may say "accept all" or override specific rows.
+- If the user rejects or overrides rows, revise the table and ask for an implementation-details lock again.
+- If there are no material implementation choices, still show a brief zero-decision confirmation: "I found no material implementation decisions needing confirmation beyond the accepted concept..." and ask the user to lock implementation details.
+- If the implementation-detail table reveals a new conceptual ambiguity, stop this phase, return to one-question-at-a-time concept grilling, get clear concept acceptance again, then regenerate the implementation-detail decision table.
+
+When implementation details are locked, distill the accepted decisions into the existing Change body, Slice bodies, and acceptance criteria. **Do not add new JSON fields. Do not copy the table verbatim unless it is the clearest artifact.** The chat table may cite specific files or code evidence, but persisted Change/Slice bodies should avoid fragile file paths and code snippets.
+
+---
+
+## Step 7 — Phase 3a: draft the Change body
+
+When the concept and implementation details are both locked, draft the Change body in **markdown** using this template:
 
 ```md
 ## Problem Statement
@@ -141,7 +177,7 @@ Cover all aspects of the feature.
 
 ## Implementation Decisions
 
-A list of implementation decisions:
+A list of accepted implementation decisions, distilled from the implementation-detail decision table:
 
 - Modules built or modified, with their interfaces
 - Schema changes
@@ -172,7 +208,7 @@ Iterate until the user locks it. **Do not write the JSON file yet.**
 
 ---
 
-## Step 7 — Phase 2b: draft the slices
+## Step 8 — Phase 3b: draft the slices
 
 When the Change body is locked, break it into **vertical slices**.
 
@@ -188,7 +224,7 @@ When the Change body is locked, break it into **vertical slices**.
 
 Present the proposed slices as a **markdown table** for the user to review:
 
-```
+```md
 | # | Title              | Type | Blocked by | Summary                                  |
 |---|--------------------|------|------------|------------------------------------------|
 | 0 | Rename Foo type    | AFK  | —          | Rename Foo to Bar in src/types.ts        |
@@ -196,7 +232,7 @@ Present the proposed slices as a **markdown table** for the user to review:
 | 2 | Release notes      | HITL | 1          | Draft user-facing changelog entry        |
 ```
 
-Ask the user:
+Keep slice-breakdown review separate from the implementation-detail decision table. Ask the user:
 
 - Does each slice feel like a small, independently reviewable chunk?
 - Does the granularity feel right (too coarse / too fine)?
@@ -208,7 +244,7 @@ Iterate until the user locks the breakdown.
 
 ---
 
-## Step 8 — Slice body template
+## Step 9 — Slice body template
 
 For each slice, the body is markdown with these two sections:
 
@@ -228,7 +264,7 @@ Do NOT include a `Blocked by` section in the slice body — the data lives only 
 
 ---
 
-## Step 9 — Write `.trowel/start-change-out.json` and signal exit
+## Step 10 — Write `.trowel/start-change-out.json` and signal exit
 
 Once the Change body and slice list are both locked, serialize the result as JSON matching this exact schema:
 
@@ -246,9 +282,9 @@ Once the Change body and slice list are both locked, serialize the result as JSO
 ```
 
 - `change.title` is the Change's short name (one line).
-- `change.body` is the full markdown body from Step 6.
+- `change.body` is the full markdown body from Step 7.
 - `slices[*].title` is the slice's short name (one line).
-- `slices[*].body` is the full markdown body from Step 8.
+- `slices[*].body` is the full markdown body from Step 9.
 - `slices[*].blockedBy` contains the 0-based indexes of other slices in the same array that block this one. Empty array means no blockers.
 - `slices[*].readyForAgent` is `true` for AFK slices, `false` for HITL.
 

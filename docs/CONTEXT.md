@@ -127,7 +127,7 @@ The bounded execution of one agent role against one Slice or one Change-level PR
 _Avoid_: Sandbox, session, run, container.
 
 **Lane**:
-A local, human-in-the-loop implementation workspace backed by a Trowel-managed git worktree and a generated Lane branch, used for foreground interactive agent sessions outside the Change/Slice lifecycle.
+A local, human-in-the-loop implementation workspace backed by a Trowel-managed git worktree and a generated Lane branch, used for foreground interactive agent sessions outside the Change/Slice lifecycle; work is implemented in reviewed per-chunk commits that Lane close later squashes into the Target branch.
 _Avoid_: Turn, Slice, Change, AFK work, session
 
 **Lane id**:
@@ -143,7 +143,7 @@ The stored branch a **Slice**'s Turns run on, nullable until `prepareImplement` 
 _Avoid_: Feature branch, task branch, computed branch.
 
 **Lane branch**:
-The generated local branch for a Lane, named `lane-<laneId>-<slug>`, created from the captured Target branch, stored as Lane metadata, and merged back into that Target branch by `trowel lane close`.
+The generated local branch for a Lane, named `lane-<laneId>-<slug>`, created from the captured Target branch, stored as Lane metadata, and squash-closed back into that Target branch by `trowel lane close`.
 _Avoid_: Change branch, Slice branch
 
 **Slice PR**:
@@ -159,7 +159,7 @@ A pull request that GitHub currently permits Trowel to offer for merging: open, 
 _Avoid_: Available PR, maybe-mergeable PR.
 
 **Merge conflict preflight**:
-A pre-merge safety check that determines whether a host-owned local merge is expected to conflict before Trowel attempts the merge. It can block automation or ask a human whether to continue.
+A pre-merge safety check that determines whether a host-owned local merge is expected to conflict before Trowel attempts the merge. It can block automation, block Lane close, or ask a human whether to continue on interactive Change/Ship merge paths.
 _Avoid_: Possible conflict check, merge preview.
 
 **Worktree**:
@@ -173,7 +173,7 @@ _Avoid_: Turn Worktree, sandbox
 ## Relationships
 
 - A **Change** has one stored **Change branch** and one or more **Slices** across all storages; because the Change id is allocated by storage creation, orchestration creates and pushes the Change branch before writing branch metadata through an explicit metadata update; new Change branch names use `change-${changeId}-${changeSlug}`.
-- A **Lane** has one **Lane id**, one generated **Lane branch**, one captured **Target branch**, and one **Lane worktree**; closed Lane metadata remains under `.trowel/lanes/` so Lane ids are never reused.
+- A **Lane** has one **Lane id**, one generated **Lane branch**, one captured **Target branch**, and one **Lane worktree**; closed Lane metadata remains under `.trowel/lanes/` so Lane ids are never reused. Lane work is committed as reviewed per-chunk commits on the Lane branch; `trowel lane close` squash-closes the net Lane diff into the Target branch, opens the normal git commit editor with an editable template, and then applies the existing local branch deletion policy.
 - A **Change** has exactly one stored **Target branch** and one stored **Change branch**.
 - For issue storage, branch metadata is stored in one existing hidden issue-body comment per issue as a JSON object with entity-specific keys (`targetBranch`, `changeBranch`, `sliceBranch`); after the branch-metadata change lands, storage reads require this metadata and do not fall back to Development-linked PR history or naming conventions.
 - For file storage, entity paths are deterministic from ids: Changes live at `<changesDir>/<changeId>/` and Slices live at `<changesDir>/<changeId>/slices/<sliceId>/`. `store.json` is canonical for entity metadata and must contain the matching numeric `id`; `slug` is not stored or used in file-storage paths. Direct id lookup uses the deterministic path, while list/allocation operations enumerate existing deterministic paths and read their stores.
@@ -198,7 +198,7 @@ _Avoid_: Turn Worktree, sandbox
 - A Change's terminal raw storage field is also `closedAt: string | null`, not `state: OPEN | CLOSED`; file storage writes it when trowel observes ship completion or abort, while GitHub storage reads the issue's close timestamp.
 - File-storage lifecycle schema changes do not need backward compatibility with old local Change/Slice JSON.
 - A Slice **Turn** runs in one **Worktree** checked out to the Slice's stored **Slice branch**; under `work.perSliceBranches: false`, that stored Slice branch is the parent **Change branch**. A Change-level Reviewer Turn for Close-out PR feedback runs on the **Change branch** and participates in the same branch-safety rules as Slice Turns.
-- A **Lane** runs foreground interactive agent sessions in its **Lane worktree** and never writes `.trowel/turn-in.json` or `.trowel/turn-out.json`.
+- A **Lane** runs foreground interactive agent sessions in its **Lane worktree** and never writes `.trowel/turn-in.json` or `.trowel/turn-out.json`. Lane agents grill the concept one question at a time until accepted, then batch material implementation-detail decisions in a review table before planning small chunks. Each chunk is implemented, verified, reviewed, accepted, and committed before the next chunk starts.
 - Merge-based **Ship** performs the Target-branch merge inside a trowel-managed **Worktree**, not the user's main working tree.
 - Host-owned local merges run inside trowel-managed **Worktrees**, not the user's main working tree.
 - After a host-owned local merge command completes, the user's main working tree remains on its starting branch.
@@ -249,7 +249,7 @@ _Avoid_: Turn Worktree, sandbox
 - Config/input validation uses `valleyed`.
 - CLI parsing uses `commander`; command modules live in `src/commands/`.
 - Docs/ADR edits land on the Change branch, not `main`, unless explicitly doing repo-maintenance work.
-- `trowel change start` is the command that understands a user request by grilling, plans repository work, and creates a Change when needed. It accepts optional variadic positional initial-request words (`trowel change start fix flaky auth test` joins them with spaces). If no positional request is provided and non-empty stdin is piped, `change start` uses stdin as the initial request. Providing both positional request words and non-empty piped stdin is an error. Otherwise the Grill asks what the user wants. The initial request and dirty-tree context are passed to the change-start agent in memory; `.trowel/start-change-out.json` stores only the final Grill outcome. It may investigate the codebase when needed to satisfy the user's request, point to an existing Change, or exit with no Change when no repository work is needed. The change-start agent decides whether investigation is necessary. Its grill output is a discriminated union: create Change, existing Change, or no Change. If an existing Change appears to cover the request, `change start` reports it but does not update it; the host verifies the referenced Change exists. Existing-Change detection may consider open and closed Changes, but `change start` only prints `trowel change work <id>` next-step guidance after creating a new Change. For an existing Change, it reports the verified Change and suggests `trowel change status <id>` for inspection. `trowel change work <id>` executes Changes. Manual abort uses `trowel change abort`.
+- `trowel change start` is the command that understands a user request by grilling, plans repository work, and creates a Change when needed. It accepts optional variadic positional initial-request words (`trowel change start fix flaky auth test` joins them with spaces). If no positional request is provided and non-empty stdin is piped, `change start` uses stdin as the initial request. Providing both positional request words and non-empty piped stdin is an error. Otherwise the Grill asks what the user wants. The initial request and dirty-tree context are passed to the change-start agent in memory; `.trowel/start-change-out.json` stores only the final Grill outcome. It may investigate the codebase when needed to satisfy the user's request, point to an existing Change, or exit with no Change when no repository work is needed. The change-start agent decides whether investigation is necessary. Its grill output is a discriminated union: create Change, existing Change, or no Change. The change-start grill resolves the user-facing concept one question at a time until the user clearly accepts it, then batches material implementation-detail decisions that are not answerable from code into a recommended decision table; accepted decisions are distilled into the existing Change and Slice markdown bodies, not stored as new JSON fields. If an existing Change appears to cover the request, `change start` reports it but does not update it; the host verifies the referenced Change exists. Existing-Change detection may consider open and closed Changes, but `change start` only prints `trowel change work <id>` next-step guidance after creating a new Change. For an existing Change, it reports the verified Change and suggests `trowel change status <id>` for inspection. `trowel change work <id>` executes Changes. Manual abort uses `trowel change abort`.
 - Fresh `trowel change start` checks the working tree before launching the grill/investigation. If dirty, it warns: “Working tree is dirty. Commit/stash first for a clean change start, or continue and let the change-start grill account for your current changes. Continue with dirty tree? [y/N]”. If the user declines, it exits without deleting resume state or creating a Change. If the user continues, the change-start agent receives a dirty-tree note plus `git status --short` so it can treat uncommitted changes as relevant context; normal agent permissions apply, including modifying already-dirty files. Resuming from `.trowel/start-change-out.json` skips that preflight. After the host successfully handles any change-start outcome, it deletes `.trowel/start-change-out.json`.
 - Tabs, single quotes, kebab-case filenames, `@k11/configs`.
 - No eager exports.

@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process'
+
 import { exec, parseSemver, tryExec } from './shell.ts'
 
 type VersionInfo = { installed: boolean; version?: string }
@@ -21,6 +23,8 @@ export type GitOps = {
 	mergeNoFf(branch: string, opts?: { noVerify?: boolean }): Promise<void>
 	mergeAbort(): Promise<void>
 	mergeNoFfIn(worktreePath: string, branch: string, opts?: { noVerify?: boolean }): Promise<void>
+	mergeSquashIn(worktreePath: string, branch: string): Promise<void>
+	commitWithTemplateIn(worktreePath: string, templatePath: string, opts?: { noVerify?: boolean }): Promise<void>
 	mergeAbortIn(worktreePath: string): Promise<void>
 	mergeConflictPreflight(destinationRef: string, sourceRef: string, cwd?: string): Promise<MergeConflictPreflight>
 	deleteRemoteBranch(branch: string): Promise<void>
@@ -38,6 +42,7 @@ export type GitOps = {
 	isMerged(branch: string, baseBranch: string): Promise<boolean>
 	commitsAhead(branch: string, baseBranch: string): Promise<number>
 	commitDate(ref: string, worktreePath?: string): Promise<string>
+	nonMergeCommitSubjects(fromExclusive: string, toInclusive: string, worktreePath?: string): Promise<string[]>
 	listLocalBranches(): Promise<string[]>
 	deleteBranch(branch: string): Promise<void>
 	resolveRef(ref: string, worktreePath?: string): Promise<string>
@@ -88,6 +93,8 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		mergeNoFf: forbiddenGitMutation('mergeNoFf'),
 		mergeAbort: forbiddenGitMutation('mergeAbort'),
 		mergeNoFfIn: forbiddenGitMutation('mergeNoFfIn'),
+		mergeSquashIn: forbiddenGitMutation('mergeSquashIn'),
+		commitWithTemplateIn: forbiddenGitMutation('commitWithTemplateIn'),
 		mergeAbortIn: forbiddenGitMutation('mergeAbortIn'),
 		mergeConflictPreflight: git.mergeConflictPreflight,
 		deleteRemoteBranch: forbiddenGitMutation('deleteRemoteBranch'),
@@ -103,6 +110,7 @@ export function branchStableGitOps(git: GitOps): GitOps {
 		isMerged: git.isMerged,
 		commitsAhead: git.commitsAhead,
 		commitDate: git.commitDate,
+		nonMergeCommitSubjects: git.nonMergeCommitSubjects,
 		listLocalBranches: git.listLocalBranches,
 		deleteBranch: forbiddenGitMutation('deleteBranch'),
 		resolveRef: git.resolveRef,
@@ -168,6 +176,16 @@ export function createRepoGit(projectRoot: string): GitOps {
 		if (!r.ok) throw r.error
 		return r.stdout
 	}
+	const gitInteractiveOrThrow = async (args: string[], cwd = projectRoot): Promise<void> => {
+		await new Promise<void>((resolve, reject) => {
+			const child = spawn('git', ['-C', cwd, ...args], { stdio: 'inherit' })
+			child.on('error', reject)
+			child.on('close', (code, signal) => {
+				if (code === 0) resolve()
+				else reject(new Error(signal ? `git ${args.join(' ')} terminated by ${signal}` : `git ${args.join(' ')} exited with code ${String(code)}`))
+			})
+		})
+	}
 
 	return {
 		detectVersion: async () => {
@@ -203,6 +221,14 @@ export function createRepoGit(projectRoot: string): GitOps {
 			if (opts?.noVerify) args.push('--no-verify')
 			args.push(b)
 			await gitOrThrow(args, worktreePath)
+		},
+		mergeSquashIn: async (worktreePath, b) => {
+			await gitOrThrow(['merge', '--squash', '-q', b], worktreePath)
+		},
+		commitWithTemplateIn: async (worktreePath, templatePath, opts) => {
+			const args = ['commit', '--file', templatePath, '--edit']
+			if (opts?.noVerify) args.push('--no-verify')
+			await gitInteractiveOrThrow(args, worktreePath)
 		},
 		mergeAbortIn: async (worktreePath) => {
 			await gitOrThrow(['merge', '--abort'], worktreePath)
@@ -266,6 +292,10 @@ export function createRepoGit(projectRoot: string): GitOps {
 			return Number.isFinite(n) ? n : 0
 		},
 		commitDate: async (ref, worktreePath) => (await gitOrThrow(['log', '-1', '--format=%cI', ref], worktreePath)).trim(),
+		nonMergeCommitSubjects: async (fromExclusive, toInclusive, worktreePath) => {
+			const stdout = await gitOrThrow(['log', '--no-merges', '--format=%s', `${fromExclusive}..${toInclusive}`], worktreePath)
+			return stdout.split('\n').map((line) => line.trim()).filter(Boolean)
+		},
 		listLocalBranches: async () => {
 			const r = await tryExec('git', ['-C', projectRoot, 'branch', '--format=%(refname:short)'])
 			if (!r.ok) return []
@@ -410,14 +440,21 @@ if (import.meta.vitest) {
 					calls.push(`remoteBranchExists(${branch})`)
 					return true
 				},
+				nonMergeCommitSubjects: async (from, to) => {
+					calls.push(`nonMergeCommitSubjects(${from},${to})`)
+					return ['chunk one']
+				},
 			}))
 
 			await git.fetch('change-1')
 			expect(await git.remoteBranchExists('change-1')).toBe(true)
+			expect(await git.nonMergeCommitSubjects('main', 'lane-1')).toEqual(['chunk one'])
 			await expect(git.checkout('change-1')).rejects.toThrow(/git\.checkout is not allowed/)
 			await expect(git.createLocalBranch('change-1', 'main')).rejects.toThrow(/git\.createLocalBranch is not allowed/)
 			await expect(git.deleteBranch('change-1')).rejects.toThrow(/git\.deleteBranch is not allowed/)
-			expect(calls).toEqual(['fetch(change-1)', 'remoteBranchExists(change-1)'])
+			await expect(git.mergeSquashIn('/tmp/wt', 'lane-1')).rejects.toThrow(/git\.mergeSquashIn is not allowed/)
+			await expect(git.commitWithTemplateIn('/tmp/wt', '/tmp/template')).rejects.toThrow(/git\.commitWithTemplateIn is not allowed/)
+			expect(calls).toEqual(['fetch(change-1)', 'remoteBranchExists(change-1)', 'nonMergeCommitSubjects(main,lane-1)'])
 		})
 	})
 
@@ -477,6 +514,23 @@ if (import.meta.vitest) {
 			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'advance feature'])
 			expect(await git.isAncestor('main', 'feature')).toBe(true)
 			expect(await git.isAncestor('feature', 'main')).toBe(false)
+		})
+
+		test('nonMergeCommitSubjects lists branch commit subjects without merge commits', async () => {
+			await exec('git', ['-C', repo, 'checkout', '-q', '-b', 'lane-1'])
+			await writeFile(path.join(repo, 'lane.txt'), 'one\n')
+			await exec('git', ['-C', repo, 'add', 'lane.txt'])
+			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'lane chunk one'])
+			await exec('git', ['-C', repo, 'checkout', '-q', 'main'])
+			await writeFile(path.join(repo, 'main.txt'), 'main\n')
+			await exec('git', ['-C', repo, 'add', 'main.txt'])
+			await exec('git', ['-C', repo, 'commit', '-q', '-m', 'main update'])
+			await exec('git', ['-C', repo, 'checkout', '-q', 'lane-1'])
+			await exec('git', ['-C', repo, 'merge', '--no-ff', '-q', 'main', '-m', 'merge main into lane'])
+			await writeFile(path.join(repo, 'lane.txt'), 'one\ntwo\n')
+			await exec('git', ['-C', repo, 'commit', '-q', '-am', 'lane chunk two'])
+
+			expect(await git.nonMergeCommitSubjects('main', 'lane-1')).toEqual(['lane chunk two', 'lane chunk one'])
 		})
 
 		test('mergeConflictPreflight reports clean branch merges without mutating the worktree', async () => {

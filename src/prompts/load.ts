@@ -36,12 +36,15 @@ if (import.meta.vitest) {
 			expect(review).not.toMatch(/\{\{.+?\}\}/)
 		})
 
-		test('start-change prompt loads and contains slice granularity guidance', async () => {
+		test('start-change prompt loads and contains slice granularity and implementation-detail guidance', async () => {
 			const start = await loadPrompt('start-change')
 			expect(start.length).toBeGreaterThan(0)
 			expect(start).toContain('small, reviewable chunk')
 			expect(start).toContain('independently reviewable chunk')
 			expect(start).toContain('split broad or mixed-purpose slices')
+			expect(start).toContain('implementation-detail decision table')
+			expect(start).toContain('clear signal')
+			expect(start).toContain('zero-decision confirmation')
 		})
 
 		test('lane prompt loads and contains the confirmation gates', async () => {
@@ -51,15 +54,16 @@ if (import.meta.vitest) {
 			expect(lane).toContain('human in the loop')
 			expect(lane).toContain('Never commit automatically')
 			expect(lane).toContain('small, reviewable chunks')
-			expect(lane).toContain('one reviewable chunk at a time')
-			expect(lane).toContain('Do not continue implementing later chunks until the user approves')
-			expect(lane).toContain('propose a commit message')
-			expect(lane).toContain('Default to no')
+			expect(lane).toContain('implementation-detail decision table')
+			expect(lane).toContain('resume from that state instead of restarting the concept grill')
+			expect(lane).toContain('If the user accepts the chunk, that acceptance includes approval to commit')
+			expect(lane).toContain('continue to the next chunk')
 			expect(lane).toContain('will refuse while the Lane worktree is dirty')
 			expect(lane).toContain('merge-compatible with its captured Target branch')
 			expect(lane).toContain('git merge-tree --write-tree --messages --name-only <targetBranch> HEAD')
 			expect(lane).toContain('do not suggest closing yet')
 			expect(lane).toContain('git merge --no-ff --no-commit <targetBranch>')
+			expect(lane).toContain("squash the Lane's per-chunk commits")
 		})
 
 		test('throws with a useful message when the template is missing', async () => {

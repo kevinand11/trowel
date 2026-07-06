@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import type { Config } from '../../config'
@@ -21,7 +21,7 @@ import {
 	type Lane,
 	type LaneState,
 } from '../../work/lanes.ts'
-import { formatMergeConflictDetails, formatMergeConflictPreflightError, runMergeConflictPreflight, type MergeConflictSummary } from '../../work/merge-conflict-preflight.ts'
+import { formatMergeConflictPreflightError, runMergeConflictPreflight, type MergeConflictSummary } from '../../work/merge-conflict-preflight.ts'
 import { copyWorktreeEntries } from '../../work/worktrees.ts'
 import { exitOnCommandError, loadCommandBase } from '../runtime.ts'
 
@@ -191,9 +191,9 @@ async function runLaneClose(id: string, rt: LaneRuntime): Promise<void> {
 async function closeLane(id: string, rt: LaneRuntime): Promise<void> {
 	const lane = await requireClosableLane(id, rt)
 	const closePlan = await planLaneClose(lane, rt)
-	await requireMergeConfirmation(lane, closePlan.conflict, rt)
-	if (closePlan.mergePlan) await mergeLaneIntoTarget(lane, closePlan.mergePlan, rt)
-	await finishLaneClose(lane, rt)
+	await requireLaneCloseConfirmation(lane, closePlan, rt)
+	const integration = closePlan.mergePlan ? await squashLaneIntoTarget(lane, closePlan, rt) : 'already-integrated'
+	await finishLaneClose(lane, integration, rt)
 }
 
 async function requireClosableLane(id: string, rt: LaneRuntime): Promise<Lane> {
@@ -205,22 +205,32 @@ async function requireClosableLane(id: string, rt: LaneRuntime): Promise<Lane> {
 	return lane
 }
 
-type LaneClosePlan = { mergePlan: LaneMergePlan | null; conflict: MergeConflictSummary | null }
+type LaneClosePlan = { mergePlan: LaneMergePlan | null; commitSubjects: string[] }
+type LaneCloseIntegration = 'already-integrated' | 'squashed' | 'no-net-diff'
 
 async function planLaneClose(lane: Lane, rt: LaneRuntime): Promise<LaneClosePlan> {
 	const alreadyMerged = await rt.repoGit.isAncestor(lane.branch, lane.targetBranch)
 	await assertLaneWorktreeCleanOrAlreadyMerged(lane, alreadyMerged, rt)
-	const mergePlan = alreadyMerged ? null : await planLaneMerge(lane, rt)
-	return { mergePlan, conflict: mergePlan ? await preflightLaneMerge(lane, mergePlan, rt) : null }
+	if (alreadyMerged) return { mergePlan: null, commitSubjects: [] }
+	const mergePlan = await planLaneMerge(lane, rt)
+	const conflict = await preflightLaneMerge(lane, mergePlan, rt)
+	if (conflict) throw new Error(formatMergeConflictPreflightError(conflict))
+	return { mergePlan, commitSubjects: await rt.repoGit.nonMergeCommitSubjects(lane.targetBranch, lane.branch) }
 }
 
-async function finishLaneClose(lane: Lane, rt: LaneRuntime): Promise<void> {
+async function finishLaneClose(lane: Lane, integration: LaneCloseIntegration, rt: LaneRuntime): Promise<void> {
 	await removeLaneWorktree(lane, rt)
 	await maybeDeleteLaneBranch(lane, rt.config.ship.deleteBranch, rt)
 	const closed = await markLaneClosed(rt.projectRoot, lane.id, rt.now().toISOString())
 	rt.stdout(`Closed Lane ${closed.id}\n`)
-	rt.stdout(`Merged ${closed.branch} into ${closed.targetBranch}.\n`)
+	rt.stdout(formatLaneCloseIntegration(closed, integration))
 	rt.stdout(`Worktree: ${closed.worktreePath}\n`)
+}
+
+function formatLaneCloseIntegration(lane: Lane, integration: LaneCloseIntegration): string {
+	if (integration === 'squashed') return `Squashed ${lane.branch} into ${lane.targetBranch}.\n`
+	if (integration === 'no-net-diff') return `No net diff from ${lane.branch} into ${lane.targetBranch}; no commit created.\n`
+	return `Lane branch ${lane.branch} was already integrated into ${lane.targetBranch}.\n`
 }
 
 async function requireExistingLane(projectRoot: string, id: string): Promise<Lane> {
@@ -235,26 +245,29 @@ async function requireLocalBranch(branch: string, git: GitOps, message: string):
 
 async function requireRegisteredWorktree(lane: Lane, git: GitOps): Promise<void> {
 	const registered = (await git.worktreeList()).find((w) => pathsEqual(w.path, lane.worktreePath))
-	if (!registered) throw new Error(`Lane ${lane.id} worktree is missing. If the branch was already merged, run: trowel lane close ${lane.id}`)
+	if (!registered) throw new Error(`Lane ${lane.id} worktree is missing. If the branch was already integrated, run: trowel lane close ${lane.id}`)
 	if (registered.branch !== lane.branch) throw new Error(`Lane ${lane.id} worktree is registered for branch '${registered.branch ?? '(detached)'}', expected '${lane.branch}'`)
 }
 
-async function requireMergeConfirmation(lane: Lane, conflict: MergeConflictSummary | null, rt: LaneRuntime): Promise<void> {
-	if (!rt.interactive) throw nonInteractiveLaneCloseError(conflict)
-	if (await rt.confirm(laneMergeConfirmationMessage(lane, conflict))) return
+async function requireLaneCloseConfirmation(lane: Lane, plan: LaneClosePlan, rt: LaneRuntime): Promise<void> {
+	if (!rt.interactive) throw new Error('lane close requires an interactive terminal for squash confirmation and commit editor')
+	if (await rt.confirm(laneCloseConfirmationMessage(lane, plan))) return
 	throw new Error('lane close cancelled')
 }
 
-function nonInteractiveLaneCloseError(conflict: MergeConflictSummary | null): Error {
-	return conflict ? new Error(formatMergeConflictPreflightError(conflict)) : new Error('lane close requires an interactive terminal for merge confirmation')
+function laneCloseConfirmationMessage(lane: Lane, plan: LaneClosePlan): string {
+	return [
+		`Squash close Lane ${lane.id} "${lane.title}" into ${lane.targetBranch}? [y/N]`,
+		`Target: ${lane.targetBranch}`,
+		`Lane branch: ${lane.branch}`,
+		'Commits to squash:',
+		...formatCommitSubjects(plan.commitSubjects),
+		'This will open your git commit editor with an editable squash commit template.',
+	].join('\n')
 }
 
-function laneMergeConfirmationMessage(lane: Lane, conflict: MergeConflictSummary | null): string {
-	return conflict ? laneConflictConfirmationMessage(lane, conflict) : `Merge Lane ${lane.id} "${lane.title}" into ${lane.targetBranch}? [y/N]`
-}
-
-function laneConflictConfirmationMessage(lane: Lane, conflict: MergeConflictSummary): string {
-	return `Merge conflict preflight predicted conflicts for Lane ${lane.id} "${lane.title}".\n${formatMergeConflictDetails(conflict)}\n\nMerge anyway? [y/N]`
+function formatCommitSubjects(subjects: string[]): string[] {
+	return subjects.length > 0 ? subjects.map((subject) => `  - ${subject}`) : ['  (no non-merge Lane commits found)']
 }
 
 async function assertLaneWorktreeCleanOrAlreadyMerged(lane: Lane, alreadyMerged: boolean, rt: LaneRuntime): Promise<void> {
@@ -291,37 +304,79 @@ async function preflightLaneMerge(lane: Lane, mergePlan: LaneMergePlan, rt: Lane
 	})
 }
 
-async function mergeLaneIntoTarget(lane: Lane, mergePlan: LaneMergePlan, rt: LaneRuntime): Promise<void> {
-	if (mergePlan.kind === 'target-worktree') {
-		await mergeInTargetWorktree(lane, mergePlan.path, rt)
-		return
-	}
-	await mergeInDetachedWorktree(lane, mergePlan.path, rt)
+async function squashLaneIntoTarget(lane: Lane, closePlan: LaneClosePlan, rt: LaneRuntime): Promise<LaneCloseIntegration> {
+	if (!closePlan.mergePlan) return 'already-integrated'
+	if (closePlan.mergePlan.kind === 'target-worktree') return squashInTargetWorktree(lane, closePlan.mergePlan.path, closePlan.commitSubjects, rt)
+	return squashInDetachedWorktree(lane, closePlan.mergePlan.path, closePlan.commitSubjects, rt)
 }
 
-async function mergeInTargetWorktree(lane: Lane, targetPath: string, rt: LaneRuntime): Promise<void> {
+async function squashInTargetWorktree(lane: Lane, targetPath: string, commitSubjects: string[], rt: LaneRuntime): Promise<LaneCloseIntegration> {
 	if (!(await rt.repoGit.isWorkingTreeCleanIn(targetPath))) {
 		const status = (await rt.repoGit.statusShortIn(targetPath)).trimEnd()
 		throw new Error(`target worktree is dirty; commit, stash, or discard before closing Lane ${lane.id}.\n${status}`)
 	}
 	try {
-		await rt.repoGit.mergeNoFfIn(targetPath, lane.branch, { noVerify: rt.config.work.mergeNoVerify })
+		await rt.repoGit.mergeSquashIn(targetPath, lane.branch)
+		if (await squashProducedNoNetDiff(targetPath, rt)) return 'no-net-diff'
+		await commitLaneSquash(lane, targetPath, commitSubjects, rt)
 		rt.stdout(`Target worktree updated:\n  ${targetPath}\n`)
+		return 'squashed'
 	} catch (error) {
-		throw new Error(`${(error as Error).message}\nMerge conflict preserved at ${targetPath}`)
+		throw new Error(`${(error as Error).message}\nSquash close state preserved at ${targetPath}; Lane ${lane.id} remains open.`)
 	}
 }
 
-async function mergeInDetachedWorktree(lane: Lane, mergePath: string, rt: LaneRuntime): Promise<void> {
+async function squashInDetachedWorktree(lane: Lane, mergePath: string, commitSubjects: string[], rt: LaneRuntime): Promise<LaneCloseIntegration> {
 	try {
 		await prepareLaneMergeWorktree(mergePath, lane, rt)
-		await rt.repoGit.mergeNoFfIn(mergePath, lane.branch, { noVerify: rt.config.work.mergeNoVerify })
-		const mergedHead = await rt.repoGit.resolveRef('HEAD', mergePath)
-		await rt.repoGit.updateLocalBranchRef(lane.targetBranch, mergedHead)
+		await rt.repoGit.mergeSquashIn(mergePath, lane.branch)
+		if (await squashProducedNoNetDiff(mergePath, rt)) {
+			await removeWorktreePath(mergePath, rt.repoGit)
+			return 'no-net-diff'
+		}
+		await commitLaneSquash(lane, mergePath, commitSubjects, rt)
+		const squashedHead = await rt.repoGit.resolveRef('HEAD', mergePath)
+		await rt.repoGit.updateLocalBranchRef(lane.targetBranch, squashedHead)
 		await removeWorktreePath(mergePath, rt.repoGit)
+		return 'squashed'
 	} catch (error) {
-		throw new Error(`${(error as Error).message}\nMerge worktree preserved at ${mergePath}`)
+		throw new Error(`${(error as Error).message}\nSquash close worktree preserved at ${mergePath}; Lane ${lane.id} remains open.`)
 	}
+}
+
+async function squashProducedNoNetDiff(worktreePath: string, rt: LaneRuntime): Promise<boolean> {
+	return rt.repoGit.isWorkingTreeCleanIn(worktreePath)
+}
+
+async function commitLaneSquash(lane: Lane, worktreePath: string, commitSubjects: string[], rt: LaneRuntime): Promise<void> {
+	const templatePath = await writeLaneSquashCommitTemplate(lane, commitSubjects, rt)
+	await rt.repoGit.commitWithTemplateIn(worktreePath, templatePath, { noVerify: rt.config.work.mergeNoVerify })
+	await rm(templatePath, { force: true }).catch(() => undefined)
+}
+
+async function writeLaneSquashCommitTemplate(lane: Lane, commitSubjects: string[], rt: LaneRuntime): Promise<string> {
+	const templatePath = path.join(rt.projectRoot, '.trowel', `lane-${lane.id}-squash-commit-message.txt`)
+	await mkdir(path.dirname(templatePath), { recursive: true })
+	await writeFile(templatePath, laneSquashCommitTemplate(lane, commitSubjects), 'utf8')
+	return templatePath
+}
+
+function laneSquashCommitTemplate(lane: Lane, commitSubjects: string[]): string {
+	return [
+		oneLine(lane.title) || `Close Lane ${lane.id}`,
+		'',
+		`Lane: ${lane.id}`,
+		`Branch: ${lane.branch}`,
+		`Target: ${lane.targetBranch}`,
+		'',
+		'Squashed commits:',
+		...formatCommitSubjects(commitSubjects).map((line) => line.trimStart()),
+		'',
+	].join('\n')
+}
+
+function oneLine(input: string): string {
+	return input.replace(/\s+/g, ' ').trim()
 }
 
 async function prepareLaneMergeWorktree(mergePath: string, lane: Lane, rt: LaneRuntime): Promise<void> {
@@ -374,7 +429,7 @@ async function confirmPromptBranchDeletion(lane: Lane, rt: LaneRuntime): Promise
 		rt.stdout(`Skipping local branch deletion for Lane ${lane.id}; prompt policy requires an interactive terminal.\n`)
 		return false
 	}
-	return rt.confirm(`Delete local branch for Lane ${lane.id}?\n  ${lane.branch}\n[y/N]`)
+	return rt.confirm(`Delete local branch for Lane ${lane.id}?\n  ${lane.branch}\nThe Lane was integrated by squash, so Git may not consider this branch merged even though its net diff was closed.\n[y/N]`)
 }
 
 function isInside(root: string, candidate: string): boolean {
@@ -588,17 +643,38 @@ if (import.meta.vitest) {
 			return lane
 		}
 
-		function laneCloseGit(lane: ReturnType<typeof testLane>, calls: string[]): GitOps {
+		function laneCloseGit(lane: ReturnType<typeof testLane>, calls: string[], opts: { squashProducesDiff?: boolean; commitFails?: boolean; targetCheckedOut?: boolean } = {}): GitOps {
+			let squashed = false
 			let worktrees = [
 				{ path: lane.worktreePath, branch: lane.branch, head: '1' },
-				{ path: root, branch: 'main', head: '2' },
+				...(opts.targetCheckedOut === false ? [] : [{ path: root, branch: 'main', head: '2' }]),
 			]
 			return noopGitOps({
 				localBranchExists: async (branch) => branch === lane.branch || branch === 'main',
 				worktreeList: async () => worktrees,
 				isAncestor: async () => false,
-				isWorkingTreeCleanIn: async () => true,
-				mergeNoFfIn: async (worktreePath, branch) => { calls.push(`mergeNoFfIn(${worktreePath},${branch})`) },
+				isWorkingTreeCleanIn: async (worktreePath) => worktreePath === lane.worktreePath || !(opts.squashProducesDiff && squashed),
+				mergeSquashIn: async (worktreePath, branch) => {
+					calls.push(`mergeSquashIn(${worktreePath},${branch})`)
+					squashed = true
+				},
+				commitWithTemplateIn: async (worktreePath, templatePath, commitOpts) => {
+					calls.push(`commitWithTemplateIn(${worktreePath},${path.basename(templatePath)},noVerify=${String(commitOpts?.noVerify)})`)
+					if (opts.commitFails) throw new Error('commit editor aborted')
+					squashed = false
+				},
+				nonMergeCommitSubjects: async () => ['chunk one', 'chunk two'],
+				resolveRef: async (ref, worktreePath) => {
+					calls.push(`resolveRef(${ref},${worktreePath})`)
+					return 'squashed-head'
+				},
+				updateLocalBranchRef: async (branch, ref) => { calls.push(`updateLocalBranchRef(${branch},${ref})`) },
+				worktreeAdd: async (worktreePath, branch) => {
+					calls.push(`worktreeAdd(${worktreePath},${branch})`)
+					worktrees = [...worktrees, { path: worktreePath, branch, head: 'merge' }]
+					await mkdir(worktreePath, { recursive: true })
+				},
+				checkoutDetached: async (worktreePath, ref) => { calls.push(`checkoutDetached(${worktreePath},${ref})`) },
 				worktreeRemove: async (worktreePath) => {
 					calls.push(`worktreeRemove(${worktreePath})`)
 					worktrees = worktrees.filter((w) => w.path !== worktreePath)
@@ -607,23 +683,24 @@ if (import.meta.vitest) {
 			})
 		}
 
-		test('closes a clean lane by merging into a checked-out target worktree and marking metadata closed', async () => {
+		test('closes a clean lane by squash committing into a checked-out target worktree and marking metadata closed', async () => {
 			const lane = await writeTestLane()
 			const calls: string[] = []
-			const config = { ...defaultConfig, ship: { ...defaultConfig.ship, deleteBranch: 'always' as const } }
-			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: laneCloseGit(lane, calls), config })
+			const config = { ...defaultConfig, ship: { ...defaultConfig.ship, deleteBranch: 'always' as const }, work: { ...defaultConfig.work, mergeNoVerify: true } }
+			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: laneCloseGit(lane, calls, { squashProducesDiff: true }), config })
 
 			await runLaneClose('1', rt)
 
 			expect(calls).toEqual([
-				`mergeNoFfIn(${root},${lane.branch})`,
+				`mergeSquashIn(${root},${lane.branch})`,
+				`commitWithTemplateIn(${root},lane-1-squash-commit-message.txt,noVerify=true)`,
 				`worktreeRemove(${lane.worktreePath})`,
 				`deleteBranch(${lane.branch})`,
 			])
 			expect(await readLane(root, '1')).toMatchObject({ closedAt: '2026-01-01T00:00:00.000Z', mergedAt: '2026-01-01T00:00:00.000Z' })
 		})
 
-		test('cancels lane close before merge when conflict preflight predicts conflicts and user declines', async () => {
+		test('refuses lane close before mutation when conflict preflight predicts conflicts', async () => {
 			const lane = await writeTestLane()
 			const calls: string[] = []
 			const prompts: string[] = []
@@ -635,27 +712,97 @@ if (import.meta.vitest) {
 				repoGit: git,
 				confirm: async (message) => {
 					prompts.push(message)
+					return true
+				},
+			})
+
+			await expect(runLaneClose('1', rt)).rejects.toThrow(/Merge conflict preflight predicted conflicts/)
+
+			expect(prompts).toEqual([])
+			expect(calls).toEqual([])
+		})
+
+		test('confirmation shows target, lane branch, and commits to squash', async () => {
+			const lane = await writeTestLane()
+			const calls: string[] = []
+			let prompt = ''
+			const { rt } = makeRt({
+				projectRoot: root,
+				invocationCwd: root,
+				repoGit: laneCloseGit(lane, calls),
+				confirm: async (message) => {
+					prompt = message
 					return false
 				},
 			})
 
 			await expect(runLaneClose('1', rt)).rejects.toThrow(/lane close cancelled/)
 
-			expect(prompts.join('\n')).toContain('Merge conflict preflight predicted conflicts')
-			expect(prompts.join('\n')).toContain('README.md')
+			expect(prompt).toContain('Target: main')
+			expect(prompt).toContain(`Lane branch: ${lane.branch}`)
+			expect(prompt).toContain('chunk one')
+			expect(prompt).toContain('chunk two')
 			expect(calls).toEqual([])
 		})
 
-		test('attempts lane close merge when conflict preflight predicts conflicts and user confirms', async () => {
+		test('closes without a commit when squash produces no net diff', async () => {
 			const lane = await writeTestLane()
 			const calls: string[] = []
-			const git = laneCloseGit(lane, calls)
-			git.mergeConflictPreflight = async () => ({ ok: false, files: ['README.md'], messages: 'CONFLICT (content): README.md' })
-			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: git })
+			const config = { ...defaultConfig, ship: { ...defaultConfig.ship, deleteBranch: 'always' as const } }
+			const { rt, out } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: laneCloseGit(lane, calls), config })
 
 			await runLaneClose('1', rt)
 
-			expect(calls[0]).toBe(`mergeNoFfIn(${root},${lane.branch})`)
+			expect(calls).toEqual([
+				`mergeSquashIn(${root},${lane.branch})`,
+				`worktreeRemove(${lane.worktreePath})`,
+				`deleteBranch(${lane.branch})`,
+			])
+			expect(out.join('')).toContain('No net diff')
+			expect(await readLane(root, '1')).toMatchObject({ closedAt: '2026-01-01T00:00:00.000Z', mergedAt: '2026-01-01T00:00:00.000Z' })
+		})
+
+		test('failed squash commit preserves close state and leaves lane open', async () => {
+			const lane = await writeTestLane()
+			const calls: string[] = []
+			const config = { ...defaultConfig, ship: { ...defaultConfig.ship, deleteBranch: 'always' as const } }
+			const { rt } = makeRt({ projectRoot: root, invocationCwd: root, repoGit: laneCloseGit(lane, calls, { squashProducesDiff: true, commitFails: true }), config })
+
+			await expect(runLaneClose('1', rt)).rejects.toThrow(/Squash close state preserved/)
+
+			expect(calls).toEqual([
+				`mergeSquashIn(${root},${lane.branch})`,
+				`commitWithTemplateIn(${root},lane-1-squash-commit-message.txt,noVerify=false)`,
+			])
+			expect(await readLane(root, '1')).toMatchObject({ closedAt: null, mergedAt: null })
+		})
+
+		test('detached squash close commits in a merge worktree then updates the target ref', async () => {
+			const lane = await writeTestLane()
+			const calls: string[] = []
+			const config = { ...defaultConfig, ship: { ...defaultConfig.ship, deleteBranch: 'always' as const } }
+			const mergePath = laneMergeWorktreePath(root, lane.id)
+			const { rt } = makeRt({
+				projectRoot: root,
+				invocationCwd: root,
+				repoGit: laneCloseGit(lane, calls, { squashProducesDiff: true, targetCheckedOut: false }),
+				config,
+			})
+
+			await runLaneClose('1', rt)
+
+			expect(calls).toEqual([
+				`worktreeAdd(${mergePath},main)`,
+				`checkoutDetached(${mergePath},main)`,
+				`mergeSquashIn(${mergePath},${lane.branch})`,
+				`commitWithTemplateIn(${mergePath},lane-1-squash-commit-message.txt,noVerify=false)`,
+				`resolveRef(HEAD,${mergePath})`,
+				'updateLocalBranchRef(main,squashed-head)',
+				`worktreeRemove(${mergePath})`,
+				`worktreeRemove(${lane.worktreePath})`,
+				`deleteBranch(${lane.branch})`,
+			])
+			expect(await readLane(root, '1')).toMatchObject({ closedAt: '2026-01-01T00:00:00.000Z', mergedAt: '2026-01-01T00:00:00.000Z' })
 		})
 	})
 }

@@ -374,6 +374,8 @@ if (import.meta.vitest) {
 			},
 			mergeAbort: recorded('mergeAbort'),
 			mergeNoFfIn: recorded('mergeNoFfIn'),
+			mergeSquashIn: recorded('mergeSquashIn'),
+			commitWithTemplateIn: recorded('commitWithTemplateIn'),
 			mergeAbortIn: recorded('mergeAbortIn'),
 			deleteRemoteBranch: recorded('deleteRemoteBranch'),
 			remoteBranchExists: async (b) => {
@@ -396,6 +398,10 @@ if (import.meta.vitest) {
 			commitDate: async (ref, worktreePath) => {
 				calls.push({ method: 'commitDate', args: [ref, worktreePath] })
 				return '2026-06-04T00:00:00.000Z'
+			},
+			nonMergeCommitSubjects: async (fromExclusive, toInclusive, worktreePath) => {
+				calls.push({ method: 'nonMergeCommitSubjects', args: [fromExclusive, toInclusive, worktreePath] })
+				return []
 			},
 			listLocalBranches: async () => [],
 			deleteBranch: recorded('deleteBranch'),
